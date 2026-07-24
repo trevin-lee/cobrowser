@@ -199,3 +199,8 @@ urlInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') navigate();
 });
 nativeBtn.addEventListener('click', () => fire('extension.openNativeWindow'));
+
+// Tell the host we're listening, so it (re)starts the screencast now that the message
+// handler exists. Without this the initial frame — the only one a static page emits —
+// is posted before this script runs and is lost, leaving the canvas blank.
+fire('extension.ready');

@@ -37,6 +37,7 @@ export class BrowserPanel {
   private disposables: vscode.Disposable[] = [];
   private cdp: CDPSession | undefined;
   private frameHandler: ((e: FrameEvent) => void) | undefined;
+  private ready = false;
 
   private constructor(
     private context: vscode.ExtensionContext,
@@ -69,6 +70,12 @@ export class BrowserPanel {
       cdp.send('Page.screencastFrameAck', { sessionId: e.sessionId }).catch(() => undefined);
     };
     cdp.on('Page.screencastFrame', this.frameHandler as never);
+    // Only start once the webview is listening — otherwise the initial frame (the only
+    // one a static page emits) is posted before the message handler exists and is lost.
+    if (this.ready) await this.startScreencast(cdp);
+  }
+
+  private async startScreencast(cdp: CDPSession): Promise<void> {
     try {
       await cdp.send('Page.startScreencast', {
         format: 'jpeg',
@@ -90,6 +97,11 @@ export class BrowserPanel {
     if (typeof m?.type !== 'string') return;
 
     if (m.type.startsWith('extension.')) {
+      if (m.type === 'extension.ready') {
+        this.ready = true;
+        if (this.cdp) await this.startScreencast(this.cdp);
+        return;
+      }
       if (m.type === 'extension.openNativeWindow') {
         if (this.session.headless) {
           void vscode.window.showInformationMessage(
