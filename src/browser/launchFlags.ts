@@ -28,12 +28,22 @@ export function findSystemChrome(override?: string): string | undefined {
  * - `headless: false` so the human can complete logins / 2FA in the panel.
  * - No fixed `--remote-debugging-port`; puppeteer's launch() manages an ephemeral transport.
  */
-export function resolveLaunchOptions(profileDir: string, chromePath: string): LaunchOptions {
+export function resolveLaunchOptions(
+  profileDir: string,
+  chromePath: string,
+  headless: boolean,
+): LaunchOptions {
   return {
     executablePath: chromePath,
-    headless: false,
+    headless,
     userDataDir: profileDir,
-    defaultViewport: null,
-    args: ['--no-first-run', '--no-default-browser-check'],
+    // Headless has no OS window to size the page from, so give it a fixed viewport;
+    // headful lets the page fill the (user-resizable) window.
+    defaultViewport: headless ? { width: 1280, height: 800 } : null,
+    args: [
+      '--no-first-run',
+      '--no-default-browser-check',
+      ...(headless ? ['--window-size=1280,800'] : []),
+    ],
   };
 }

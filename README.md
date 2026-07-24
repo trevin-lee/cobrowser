@@ -66,7 +66,7 @@ Then open this folder in VS Code / Cursor and press **F5** (launches the Extensi
 2. Navigate + **log into** the sites you want the agent to use. Credentials persist in the profile.
 3. Point your agent at the MCP server (auto-registered per the table above) and drive the same browser.
 
-Native-UI moments (file pickers, native `<select>` dropdowns, 2FA, drag-drop) don't render in a screencast — click **Open native window** to interact with the real OS window. Same browser, same session.
+By default the browser runs **headless** — it lives entirely in the Cursor panel with no separate OS window. If you need native-UI moments (file pickers, native `<select>` dropdowns, 2FA, drag-drop, or sign-ins like Google that block headless), set **`cobrowser.headless`** to `false` and reload: a real Chrome window opens alongside the panel, and **Open native window** brings it to the front. Same browser, same session either way.
 
 Scripts: `npm run watch` (rebuild on change), `npm run typecheck`.
 

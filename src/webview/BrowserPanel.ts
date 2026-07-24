@@ -91,7 +91,13 @@ export class BrowserPanel {
 
     if (m.type.startsWith('extension.')) {
       if (m.type === 'extension.openNativeWindow') {
-        await this.session.run(() => this.session.bringActiveToFront());
+        if (this.session.headless) {
+          void vscode.window.showInformationMessage(
+            'Cobrowser is running headless (embedded only). Set "cobrowser.headless" to false and reload to use a separate OS window.',
+          );
+        } else {
+          await this.session.run(() => this.session.bringActiveToFront());
+        }
       }
       return;
     }

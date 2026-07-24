@@ -43,7 +43,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     if (!sessionPromise) {
       sessionPromise = (async () => {
         const chromePath = await ensureChrome(context, cfg, log);
-        const s = await BrowserSession.launch(profileDir, chromePath);
+        const headless = cfg.get<boolean>('headless', true);
+        const s = await BrowserSession.launch(profileDir, chromePath, headless);
         session = s;
         const pid = s.pid();
         if (pid !== undefined) await context.globalState.update(PID_KEY, pid);
@@ -110,6 +111,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       BrowserPanel.show(context, await getSession());
     }),
     vscode.commands.registerCommand('cobrowser.openNativeWindow', async () => {
+      if (cfg.get<boolean>('headless', true)) {
+        void vscode.window.showInformationMessage(
+          'Cobrowser is running headless (embedded only). Set "cobrowser.headless" to false and reload to use a separate OS window.',
+        );
+        return;
+      }
       const s = await getSession();
       await s.run(() => s.bringActiveToFront());
     }),

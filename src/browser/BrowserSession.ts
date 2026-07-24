@@ -33,11 +33,18 @@ export class BrowserSession {
   private suppressAdopt = 0;
   private onDisconnectedCb?: () => void;
 
-  private constructor(private browser: Browser) {}
+  private constructor(
+    private browser: Browser,
+    readonly headless: boolean,
+  ) {}
 
-  static async launch(profileDir: string, chromePath: string): Promise<BrowserSession> {
-    const browser = await puppeteer.launch(resolveLaunchOptions(profileDir, chromePath));
-    const session = new BrowserSession(browser);
+  static async launch(
+    profileDir: string,
+    chromePath: string,
+    headless = true,
+  ): Promise<BrowserSession> {
+    const browser = await puppeteer.launch(resolveLaunchOptions(profileDir, chromePath, headless));
+    const session = new BrowserSession(browser, headless);
 
     const pages = await browser.pages();
     const first = pages[0] ?? (await browser.newPage());
