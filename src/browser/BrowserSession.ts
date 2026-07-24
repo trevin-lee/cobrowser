@@ -32,6 +32,7 @@ export class BrowserSession {
   /** >0 while newPage() is opening a target, so targetcreated doesn't adopt it. */
   private suppressAdopt = 0;
   private onDisconnectedCb?: () => void;
+  private urlCb?: (url: string) => void;
 
   private constructor(
     private browser: Browser,
@@ -102,7 +103,11 @@ export class BrowserSession {
     }
     this.active = page;
     this.cdp = await page.createCDPSession();
+    page.on('framenavigated', (frame) => {
+      if (frame === page.mainFrame()) this.urlCb?.(page.url());
+    });
     for (const listener of this.activePageListeners) listener(this.cdp, page);
+    this.urlCb?.(page.url());
   }
 
   /** Register a callback fired on every active-page change (and immediately with the current one). */
@@ -114,6 +119,19 @@ export class BrowserSession {
   /** Fired when the underlying browser exits out-of-band (Cmd-Q / crash). */
   onDisconnected(cb: () => void): void {
     this.onDisconnectedCb = cb;
+  }
+
+  /** Fired with the active page's URL on navigation (and immediately with the current one). */
+  onUrlChanged(cb: (url: string) => void): void {
+    this.urlCb = cb;
+    if (this.active) cb(this.active.url());
+  }
+
+  /** Match the browser viewport to the panel (size + display DPR) so the screencast
+   *  isn't stretched to the wrong aspect ratio or rendered below the display's resolution. */
+  async setViewport(width: number, height: number, deviceScaleFactor: number): Promise<void> {
+    if (width < 1 || height < 1) return;
+    await this.active.setViewport({ width, height, deviceScaleFactor: deviceScaleFactor || 1 });
   }
 
   get activeCdp(): CDPSession {

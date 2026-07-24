@@ -49,6 +49,8 @@ export class BrowserPanel {
     this.panel.webview.onDidReceiveMessage((m) => void this.onMessage(m), null, this.disposables);
     // Fires immediately with the current CDP session, then on every active-page change.
     this.session.onActivePageChanged((cdp) => void this.attach(cdp));
+    // Keep the toolbar URL bar in sync with the real page URL.
+    this.session.onUrlChanged((url) => void this.panel.webview.postMessage({ type: 'extension.url', url }));
   }
 
   private async attach(cdp: CDPSession): Promise<void> {
@@ -79,9 +81,10 @@ export class BrowserPanel {
     try {
       await cdp.send('Page.startScreencast', {
         format: 'jpeg',
-        quality: 70,
-        maxWidth: 2048,
-        maxHeight: 2048,
+        quality: 80,
+        // High caps so a retina (DPR≈2) viewport isn't downscaled back to blurry.
+        maxWidth: 4096,
+        maxHeight: 4096,
         everyNthFrame: 1,
       });
     } catch {
@@ -97,19 +100,41 @@ export class BrowserPanel {
     if (typeof m?.type !== 'string') return;
 
     if (m.type.startsWith('extension.')) {
-      if (m.type === 'extension.ready') {
-        this.ready = true;
-        if (this.cdp) await this.startScreencast(this.cdp);
-        return;
-      }
-      if (m.type === 'extension.openNativeWindow') {
-        if (this.session.headless) {
-          void vscode.window.showInformationMessage(
-            'Cobrowser is running headless (embedded only). Set "cobrowser.headless" to false and reload to use a separate OS window.',
-          );
-        } else {
-          await this.session.run(() => this.session.bringActiveToFront());
+      try {
+        switch (m.type) {
+          case 'extension.ready':
+            this.ready = true;
+            if (this.cdp) await this.startScreencast(this.cdp);
+            break;
+          case 'extension.viewport': {
+            const p = (m.params ?? {}) as { width?: number; height?: number; dpr?: number };
+            if (p.width && p.height) {
+              await this.session.run(() => this.session.setViewport(p.width!, p.height!, p.dpr ?? 1));
+              if (this.cdp) await this.startScreencast(this.cdp);
+            }
+            break;
+          }
+          case 'extension.back':
+            await this.session.run(() => this.session.navigate('back'));
+            break;
+          case 'extension.forward':
+            await this.session.run(() => this.session.navigate('forward'));
+            break;
+          case 'extension.reload':
+            await this.session.run(() => this.session.navigate('reload'));
+            break;
+          case 'extension.openNativeWindow':
+            if (this.session.headless) {
+              void vscode.window.showInformationMessage(
+                'Cobrowser is running headless (embedded only). Set "cobrowser.headless" to false and reload to use a separate OS window.',
+              );
+            } else {
+              await this.session.run(() => this.session.bringActiveToFront());
+            }
+            break;
         }
+      } catch {
+        /* transient (page navigating/closed) — next frame/active-page change recovers */
       }
       return;
     }
@@ -146,7 +171,10 @@ export class BrowserPanel {
 </head>
 <body>
   <div id="toolbar">
-    <input id="url" placeholder="Enter a URL and press Enter…" />
+    <button id="back" class="nav" title="Back">‹</button>
+    <button id="forward" class="nav" title="Forward">›</button>
+    <button id="reload" class="nav" title="Reload">⟳</button>
+    <input id="url" placeholder="Enter a URL and press Enter…" spellcheck="false" />
     <button id="go">Go</button>
     <button id="native" class="secondary" title="Interact with the real OS window (native dropdowns, file pickers, 2FA)">Open native window</button>
   </div>

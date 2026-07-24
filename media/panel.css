@@ -45,19 +45,25 @@ html, body {
   background: #3a3d41;
 }
 
+#toolbar button.nav {
+  background: #3a3d41;
+  min-width: 28px;
+  padding: 4px 8px;
+  font-size: 15px;
+  line-height: 1;
+}
+
 #stage {
   position: absolute;
   inset: 40px 0 0 0;
-  overflow: auto;
-  display: flex;
-  justify-content: center;
+  overflow: hidden;
   background: #111;
 }
 
 #screen {
   display: block;
-  max-width: 100%;
-  height: auto;
+  width: 100%;
+  height: 100%;
   background: #fff;
   outline: none;
 }

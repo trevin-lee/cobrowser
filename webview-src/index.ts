@@ -18,11 +18,15 @@ interface FrameMetadata {
 
 const vscode = acquireVsCodeApi();
 
+const stage = document.getElementById('stage') as HTMLDivElement;
 const canvas = document.getElementById('screen') as HTMLCanvasElement;
 const ctx = canvas.getContext('2d')!;
 const urlInput = document.getElementById('url') as HTMLInputElement;
 const goBtn = document.getElementById('go') as HTMLButtonElement;
 const nativeBtn = document.getElementById('native') as HTMLButtonElement;
+const backBtn = document.getElementById('back') as HTMLButtonElement;
+const forwardBtn = document.getElementById('forward') as HTMLButtonElement;
+const reloadBtn = document.getElementById('reload') as HTMLButtonElement;
 
 let lastMeta: FrameMetadata = {};
 let callbackSeq = 0;
@@ -46,6 +50,11 @@ window.addEventListener('message', (event: MessageEvent) => {
   const m = event.data;
   if (m?.method === 'Page.screencastFrame') {
     drawFrame(m.result as { data: string; metadata: FrameMetadata });
+    return;
+  }
+  if (m?.type === 'extension.url') {
+    // Don't clobber what the user is typing.
+    if (document.activeElement !== urlInput) urlInput.value = m.url;
     return;
   }
   if (m?.callbackId != null && pending.has(m.callbackId)) {
@@ -199,8 +208,26 @@ urlInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') navigate();
 });
 nativeBtn.addEventListener('click', () => fire('extension.openNativeWindow'));
+backBtn.addEventListener('click', () => fire('extension.back'));
+forwardBtn.addEventListener('click', () => fire('extension.forward'));
+reloadBtn.addEventListener('click', () => fire('extension.reload'));
 
-// Tell the host we're listening, so it (re)starts the screencast now that the message
-// handler exists. Without this the initial frame — the only one a static page emits —
-// is posted before this script runs and is lost, leaving the canvas blank.
+// ----- viewport: match the browser to the panel size + display DPR (fixes squish + blur) -----
+function reportViewport(): void {
+  fire('extension.viewport', {
+    width: Math.max(1, Math.round(stage.clientWidth)),
+    height: Math.max(1, Math.round(stage.clientHeight)),
+    dpr: window.devicePixelRatio || 1,
+  });
+}
+let resizeTimer = 0;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = window.setTimeout(reportViewport, 150);
+});
+
+// Tell the host we're listening (so it (re)starts the screencast now that the message
+// handler exists — otherwise the initial frame is lost and a static page stays blank),
+// then size the browser viewport to the panel.
 fire('extension.ready');
+reportViewport();
