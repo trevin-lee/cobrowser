@@ -1,36 +1,36 @@
 import * as fs from 'node:fs';
 import type { LaunchOptions } from 'puppeteer-core';
 
-// macOS-first candidates for the spike. (Cross-platform paths are deferred.)
+// macOS-first candidates for the system-Chrome fallback. (Windows/Linux paths deferred.)
 const CANDIDATES = [
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   '/Applications/Chromium.app/Contents/MacOS/Chromium',
   '/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
 ];
 
-export function resolveChromePath(override?: string): string {
+/** Find an installed system Chrome/Chromium (or a valid override). undefined if none. */
+export function findSystemChrome(override?: string): string | undefined {
   if (override && fs.existsSync(override)) return override;
   for (const c of CANDIDATES) {
     if (fs.existsSync(c)) return c;
   }
-  throw new Error(
-    'Cobrowser: no Chrome/Chromium executable found. Set "cobrowser.chromePath" in settings.',
-  );
+  return undefined;
 }
 
 /**
- * Launch options for the co-driven browser.
+ * Launch options for the co-driven browser. `chromePath` is resolved by the caller
+ * (ensureChromeExecutable) — a downloaded Chrome-for-Testing, the system Chrome, or the
+ * cobrowser.chromePath override.
  *
- * - `userDataDir` is a NON-default, persistent dir under the extension's globalStorage.
- *   This both persists logins across sessions AND satisfies Chrome 136+'s rule that
- *   remote debugging requires a non-default profile dir (satisfied by construction).
- * - `headless: false` so the human can complete logins / 2FA / captchas in the panel.
- * - No fixed `--remote-debugging-port`; puppeteer's `launch()` manages an ephemeral
- *   transport, so we never expose a predictable debug port.
+ * - `userDataDir` is a NON-default, persistent dir under globalStorage: persists logins
+ *   across sessions AND satisfies Chrome 136+'s "remote debugging needs a non-default
+ *   profile" rule by construction.
+ * - `headless: false` so the human can complete logins / 2FA in the panel.
+ * - No fixed `--remote-debugging-port`; puppeteer's launch() manages an ephemeral transport.
  */
-export function resolveLaunchOptions(profileDir: string, chromePath?: string): LaunchOptions {
+export function resolveLaunchOptions(profileDir: string, chromePath: string): LaunchOptions {
   return {
-    executablePath: chromePath ?? resolveChromePath(),
+    executablePath: chromePath,
     headless: false,
     userDataDir: profileDir,
     defaultViewport: null,

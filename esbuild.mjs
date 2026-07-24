@@ -21,7 +21,7 @@ const targets = [
     platform: 'node',
     format: 'cjs',
     target: 'node20',
-    external: ['vscode', 'puppeteer-core'],
+    external: ['vscode', 'puppeteer-core', '@puppeteer/browsers'],
   },
   {
     // Webview: browser/IIFE.

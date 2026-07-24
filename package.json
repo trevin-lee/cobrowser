@@ -2,7 +2,7 @@
   "name": "cobrowser",
   "displayName": "Cobrowser",
   "description": "An embedded, agent-controllable browser inside your editor — co-driven by you (webview) and your AI agent (MCP).",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "publisher": "trevin-lee",
   "private": true,
   "license": "MIT",
@@ -14,6 +14,7 @@
     "url": "https://github.com/trevin-lee/cobrowser/issues"
   },
   "homepage": "https://github.com/trevin-lee/cobrowser#readme",
+  "icon": "media/icon.png",
   "keywords": [
     "browser",
     "mcp",
@@ -81,6 +82,7 @@
     "vscode:prepublish": "node esbuild.mjs --production"
   },
   "dependencies": {
+    "@puppeteer/browsers": "^2.13.2",
     "puppeteer-core": "^24.10.0"
   },
   "devDependencies": {

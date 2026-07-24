@@ -4,12 +4,13 @@ import * as fs from 'node:fs';
 import * as crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { BrowserSession } from './browser/BrowserSession';
-import { resolveChromePath } from './browser/launchFlags';
+import { ensureChromeExecutable } from './browser/ensureChrome';
 import { startMcpHttpServer, type McpHttp } from './mcp/server';
 import { BrowserPanel } from './webview/BrowserPanel';
 import { writeClientConfigs } from './clients/writeClientConfigs';
 
 const PID_KEY = 'cobrowser.browserPid';
+const BUILD_ID_KEY = 'cobrowser.chromeBuildId';
 
 let session: BrowserSession | undefined;
 let sessionPromise: Promise<BrowserSession> | undefined;
@@ -40,8 +41,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const getSession = async (): Promise<BrowserSession> => {
     if (session) return session;
     if (!sessionPromise) {
-      const chromePath = resolveChromePath(cfg.get<string>('chromePath') || undefined);
-      sessionPromise = BrowserSession.launch(profileDir, chromePath).then(async (s) => {
+      sessionPromise = (async () => {
+        const chromePath = await ensureChrome(context, cfg, log);
+        const s = await BrowserSession.launch(profileDir, chromePath);
         session = s;
         const pid = s.pid();
         if (pid !== undefined) await context.globalState.update(PID_KEY, pid);
@@ -54,7 +56,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         });
         log(`Chromium launched (pid ${pid ?? '?'}), profile ${profileDir}`);
         return s;
-      });
+      })();
       sessionPromise.catch((err) => {
         sessionPromise = undefined;
         log(`Chromium launch failed: ${String(err)}`);
@@ -164,11 +166,15 @@ async function cleanupOrphan(
 ): Promise<void> {
   const pid = context.globalState.get<number>(PID_KEY);
   if (pid !== undefined) {
-    try {
-      process.kill(pid, 'SIGKILL');
-      log(`Killed orphaned Chromium (pid ${pid}) from a previous session.`);
-    } catch {
-      /* already dead */
+    // Only SIGKILL if the pid is actually our Chromium — guards against the OS having
+    // recycled a stale pid (from a crash that never cleared it) to an unrelated process.
+    if (isCobrowserChrome(pid, profileDir)) {
+      try {
+        process.kill(pid, 'SIGKILL');
+        log(`Killed orphaned Chromium (pid ${pid}) from a previous session.`);
+      } catch {
+        /* already dead */
+      }
     }
     await context.globalState.update(PID_KEY, undefined);
   }
@@ -178,5 +184,46 @@ async function cleanupOrphan(
     } catch {
       /* ignore */
     }
+  }
+}
+
+/** Resolve the Chrome executable (download-on-first-run), showing a progress notification. */
+async function ensureChrome(
+  context: vscode.ExtensionContext,
+  cfg: vscode.WorkspaceConfiguration,
+  log: (m: string) => void,
+): Promise<string> {
+  const cacheDir = path.join(context.globalStorageUri.fsPath, 'browsers');
+  const override = cfg.get<string>('chromePath') || undefined;
+  return vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: 'Cobrowser: preparing browser', cancellable: false },
+    (progress) =>
+      ensureChromeExecutable({
+        cacheDir,
+        override,
+        store: {
+          get: () => context.globalState.get<string>(BUILD_ID_KEY),
+          set: (id) => context.globalState.update(BUILD_ID_KEY, id),
+        },
+        onProgress: (downloaded, total) => {
+          const mb = (n: number) => Math.round(n / 1e6);
+          progress.report({
+            message: total
+              ? `downloading Chrome ${mb(downloaded)} / ${mb(total)} MB`
+              : `downloading Chrome ${mb(downloaded)} MB`,
+          });
+        },
+        log,
+      }),
+  );
+}
+
+/** True only if `pid` is a live process whose command line references our profile dir. */
+function isCobrowserChrome(pid: number, profileDir: string): boolean {
+  try {
+    const cmd = execFileSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8' });
+    return cmd.includes(profileDir);
+  } catch {
+    return false; // no such process, or ps failed — do not kill
   }
 }

@@ -35,7 +35,7 @@ export class BrowserSession {
 
   private constructor(private browser: Browser) {}
 
-  static async launch(profileDir: string, chromePath?: string): Promise<BrowserSession> {
+  static async launch(profileDir: string, chromePath: string): Promise<BrowserSession> {
     const browser = await puppeteer.launch(resolveLaunchOptions(profileDir, chromePath));
     const session = new BrowserSession(browser);
 
