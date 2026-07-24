@@ -1,0 +1,10 @@
+# Source & build config (dist/ is shipped; sources are not)
+src/**
+webview-src/**
+esbuild.mjs
+tsconfig*.json
+.vscode/**
+.gitignore
+**/*.map
+# NOTE: node_modules is intentionally NOT ignored — puppeteer-core is marked
+# `external` in the esbuild config, so it must ship in the VSIX to be require-able.

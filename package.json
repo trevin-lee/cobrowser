@@ -1,0 +1,96 @@
+{
+  "name": "cobrowser",
+  "displayName": "Cobrowser",
+  "description": "An embedded, agent-controllable browser inside your editor — co-driven by you (webview) and your AI agent (MCP).",
+  "version": "0.0.1",
+  "publisher": "trevin-lee",
+  "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/trevin-lee/cobrowser.git"
+  },
+  "bugs": {
+    "url": "https://github.com/trevin-lee/cobrowser/issues"
+  },
+  "homepage": "https://github.com/trevin-lee/cobrowser#readme",
+  "keywords": [
+    "browser",
+    "mcp",
+    "cdp",
+    "agent",
+    "automation",
+    "cursor",
+    "webview",
+    "puppeteer"
+  ],
+  "engines": {
+    "vscode": "^1.101.0"
+  },
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "cobrowser.open",
+        "title": "Cobrowser: Open Browser Panel"
+      },
+      {
+        "command": "cobrowser.openNativeWindow",
+        "title": "Cobrowser: Open Native Browser Window"
+      },
+      {
+        "command": "cobrowser.restartBrowser",
+        "title": "Cobrowser: Restart Browser"
+      }
+    ],
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "cobrowser.mcp",
+        "label": "Cobrowser"
+      }
+    ],
+    "configuration": {
+      "title": "Cobrowser",
+      "properties": {
+        "cobrowser.chromePath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the Chrome/Chromium executable. Leave empty to auto-detect."
+        },
+        "cobrowser.port": {
+          "type": "number",
+          "default": 39273,
+          "description": "Preferred localhost port for the in-process MCP server. Falls back to an ephemeral port if taken."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.webview.json",
+    "package": "vsce package",
+    "publish:ovsx": "ovsx publish",
+    "vscode:prepublish": "node esbuild.mjs --production"
+  },
+  "dependencies": {
+    "puppeteer-core": "^24.10.0"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "@types/node": "^22.10.0",
+    "@types/vscode": "^1.101.0",
+    "@vscode/vsce": "^3.2.0",
+    "esbuild": "^0.24.2",
+    "ovsx": "^0.10.0",
+    "typescript": "^5.7.2",
+    "zod": "^3.23.8"
+  }
+}
