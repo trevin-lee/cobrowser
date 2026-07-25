@@ -7,6 +7,7 @@ import { BrowserSession } from './browser/BrowserSession';
 import { ensureChromeExecutable } from './browser/ensureChrome';
 import { startMcpHttpServer, type McpHttp } from './mcp/server';
 import { BrowserPanel } from './webview/BrowserPanel';
+import { SessionTreeProvider, type TreeNode } from './webview/SessionTreeProvider';
 import { writeClientConfigs } from './clients/writeClientConfigs';
 
 const PID_KEY = 'cobrowser.browserPid';
@@ -28,8 +29,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const cfg = vscode.workspace.getConfiguration('cobrowser');
   const preferredPort = cfg.get<number>('port', 39273);
 
-  const profileDir = path.join(context.globalStorageUri.fsPath, 'chrome-profile');
+  // Per-workspace profile (isolated logins/tabs per project + no two-window SingletonLock
+  // conflict). Falls back to global storage for a window with no folder open.
+  const profileBase = context.storageUri ?? context.globalStorageUri;
+  const profileDir = path.join(profileBase.fsPath, 'chrome-profile');
   await vscode.workspace.fs.createDirectory(vscode.Uri.file(profileDir));
+
+  // Activity Bar sidebar: profile(s) + their open tabs. Created before getSession
+  // so its `() => session` closure is always initialized when first read.
+  const tree = new SessionTreeProvider(
+    { label: vscode.workspace.name ?? 'Default', path: profileDir },
+    () => session,
+  );
+  context.subscriptions.push(vscode.window.registerTreeDataProvider('cobrowser.sessions', tree));
 
   // B3: a previous extension host may have died without closing Chromium, leaving an
   // orphan that holds the persistent profile's SingletonLock. Kill it + clear the locks
@@ -48,13 +60,25 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         session = s;
         const pid = s.pid();
         if (pid !== undefined) await context.globalState.update(PID_KEY, pid);
+
+        // One VS Code editor tab per browser page — VS Code's tab bar is the tab bar.
+        s.onPageOpened((page, id, reveal) => BrowserPanel.openForPage(context, s, page, id, reveal));
+        s.onPageClosed((id) => BrowserPanel.closeForId(id));
+        s.onPageReveal((id) => BrowserPanel.reveal(id));
+        s.onAgentHighlight((id, box) => BrowserPanel.get(id)?.postHighlight(box));
+
         // Out-of-band exit (Cmd-Q / crash): drop the dead session so getSession relaunches.
         s.onDisconnected(() => {
           log('Chromium disconnected — clearing session; it will relaunch on next use.');
+          BrowserPanel.disposeAll();
           if (session === s) session = undefined;
           sessionPromise = undefined;
           void context.globalState.update(PID_KEY, undefined);
         });
+        // Open panels for pages that already exist (restored tabs, or pages that
+        // appeared during launch before these listeners were wired) so no Chrome page
+        // is left without a VS Code tab.
+        s.emitExisting();
         log(`Chromium launched (pid ${pid ?? '?'}), profile ${profileDir}`);
         return s;
       })();
@@ -108,17 +132,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   context.subscriptions.push(
     vscode.commands.registerCommand('cobrowser.open', async () => {
-      BrowserPanel.show(context, await getSession());
-    }),
-    vscode.commands.registerCommand('cobrowser.openNativeWindow', async () => {
-      if (cfg.get<boolean>('headless', true)) {
-        void vscode.window.showInformationMessage(
-          'Cobrowser is running headless (embedded only). Set "cobrowser.headless" to false and reload to use a separate OS window.',
-        );
-        return;
-      }
       const s = await getSession();
-      await s.run(() => s.bringActiveToFront());
+      // Open a panel for each existing page (reveals the active one). Future
+      // pages open their panels via onPageOpened.
+      s.emitExisting();
+    }),
+    vscode.commands.registerCommand('cobrowser.newTab', async () => {
+      const s = await getSession();
+      await s.newPage('about:blank');
     }),
     vscode.commands.registerCommand('cobrowser.restartBrowser', async () => {
       await disposeSession(context);
@@ -156,6 +177,7 @@ async function disposeSession(context: vscode.ExtensionContext | undefined): Pro
   const s = session;
   session = undefined;
   sessionPromise = undefined;
+  BrowserPanel.disposeAll(); // close the browser editor tabs along with the session
   if (s) {
     try {
       await s.dispose();

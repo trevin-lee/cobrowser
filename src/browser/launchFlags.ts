@@ -43,6 +43,9 @@ export function resolveLaunchOptions(
     args: [
       '--no-first-run',
       '--no-default-browser-check',
+      // Reopen the previous session's tabs on relaunch, so an editor reload (which closes
+      // the browser) doesn't lose your open tabs. Verified to work in headless.
+      '--restore-last-session',
       ...(headless ? ['--window-size=1280,800'] : []),
     ],
   };

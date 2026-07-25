@@ -2,7 +2,7 @@
   "name": "cobrowser",
   "displayName": "Cobrowser",
   "description": "An embedded, agent-controllable browser inside your editor — co-driven by you (webview) and your AI agent (MCP).",
-  "version": "0.0.5",
+  "version": "0.1.0",
   "publisher": "trevin-lee",
   "private": true,
   "license": "MIT",
@@ -43,14 +43,41 @@
         "title": "Cobrowser: Open Browser Panel"
       },
       {
-        "command": "cobrowser.openNativeWindow",
-        "title": "Cobrowser: Open Native Browser Window"
+        "command": "cobrowser.newTab",
+        "title": "Cobrowser: New Browser Tab",
+        "icon": "$(add)"
       },
       {
         "command": "cobrowser.restartBrowser",
         "title": "Cobrowser: Restart Browser"
       }
     ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "cobrowser.newTab",
+          "when": "view == cobrowser.sessions",
+          "group": "navigation"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "cobrowser",
+          "title": "Cobrowser",
+          "icon": "media/sidebar.svg"
+        }
+      ]
+    },
+    "views": {
+      "cobrowser": [
+        {
+          "id": "cobrowser.sessions",
+          "name": "Browser"
+        }
+      ]
+    },
     "mcpServerDefinitionProviders": [
       {
         "id": "cobrowser.mcp",
