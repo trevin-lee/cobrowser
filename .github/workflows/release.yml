@@ -1,0 +1,42 @@
+name: Release
+
+# Cut a GitHub Release with the packaged .vsix whenever a v* tag is pushed, e.g.:
+#   npm version patch      # bumps package.json + creates the tag
+#   git push --follow-tags
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Package VSIX
+        run: npm run package
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: '*.vsix'
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
+# Publishing to Open VSX is intentionally NOT wired up yet. When ready, add a step:
+#   - run: npx ovsx publish *.vsix -p ${{ secrets.OVSX_PAT }}
+# (store OVSX_PAT as a repo secret first).
