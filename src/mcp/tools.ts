@@ -23,6 +23,19 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
   );
 
   server.registerTool(
+    'get_activity',
+    {
+      description:
+        'Recent browser activity — page navigations and tab open/close/activate — each tagged source "agent" or "human". Call it to catch up on anything the human did MANUALLY since your last action, so you act on the current state instead of a stale view. Pass `since` (a seq from a prior call) to get only newer events.',
+      inputSchema: { since: z.number().optional() },
+    },
+    async ({ since }) => {
+      const s = await getSession();
+      return asText(JSON.stringify(s.getActivity(since), null, 2));
+    },
+  );
+
+  server.registerTool(
     'new_page',
     {
       description: 'Open a new tab, optionally navigating to a URL. Becomes active unless background.',
@@ -47,11 +60,31 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
       return asText(`selected page ${pageId}`);
     },
   );
+  server.registerTool(
+    'close_page',
+    {
+      description: 'Close a browser tab by pageId. Refuses to close the last remaining tab.',
+      inputSchema: { pageId: z.string() },
+    },
+    async ({ pageId }) => {
+      const s = await getSession();
+      // Refuse to close the last tab: for a human, closing the final editor tab
+      // intentionally quits the browser, but an agent doing so mid-task would
+      // yank the browser out from under itself. Keep at least one tab alive.
+      const pages = await s.run(() => s.listPages());
+      if (pages.length <= 1) {
+        return asText('refused: cannot close the last remaining tab (open another first)');
+      }
+      await s.run(() => s.closePage(pageId));
+      return asText(`closed page ${pageId}`);
+    },
+  );
 
   server.registerTool(
     'navigate_page',
     {
-      description: 'Navigate the active page.',
+      description:
+        'Navigate the active page. Returns the SETTLED {url,title} after load (not the requested url), so redirects/failures are detectable.',
       inputSchema: {
         type: z.enum(['url', 'back', 'forward', 'reload']),
         url: z.string().optional(),
@@ -60,8 +93,8 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     },
     async ({ type, url, timeout }) => {
       const s = await getSession();
-      await s.run(() => s.navigate(type, url, timeout));
-      return asText(`navigated (${type}${url ? ' ' + url : ''})`);
+      const landed = await s.run(() => s.navigate(type, url, timeout));
+      return asText(JSON.stringify({ requested: url ?? null, url: landed.url, title: landed.title }));
     },
   );
 
@@ -98,34 +131,40 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
   server.registerTool(
     'click',
     {
-      description: 'Click the element referenced by uid.',
-      inputSchema: { uid: z.string(), dblClick: z.boolean().optional() },
+      description:
+        'Click an element by uid (from take_snapshot) OR a CSS selector. Uses a TRUSTED CDP input click that frameworks (React etc.) accept as real input — unlike element.click() from evaluate_script, which fires untrusted events sites may ignore.',
+      inputSchema: { uid: z.string().optional(), selector: z.string().optional(), dblClick: z.boolean().optional() },
     },
-    async ({ uid, dblClick }) => {
+    async ({ uid, selector, dblClick }) => {
       const s = await getSession();
-      await s.run(() => s.click(uid, dblClick));
-      return asText(`clicked ${uid}`);
+      await s.run(() => s.click({ uid, selector, dblClick }));
+      return asText(`clicked ${uid ?? selector}`);
     },
   );
 
   server.registerTool(
     'fill',
     {
-      description: 'Set the value of a single input/textarea by uid.',
-      inputSchema: { uid: z.string(), value: z.string() },
+      description:
+        'Set the value of an input/textarea by uid (from take_snapshot) OR a CSS selector, using trusted keystrokes.',
+      inputSchema: { uid: z.string().optional(), selector: z.string().optional(), value: z.string() },
     },
-    async ({ uid, value }) => {
+    async ({ uid, selector, value }) => {
       const s = await getSession();
-      await s.run(() => s.fill(uid, value));
-      return asText(`filled ${uid}`);
+      await s.run(() => s.fill({ uid, selector, value }));
+      return asText(`filled ${uid ?? selector}`);
     },
   );
 
   server.registerTool(
     'fill_form',
     {
-      description: 'Fill multiple fields in one call (preferred over repeated fill).',
-      inputSchema: { elements: z.array(z.object({ uid: z.string(), value: z.string() })) },
+      description: 'Fill multiple fields (by uid or selector) in one call (preferred over repeated fill).',
+      inputSchema: {
+        elements: z.array(
+          z.object({ uid: z.string().optional(), selector: z.string().optional(), value: z.string() }),
+        ),
+      },
     },
     async ({ elements }) => {
       const s = await getSession();
@@ -155,7 +194,9 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     },
     async ({ text, timeout }) => {
       const s = await getSession();
-      await s.run(() => s.waitFor(text, timeout));
+      // No outer run(): waitFor queues each poll itself and frees the queue
+      // between polls, so a long wait doesn't freeze human input / other actions.
+      await s.waitFor(text, timeout);
       return asText(`found: ${text.join(', ')}`);
     },
   );
@@ -164,7 +205,7 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'evaluate_script',
     {
       description:
-        'Escape hatch: evaluate a JS function expression in the active page, e.g. "() => document.title".',
+        'Escape hatch: evaluate a JS function expression in the active page, e.g. "() => document.title". `args` are plain JSON passed to the function. NOTE: synthetic .click()/dispatchEvent from here is NOT trusted input (React etc. may ignore it) — use click/fill by uid (from take_snapshot) for real interactions.',
       inputSchema: { function: z.string(), args: z.array(z.any()).optional() },
     },
     async ({ function: fn, args }) => {

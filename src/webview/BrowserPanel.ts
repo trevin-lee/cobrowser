@@ -95,8 +95,10 @@ export class BrowserPanel {
     this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
     this.panel.webview.onDidReceiveMessage((m) => void this.onMessage(m), null, this.disposables);
 
-    // Screencast only while this is the active editor tab: only one page
-    // composites at a time, so a hidden tab would get no frames anyway.
+    // Screencast whenever this panel is on screen — including when focus moves
+    // to another editor group (a split), so it keeps updating while you work
+    // elsewhere. It only stops when actually hidden (another tab selected in its
+    // own group), where there would be nothing to show anyway.
     this.panel.onDidChangeViewState(
       () => void this.syncStreaming(),
       null,
@@ -128,11 +130,13 @@ export class BrowserPanel {
     void this.panel.webview.postMessage({ type: 'extension.highlight', box });
   }
 
-  /** Start/stop the screencast to match whether this tab is the active one.
-   *  `streaming` is set up-front so a re-entrant view-state change (e.g. from
-   *  bringing the page to the front) no-ops instead of looping. */
+  /** Start/stop the screencast to match whether this tab is on screen.
+   *  Gated on `visible` (shown anywhere), not `active` (focused), so switching
+   *  to another editor tab in a split doesn't freeze it. `streaming` is set
+   *  up-front so a re-entrant view-state change (e.g. from bringing the page to
+   *  the front) no-ops instead of looping. */
   private async syncStreaming(): Promise<void> {
-    const shouldStream = this.panel.active && this.ready;
+    const shouldStream = this.panel.visible && this.ready;
     if (shouldStream === this.streaming) return;
     this.streaming = shouldStream;
     if (shouldStream) {
@@ -344,8 +348,12 @@ export class BrowserPanel {
         /* ignore */
       }
     }
-    // The human closed this editor tab → close the underlying browser page.
-    void this.session.run(() => this.session.closePage(this.id)).catch(() => undefined);
+    // The human closed this editor tab → close the underlying browser page. But during a
+    // session teardown (window reload), leave the pages open so browser.close() saves them
+    // and --restore-last-session brings them back.
+    if (!this.session.isDisposing) {
+      void this.session.run(() => this.session.closePage(this.id)).catch(() => undefined);
+    }
     for (const d of this.disposables) d.dispose();
   }
 }
