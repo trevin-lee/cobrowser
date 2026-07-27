@@ -7,7 +7,7 @@ import { BrowserSession } from './browser/BrowserSession';
 import { ensureChromeExecutable } from './browser/ensureChrome';
 import { startMcpHttpServer, type McpHttp } from './mcp/server';
 import { BrowserPanel } from './webview/BrowserPanel';
-import { SessionTreeProvider, type TreeNode } from './webview/SessionTreeProvider';
+import { SessionTreeProvider } from './webview/SessionTreeProvider';
 import { writeClientConfigs } from './clients/writeClientConfigs';
 
 const PID_KEY = 'cobrowser.browserPid';
@@ -92,6 +92,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       BrowserPanel.disposeAll();
       if (session === s) session = undefined;
       sessionPromise = undefined;
+      tree.refresh(); // profile → "stopped", tabs cleared
     });
 
     // One VS Code editor tab per browser page — VS Code's tab bar is the tab bar.
@@ -99,6 +100,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     s.onPageClosed((id) => BrowserPanel.closeForId(id));
     s.onPageReveal((id) => BrowserPanel.reveal(id));
     s.onAgentHighlight((id, box) => BrowserPanel.get(id)?.postHighlight(box));
+    // Keep the Activity Bar sidebar live: re-render its tab list whenever pages open,
+    // close, navigate, or the active tab changes. (These fire sites existed but were
+    // never connected to the tree, so the sidebar showed a stale first snapshot.)
+    s.onPagesChanged(() => tree.refresh());
 
     s.onDisconnected(() => {
       // Only for UNEXPECTED exits (crash / Cmd-Q). Intentional disconnect (reload) and
@@ -111,11 +116,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       sessionPromise = undefined;
       void context.workspaceState.update(WS_KEY, undefined);
       void context.globalState.update(PID_KEY, undefined);
+      tree.refresh(); // profile → "stopped"
     });
 
     // Open panels for pages that already exist (restored/reconnected tabs, or pages that
     // appeared during launch before these listeners were wired) — no orphaned Chrome page.
     s.emitExisting();
+    tree.refresh(); // reflect the now-running session (state + initial tabs)
     return s;
   };
 

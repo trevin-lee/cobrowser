@@ -352,10 +352,6 @@ export class BrowserSession {
     ).catch(() => undefined);
   }
 
-  get activePage(): Page {
-    return this.active;
-  }
-
   /** Serialize every browser action (agent + human) through one FIFO queue. */
   run<T>(fn: () => Promise<T>): Promise<T> {
     const result = this.queue.then(fn, fn);
