@@ -8,6 +8,12 @@ interface FrameEvent {
   metadata: unknown;
 }
 
+// Frame interval for background-but-visible panels (captureScreenshot poll). ~10fps is
+// smooth enough for a secondary view while bounding CPU; the foreground panel uses the
+// repaint-driven screencast instead. Only VISIBLE non-foreground panels poll, so cost
+// scales with on-screen tabs (usually 1), not total tabs.
+const POLL_MS = 100;
+
 /**
  * One webview panel per browser page — so each browser tab is a native VS Code
  * editor tab, and VS Code's own tab bar is the tab bar (no custom strip, no
@@ -31,9 +37,9 @@ export class BrowserPanel {
    *  while you work elsewhere, yet two visible panels can never both bringToFront. */
   private static foregroundId: string | undefined;
 
-  /** Re-evaluate every panel's streaming after the foreground changes. */
+  /** Re-evaluate every panel's render mode after the foreground changes. */
   private static syncAll(): void {
-    for (const p of BrowserPanel.panels.values()) void p.syncStreaming();
+    for (const p of BrowserPanel.panels.values()) void p.syncRender();
   }
 
   static get(id: string): BrowserPanel | undefined {
@@ -98,7 +104,12 @@ export class BrowserPanel {
   private metrics = { cssW: 0, cssH: 0, dpr: 1 };
   private origin = '';
   private appliedKey = '';
-  private streaming = false;
+  /** 'screencast' = foreground push stream; 'poll' = background captureScreenshot loop
+   *  (renders without being Chrome's foreground, so split tabs stay live); 'off' = hidden. */
+  private renderMode: 'off' | 'screencast' | 'poll' = 'off';
+  private pollTimer: ReturnType<typeof setInterval> | undefined;
+  private vpW = 0;
+  private vpH = 0;
 
   private constructor(
     private context: vscode.ExtensionContext,
@@ -157,20 +168,62 @@ export class BrowserPanel {
    *  to another editor tab in a split doesn't freeze it. `streaming` is set
    *  up-front so a re-entrant view-state change (e.g. from bringing the page to
    *  the front) no-ops instead of looping. */
-  private async syncStreaming(): Promise<void> {
-    // Only the single foreground panel streams (headless composites one page), and only
-    // while it's actually on screen and ready.
-    const shouldStream =
-      BrowserPanel.foregroundId === this.id && this.panel.visible && this.ready;
-    if (shouldStream === this.streaming) return;
-    this.streaming = shouldStream;
-    if (shouldStream) {
-      // Bring this page to the front so it composites (focusPage, not selectPage — no reveal
-      // recursion), then stream. No other panel is foreground, so nothing fights it back.
+  /** Match this panel's render mode to its state: the single foreground panel gets the
+   *  efficient push screencast; any OTHER visible panel gets a captureScreenshot poll (pull
+   *  rendering ignores foreground, so split tabs all stay live); hidden panels render nothing. */
+  private async syncRender(): Promise<void> {
+    const desired: 'off' | 'screencast' | 'poll' =
+      !this.panel.visible || !this.ready
+        ? 'off'
+        : BrowserPanel.foregroundId === this.id
+          ? 'screencast'
+          : 'poll';
+    if (desired === this.renderMode) return;
+    // Tear down the previous mode before starting the next.
+    if (this.renderMode === 'screencast') await this.stopScreencast();
+    else if (this.renderMode === 'poll') this.stopPoll();
+    this.renderMode = desired;
+    if (desired === 'screencast') {
+      // Bring this page to the front so its compositor pushes frames (screencast is
+      // foreground-only); no other panel is foreground, so nothing fights it back.
       await this.session.run(() => this.session.focusPage(this.id)).catch(() => undefined);
       await this.startScreencast();
-    } else {
-      await this.stopScreencast();
+    } else if (desired === 'poll') {
+      this.startPoll();
+    }
+  }
+
+  /** Background-but-visible view: pull a fresh frame with captureScreenshot on a timer.
+   *  Unlike the screencast, this renders a page that isn't Chrome's foreground, so split
+   *  tabs stay live. Reuses the screencastFrame message path so the webview draws it the
+   *  same way. */
+  private startPoll(): void {
+    if (this.pollTimer) return;
+    const tick = async (): Promise<void> => {
+      if (this.renderMode !== 'poll') return;
+      try {
+        const cdp = await this.ensureCdp();
+        const { data } = (await cdp.send('Page.captureScreenshot', {
+          format: 'jpeg',
+          quality: 70,
+        })) as { data: string };
+        if (this.renderMode !== 'poll') return; // mode changed mid-capture
+        void this.panel.webview.postMessage({
+          method: 'Page.screencastFrame',
+          result: { data, metadata: { deviceWidth: this.vpW, deviceHeight: this.vpH } },
+        });
+      } catch {
+        /* page navigating/closed — the next tick retries */
+      }
+    };
+    this.pollTimer = setInterval(() => void tick(), POLL_MS);
+    void tick(); // paint immediately instead of waiting a full interval
+  }
+
+  private stopPoll(): void {
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = undefined;
     }
   }
 
@@ -224,8 +277,10 @@ export class BrowserPanel {
     const key = `${width}x${height}`;
     if (key === this.appliedKey) return;
     this.appliedKey = key;
+    this.vpW = width;
+    this.vpH = height;
     await this.session.run(() => this.session.setViewport(this.page, width, height, 1));
-    if (this.streaming) await this.startScreencast();
+    if (this.renderMode === 'screencast') await this.startScreencast();
   }
 
   private zoomMap(): Record<string, number> {
@@ -368,6 +423,7 @@ export class BrowserPanel {
 
   dispose(): void {
     BrowserPanel.panels.delete(this.id);
+    this.stopPoll();
     // If the foreground tab is closing, release the slot so the next-focused panel can claim
     // it (VS Code focuses an adjacent tab on close, which re-syncs via onDidChangeViewState).
     if (BrowserPanel.foregroundId === this.id) {
