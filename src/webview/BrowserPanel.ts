@@ -25,6 +25,17 @@ export class BrowserPanel {
   /** id (stable page id) -> panel, so lifecycle events can find their panel. */
   private static panels = new Map<string, BrowserPanel>();
 
+  /** Headless Chrome composites only ONE page at a time, so exactly one panel may
+   *  stream. This is that panel's id — set to whichever the user last focused. It
+   *  survives focusing a non-webview editor, so a lone visible panel keeps streaming
+   *  while you work elsewhere, yet two visible panels can never both bringToFront. */
+  private static foregroundId: string | undefined;
+
+  /** Re-evaluate every panel's streaming after the foreground changes. */
+  private static syncAll(): void {
+    for (const p of BrowserPanel.panels.values()) void p.syncStreaming();
+  }
+
   static get(id: string): BrowserPanel | undefined {
     return BrowserPanel.panels.get(id);
   }
@@ -40,13 +51,19 @@ export class BrowserPanel {
   ): BrowserPanel {
     const existing = BrowserPanel.panels.get(id);
     if (existing) {
-      if (reveal) existing.panel.reveal(vscode.ViewColumn.Beside);
+      if (reveal) existing.panel.reveal(undefined, false); // focus it in its own group, don't move it
       return existing;
     }
+    // Stack new tabs in the column an existing cobrowser panel already occupies, so they group
+    // like browser tabs (one visible at a time) instead of spreading across splits — two
+    // simultaneously-visible panels would fight over Chrome's single foreground page.
+    const groupColumn = [...BrowserPanel.panels.values()]
+      .map((p) => p.panel.viewColumn)
+      .find((c) => c != null);
     const panel = vscode.window.createWebviewPanel(
       'cobrowser',
       'Cobrowser',
-      { viewColumn: vscode.ViewColumn.Beside, preserveFocus: !reveal },
+      { viewColumn: groupColumn ?? vscode.ViewColumn.Beside, preserveFocus: !reveal },
       {
         enableScripts: true,
         retainContextWhenHidden: true,
@@ -100,7 +117,12 @@ export class BrowserPanel {
     // elsewhere. It only stops when actually hidden (another tab selected in its
     // own group), where there would be nothing to show anyway.
     this.panel.onDidChangeViewState(
-      () => void this.syncStreaming(),
+      () => {
+        // Focusing a panel makes it the sole foreground streamer; re-sync all so the
+        // previously-streaming one stops (only one page can composite at a time).
+        if (this.panel.active) BrowserPanel.foregroundId = this.id;
+        BrowserPanel.syncAll();
+      },
       null,
       this.disposables,
     );
@@ -136,12 +158,15 @@ export class BrowserPanel {
    *  up-front so a re-entrant view-state change (e.g. from bringing the page to
    *  the front) no-ops instead of looping. */
   private async syncStreaming(): Promise<void> {
-    const shouldStream = this.panel.visible && this.ready;
+    // Only the single foreground panel streams (headless composites one page), and only
+    // while it's actually on screen and ready.
+    const shouldStream =
+      BrowserPanel.foregroundId === this.id && this.panel.visible && this.ready;
     if (shouldStream === this.streaming) return;
     this.streaming = shouldStream;
     if (shouldStream) {
-      // Make this the agent's active page and bring it to the front so it
-      // composites (focusPage, not selectPage — no reveal recursion), then stream.
+      // Bring this page to the front so it composites (focusPage, not selectPage — no reveal
+      // recursion), then stream. No other panel is foreground, so nothing fights it back.
       await this.session.run(() => this.session.focusPage(this.id)).catch(() => undefined);
       await this.startScreencast();
     } else {
@@ -227,7 +252,12 @@ export class BrowserPanel {
         switch (m.type) {
           case 'extension.ready':
             this.ready = true;
-            await this.syncStreaming();
+            // Claim foreground if this panel is focused, or if nothing else holds it yet
+            // (e.g. the first tab, so something streams immediately).
+            if (this.panel.active || BrowserPanel.foregroundId === undefined) {
+              BrowserPanel.foregroundId = this.id;
+            }
+            BrowserPanel.syncAll();
             void this.panel.webview.postMessage({ type: 'extension.url', url: this.page.url() });
             break;
           case 'extension.viewport': {
@@ -338,6 +368,12 @@ export class BrowserPanel {
 
   dispose(): void {
     BrowserPanel.panels.delete(this.id);
+    // If the foreground tab is closing, release the slot so the next-focused panel can claim
+    // it (VS Code focuses an adjacent tab on close, which re-syncs via onDidChangeViewState).
+    if (BrowserPanel.foregroundId === this.id) {
+      BrowserPanel.foregroundId = undefined;
+      BrowserPanel.syncAll();
+    }
     this.page.off('framenavigated', this.onNav);
     if (this.cdp && this.frameHandler) {
       try {
