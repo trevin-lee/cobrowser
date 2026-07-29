@@ -100,7 +100,11 @@ export class BrowserPanel {
   /** Panels restored by VS Code's serializer at startup — the tab shell exists
    *  instantly (like editor tabs); each waits here to be adopted by its page once
    *  the session is up. Keyed by the page URL the webview saved as state. */
-  private static restoredPool: Array<{ panel: vscode.WebviewPanel; url?: string }> = [];
+  private static restoredPool: Array<{
+    panel: vscode.WebviewPanel;
+    url?: string;
+    timer?: ReturnType<typeof setTimeout>;
+  }> = [];
 
   /** Park a deserialized panel until its page exists. Paints the toolbar shell
    *  immediately so the restored tab isn't a blank void while Chrome launches. */
@@ -112,10 +116,21 @@ export class BrowserPanel {
     panel.webview.options = { enableScripts: true };
     panel.iconPath = vscode.Uri.joinPath(context.extensionUri, 'media', 'icon.png');
     panel.webview.html = BrowserPanel.renderHtml(context);
-    const entry = { panel, url };
+    const entry: { panel: vscode.WebviewPanel; url?: string; timer?: ReturnType<typeof setTimeout> } =
+      { panel, url };
+    // Self-destruct if no page claims this shell. VS Code can deserialize panels at any
+    // point — including AFTER the restore sweep has already run — and such a late shell
+    // would otherwise linger forever as a blank tab with an empty URL bar.
+    entry.timer = setTimeout(() => {
+      if (BrowserPanel.restoredPool.includes(entry)) {
+        BrowserPanel.restoredPool = BrowserPanel.restoredPool.filter((e) => e !== entry);
+        panel.dispose();
+      }
+    }, 10_000);
     BrowserPanel.restoredPool.push(entry);
     // If the user closes the placeholder before adoption, forget it.
     panel.onDidDispose(() => {
+      if (entry.timer) clearTimeout(entry.timer);
       BrowserPanel.restoredPool = BrowserPanel.restoredPool.filter((e) => e !== entry);
     });
   }
@@ -128,13 +143,17 @@ export class BrowserPanel {
     if (idx < 0 && url === 'about:blank' && BrowserPanel.restoredPool.length > 0) idx = 0;
     if (idx < 0) return undefined;
     const [entry] = BrowserPanel.restoredPool.splice(idx, 1);
+    if (entry.timer) clearTimeout(entry.timer); // adopted — cancel self-destruct
     return entry.panel;
   }
 
   /** Dispose restored panels no page claimed (their tabs were closed pre-reload,
    *  or the session came back with a different set). */
   static disposeUnclaimedRestored(): void {
-    for (const e of [...BrowserPanel.restoredPool]) e.panel.dispose();
+    for (const e of [...BrowserPanel.restoredPool]) {
+      if (e.timer) clearTimeout(e.timer);
+      e.panel.dispose();
+    }
     BrowserPanel.restoredPool = [];
   }
 
