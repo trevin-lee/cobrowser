@@ -194,3 +194,8 @@ button.icon svg {
 }
 #video[hidden] { display: none; }
 #screen[hidden] { display: none; }
+
+/* The stage is the input target (see BrowserPanel html): it must behave like the
+   surface it contains, not like a focusable div. */
+#stage:focus { outline: none; }
+#stage { user-select: none; }

@@ -41,6 +41,8 @@ interface Box {
 
 let lastVp = '';
 let lastMeta: FrameMetadata = {};
+/** Page CSS viewport while in WebRTC mode (host-supplied); the input coordinate space. */
+let rtcPage = { w: 0, h: 0 };
 
 /** Fire-and-forget command to the host (input events + toolbar actions). */
 function fire(type: string, params?: Record<string, unknown>): void {
@@ -59,6 +61,12 @@ window.addEventListener('message', (event: MessageEvent) => {
   }
   if (m?.method === 'cobrowser.rtcstop') {
     resetVideo();
+    return;
+  }
+  if (m?.method === 'cobrowser.rtcpagesize') {
+    // The page's CSS coordinate space. The video is a 2x recording of it, so its
+    // intrinsic size must NOT be used to place input events.
+    rtcPage = { w: Number(m.width) || 0, h: Number(m.height) || 0 };
     return;
   }
   if (m?.type === 'extension.url') {
@@ -153,6 +161,7 @@ function resetVideo(): void {
   }
   pc = null;
   sigWs = null;
+  rtcPage = { w: 0, h: 0 }; // stale dims must not leak into the fallback path
   videoEl.srcObject = null;
   videoEl.hidden = true;
   canvas.hidden = false;
@@ -221,12 +230,17 @@ function startRtc(cfg: { url: string }): void {
 
 // ----- coordinate mapping: displayed canvas px -> page CSS px -----
 function toPageCoords(e: MouseEvent): { x: number; y: number } {
-  // Map against whichever surface is live: the <video> in WebRTC mode (its intrinsic
-  // size is the captured page), otherwise the canvas.
+  // Map against whichever surface is live. In WebRTC mode the target space is the page's
+  // CSS viewport (supplied by the host) — NOT the video's intrinsic size, which is a 2x
+  // recording of it; using the latter sent every event to double its true position.
   const live = !videoEl.hidden && videoEl.videoWidth > 0;
   const rect = (live ? videoEl : canvas).getBoundingClientRect();
-  const deviceWidth = live ? videoEl.videoWidth : lastMeta.deviceWidth || canvas.width;
-  const deviceHeight = live ? videoEl.videoHeight : lastMeta.deviceHeight || canvas.height;
+  const deviceWidth = live
+    ? rtcPage.w || videoEl.videoWidth
+    : lastMeta.deviceWidth || canvas.width;
+  const deviceHeight = live
+    ? rtcPage.h || videoEl.videoHeight
+    : lastMeta.deviceHeight || canvas.height;
   // Clamp: drags tracked at window level can leave the canvas — pin them to the
   // page edge (matches how a real browser selects when you drag past the window).
   const fx = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
@@ -275,8 +289,8 @@ function sendMove(e: MouseEvent): void {
   });
 }
 
-canvas.addEventListener('mousedown', (e) => {
-  canvas.focus();
+stage.addEventListener('mousedown', (e) => {
+  stage.focus();
   dragging = true;
   const { x, y } = toPageCoords(e);
   fire('Input.dispatchMouseEvent', {
@@ -323,7 +337,7 @@ ctxMenu.id = 'ctxmenu';
 ctxMenu.hidden = true;
 document.body.appendChild(ctxMenu);
 
-canvas.addEventListener('contextmenu', (e) => {
+stage.addEventListener('contextmenu', (e) => {
   e.preventDefault();
   const { x, y } = toPageCoords(e);
   fire('extension.contextinfo', { x, y, clientX: e.clientX, clientY: e.clientY });
@@ -383,7 +397,7 @@ function showMenu(at: { clientX: number; clientY: number }, hasSelection: boolea
   ctxMenu.style.top = Math.max(0, Math.min(at.clientY, window.innerHeight - ctxMenu.offsetHeight - 4)) + 'px';
 }
 
-canvas.addEventListener(
+stage.addEventListener(
   'wheel',
   (e) => {
     e.preventDefault();
@@ -403,7 +417,7 @@ canvas.addEventListener(
 );
 
 // ----- keyboard -----
-canvas.addEventListener('keydown', (e) => {
+stage.addEventListener('keydown', (e) => {
   // ⌘/Ctrl +/-/0 → per-site zoom, don't forward to the page.
   if (e.metaKey || e.ctrlKey) {
     if (e.key === '=' || e.key === '+') { e.preventDefault(); fire('extension.zoom', { dir: 'in' }); return; }
@@ -432,7 +446,7 @@ canvas.addEventListener('keydown', (e) => {
   }
 });
 
-canvas.addEventListener('keyup', (e) => {
+stage.addEventListener('keyup', (e) => {
   fire('Input.dispatchKeyEvent', {
     type: 'keyUp',
     key: e.key,
@@ -445,7 +459,7 @@ canvas.addEventListener('keyup', (e) => {
 // Paste (⌘V/Ctrl+V): the canvas isn't a real input, and a headless browser has no system
 // clipboard, so forward the clipboard text and inject it into the page's focused field.
 window.addEventListener('paste', (e: ClipboardEvent) => {
-  if (document.activeElement !== canvas) return; // let the URL bar paste normally
+  if (!stage.contains(document.activeElement)) return; // let the URL bar paste normally
   const text = e.clipboardData?.getData('text/plain');
   if (text) {
     e.preventDefault();
