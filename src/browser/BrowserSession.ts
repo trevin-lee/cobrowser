@@ -251,7 +251,46 @@ export class BrowserSession {
    * The CDP session is kept in `authSessions` for the page's lifetime — the
    * virtual authenticator is bound to it and would vanish if it detached.
    */
+  /**
+   * Describe ourselves accurately: this IS an ordinary Chrome rendering real pages for
+   * a human, but headless defaults advertise otherwise — the UA literally contains
+   * "HeadlessChrome" and the client-hint brands say unbranded "Chromium". Sites match
+   * those strings and serve CAPTCHA walls instead of content. Rewrite both to the plain
+   * Chrome equivalent of the SAME build (version taken from the real UA, never invented),
+   * so the only thing that changes is the false "I am headless" claim.
+   */
+  private async fixUserAgent(page: Page): Promise<void> {
+    try {
+      const real = await withTimeout(this.browser.version(), 2000); // "HeadlessChrome/151.0.7922.47"
+      const full = /[\d.]+/.exec(real ?? '')?.[0] ?? '';
+      const major = full.split('.')[0] || '151';
+      const ua =
+        `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ` +
+        `(KHTML, like Gecko) Chrome/${full || major + '.0.0.0'} Safari/537.36`;
+      await withTimeout(
+        page.setUserAgent(ua, {
+          // Client hints must agree with the UA string; a mismatch is itself a signal.
+          brands: [
+            { brand: 'Chromium', version: major },
+            { brand: 'Google Chrome', version: major },
+            { brand: 'Not=A?Brand', version: '99' },
+          ],
+          fullVersion: full,
+          platform: 'macOS',
+          platformVersion: '15.0.0',
+          architecture: 'arm',
+          model: '',
+          mobile: false,
+        }),
+        3000,
+      );
+    } catch {
+      /* UA override unsupported — cosmetic only, keep going */
+    }
+  }
+
   private async prepPage(page: Page): Promise<void> {
+    void this.fixUserAgent(page); // independent of the passkey work below
     if (!this.autoFallbackPasskeys || this.authSessions.has(page)) return;
     try {
       // Every await is timeout-bounded: a hung/unresponsive page must never
@@ -357,6 +396,32 @@ export class BrowserSession {
       page.setViewport({ width, height, deviceScaleFactor: deviceScaleFactor || 1 }),
       3000,
     ).catch(() => undefined);
+    // Headless keeps a stock 800x600 phantom screen, so sizing the viewport to the panel
+    // (device pixels, for crisp text) leaves window.innerWidth LARGER than screen.width —
+    // physically impossible on real hardware, and a giveaway that reads as "scripted".
+    // Report a screen that plausibly contains the viewport instead.
+    try {
+      const cdp = this.authSessions.get(page) ?? (await withTimeout(page.createCDPSession(), 2000));
+      if (!cdp) return;
+      const screenWidth = Math.max(width, 1512);
+      const screenHeight = Math.max(height, 982);
+      await withTimeout(
+        cdp.send('Emulation.setDeviceMetricsOverride', {
+          width,
+          height,
+          deviceScaleFactor: deviceScaleFactor || 1,
+          mobile: false,
+          screenWidth,
+          screenHeight,
+          // Sit the window at a natural offset below the menu bar rather than 0,0.
+          positionX: 0,
+          positionY: 25,
+        }),
+        2000,
+      );
+    } catch {
+      /* emulation unsupported — the viewport itself is already applied */
+    }
   }
 
   /** Serialize every browser action (agent + human) through one FIFO queue. */

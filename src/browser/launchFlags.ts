@@ -44,6 +44,13 @@ export function resolveLaunchOptions(
     args: [
       '--no-first-run',
       '--no-default-browser-check',
+      // Present as the ordinary browser this is. Headless Chromium otherwise sets
+      // navigator.webdriver = true and ships an "Automation" blink feature set, which
+      // sites read as "scripted client" and answer with CAPTCHA walls — even for a
+      // human reading a page in the panel. (The UA string is corrected per-page in
+      // prepPage, since it must carry a real Chrome version + client hints.)
+      '--disable-blink-features=AutomationControlled',
+      '--lang=en-US,en',
       // Reopen the previous session's tabs on relaunch, so an editor reload (which closes
       // the browser) doesn't lose your open tabs. Verified to work in headless.
       '--restore-last-session',
