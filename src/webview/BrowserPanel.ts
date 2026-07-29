@@ -9,11 +9,14 @@ interface FrameEvent {
   metadata: unknown;
 }
 
-// Frame interval for background-but-visible panels (captureScreenshot poll). ~10fps is
-// smooth enough for a secondary view while bounding CPU; the foreground panel uses the
-// repaint-driven screencast instead. Only VISIBLE non-foreground panels poll, so cost
-// scales with on-screen tabs (usually 1), not total tabs.
-const POLL_MS = 100;
+// Adaptive frame intervals for background-but-visible panels (captureScreenshot poll).
+// ~30fps while the page is actually changing (capture keeps up even at retina sizes —
+// measured ~36fps at 2400x1500), backing off to ~4fps once frames repeat so a static
+// page costs almost nothing. Identical frames are never posted to the webview. Only
+// VISIBLE non-foreground panels poll, so cost scales with on-screen tabs, not total.
+const POLL_FAST_MS = 33;
+const POLL_SLOW_MS = 250;
+const POLL_IDLE_AFTER = 5; // consecutive identical frames before backing off
 
 /**
  * One webview panel per browser page — so each browser tab is a native VS Code
@@ -216,10 +219,16 @@ export class BrowserPanel {
    *  Unlike the screencast, this renders a page that isn't Chrome's foreground, so split
    *  tabs stay live. Reuses the screencastFrame message path so the webview draws it the
    *  same way. */
+  private lastPollFrame = '';
+  private pollIdleCount = 0;
+
   private startPoll(): void {
     if (this.pollTimer) return;
-    const tick = async (): Promise<void> => {
+    this.lastPollFrame = ''; // always paint the first frame on (re)entry
+    this.pollIdleCount = 0;
+    const loop = async (): Promise<void> => {
       if (this.renderMode !== 'poll') return;
+      let delay = POLL_FAST_MS;
       try {
         const cdp = await this.ensureCdp();
         const { data } = (await cdp.send('Page.captureScreenshot', {
@@ -227,21 +236,29 @@ export class BrowserPanel {
           quality: 60, // secondary view — a touch lower than the foreground stream
         })) as { data: string };
         if (this.renderMode !== 'poll') return; // mode changed mid-capture
-        void this.panel.webview.postMessage({
-          method: 'Page.screencastFrame',
-          result: { data, metadata: { deviceWidth: this.vpW, deviceHeight: this.vpH } },
-        });
+        if (data === this.lastPollFrame) {
+          // Page is static — don't re-send identical pixels, and back off the rate.
+          this.pollIdleCount++;
+          if (this.pollIdleCount >= POLL_IDLE_AFTER) delay = POLL_SLOW_MS;
+        } else {
+          this.pollIdleCount = 0;
+          this.lastPollFrame = data;
+          void this.panel.webview.postMessage({
+            method: 'Page.screencastFrame',
+            result: { data, metadata: { deviceWidth: this.vpW, deviceHeight: this.vpH } },
+          });
+        }
       } catch {
-        /* page navigating/closed — the next tick retries */
+        delay = POLL_SLOW_MS; // page navigating/closed — retry gently
       }
+      this.pollTimer = setTimeout(() => void loop(), delay);
     };
-    this.pollTimer = setInterval(() => void tick(), POLL_MS);
-    void tick(); // paint immediately instead of waiting a full interval
+    this.pollTimer = setTimeout(() => void loop(), 0);
   }
 
   private stopPoll(): void {
     if (this.pollTimer) {
-      clearInterval(this.pollTimer);
+      clearTimeout(this.pollTimer);
       this.pollTimer = undefined;
     }
   }
