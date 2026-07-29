@@ -52,6 +52,9 @@ export class BrowserSession {
   /** Stable per-page id, so panels and the agent can refer to a tab across
    *  opens/closes (indices shift; these don't). */
   private ids = new Map<Page, string>();
+  /** Infrastructure pages (e.g. the video-capture controller) — excluded from the
+   *  agent's tab list, panels, persistence, and the last-tab-quit heuristic. */
+  private internalPages = new Set<Page>();
   private idSeq = 0;
 
   /** Per-page CDP session holding a virtual WebAuthn authenticator, so passkey
@@ -142,6 +145,7 @@ export class BrowserSession {
         try {
           const page = await target.page();
           if (!page) return; // not a page target
+          if (session.internalPages.has(page)) return; // infrastructure, not a user tab
           const id = session.idFor(page);
           session.pushEvent('tab-opened', id, page.url());
           await session.prepPage(page); // fail-fast passkeys before any site script runs
@@ -171,7 +175,9 @@ export class BrowserSession {
             }
           }
           session.pagesChangedCb?.();
-          const open = (await browser.pages()).filter((p) => !p.isClosed());
+          const open = (await browser.pages()).filter(
+            (p) => !p.isClosed() && !session.internalPages.has(p),
+          );
           if (open.length === 0) {
             // Last tab closed → quit the whole Chrome instance (onDisconnected then
             // clears the session, so the next new tab relaunches a fresh browser).
@@ -384,7 +390,7 @@ export class BrowserSession {
   // ----- tool-facing operations (uid model mirrors chrome-devtools-mcp naming) -----
 
   async listPages(): Promise<PageInfo[]> {
-    const pages = await this.browser.pages();
+    const pages = (await this.browser.pages()).filter((p) => !this.internalPages.has(p));
     const infos: PageInfo[] = [];
     for (let i = 0; i < pages.length; i++) {
       const p = pages[i];
@@ -428,6 +434,20 @@ export class BrowserSession {
       title: await page.title().catch(() => ''),
       selected: page === this.active,
     };
+  }
+
+  /** Open an infrastructure page (own window) that is invisible to the agent's tab
+   *  list, panels, persistence, and last-tab-quit — used by the video-capture hub. */
+  async createInternalPage(url: string): Promise<Page> {
+    this.suppressOpen++;
+    try {
+      const page = await this.createPageInNewWindow();
+      this.internalPages.add(page);
+      await page.goto(url, { waitUntil: 'domcontentloaded' }).catch(() => undefined);
+      return page;
+    } finally {
+      this.suppressOpen--;
+    }
   }
 
   /** Open each page in its OWN headless window (Target.createTarget newWindow), not as

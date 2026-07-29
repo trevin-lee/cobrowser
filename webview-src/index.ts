@@ -52,6 +52,18 @@ window.addEventListener('message', (event: MessageEvent) => {
     onFrame(m as { bytes: Uint8Array | ArrayBuffer; metadata: FrameMetadata });
     return;
   }
+  if (m?.method === 'cobrowser.h264config') {
+    configureVideo(m as { codec: string; width: number; height: number; description: string | null });
+    return;
+  }
+  if (m?.method === 'cobrowser.h264') {
+    onVideoChunk(m as { type: 'key' | 'delta'; ts: number; bytes: Uint8Array | ArrayBuffer });
+    return;
+  }
+  if (m?.method === 'cobrowser.h264reset') {
+    resetVideo();
+    return;
+  }
   if (m?.type === 'extension.url') {
     // Don't clobber what the user is typing.
     if (document.activeElement !== urlInput) urlInput.value = m.url;
@@ -121,6 +133,78 @@ async function renderFrame(frame: BinaryFrame): Promise<void> {
     bmp.close();
   } catch {
     /* malformed/torn frame — skip it, the next one repaints */
+  }
+}
+
+// ----- hardware-video path: H.264 chunks decoded by VideoDecoder (hardware) -----
+let videoDecoder: VideoDecoder | null = null;
+let awaitingKeyframe = true;
+
+function b64ToBytes(s: string): Uint8Array {
+  const bin = atob(s);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function resetVideo(): void {
+  try {
+    videoDecoder?.close();
+  } catch {
+    /* already closed */
+  }
+  videoDecoder = null;
+  awaitingKeyframe = true;
+}
+
+function configureVideo(cfg: { codec: string; width: number; height: number; description: string | null }): void {
+  resetVideo();
+  try {
+    videoDecoder = new VideoDecoder({
+      output: (frame: VideoFrame) => {
+        if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
+          canvas.width = frame.displayWidth;
+          canvas.height = frame.displayHeight;
+        }
+        // The stream is the tab at device resolution, same mapping as the screencast.
+        lastMeta = { deviceWidth: frame.displayWidth, deviceHeight: frame.displayHeight };
+        ctx.drawImage(frame, 0, 0);
+        frame.close();
+      },
+      error: () => {
+        resetVideo();
+        fire('extension.videoerror'); // host falls back to the JPEG screencast
+      },
+    });
+    videoDecoder.configure({
+      codec: cfg.codec,
+      codedWidth: cfg.width,
+      codedHeight: cfg.height,
+      description: cfg.description ? b64ToBytes(cfg.description) : undefined,
+      hardwareAcceleration: 'prefer-hardware',
+    } as VideoDecoderConfig);
+    awaitingKeyframe = true;
+  } catch {
+    resetVideo();
+    fire('extension.videoerror');
+  }
+}
+
+function onVideoChunk(m: { type: 'key' | 'delta'; ts: number; bytes: Uint8Array | ArrayBuffer }): void {
+  if (!videoDecoder || videoDecoder.state !== 'configured') return;
+  if (awaitingKeyframe && m.type !== 'key') return; // can't start mid-GOP
+  awaitingKeyframe = false;
+  try {
+    videoDecoder.decode(
+      new EncodedVideoChunk({
+        type: m.type,
+        timestamp: m.ts,
+        data: m.bytes as BufferSource,
+      }),
+    );
+  } catch {
+    resetVideo();
+    fire('extension.videoerror');
   }
 }
 

@@ -48,6 +48,10 @@ export function resolveLaunchOptions(
       // the browser) doesn't lose your open tabs. Verified to work in headless.
       '--restore-last-session',
       ...(headless ? ['--window-size=1280,800'] : []),
+      // Auto-approve getDisplayMedia tab-capture for the video pipeline's hidden
+      // controller page: any tab briefly titled with this magic string is selected
+      // without a picker (headless has no picker UI). Inert unless capture runs.
+      '--auto-select-tab-capture-source-by-title=__cobrowser_capture__',
       // Opt-in beyond-60fps: headless self-paces its compositor at 60 (no real monitor).
       // Removing the limit lifts the screencast to ~90-100fps (JPEG-encode ceiling), but
       // rAF-driven pages then render THOUSANDS of frames/s (measured 6867) — heavy CPU

@@ -2,7 +2,7 @@
   "name": "cobrowser",
   "displayName": "Cobrowser",
   "description": "An embedded, agent-controllable browser inside your editor — co-driven by you (webview) and your AI agent (MCP).",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "publisher": "trevin-lee",
   "private": true,
   "license": "MIT",
@@ -109,6 +109,14 @@
           "default": 0,
           "description": "Localhost port for the in-process MCP server. 0 (default) = pick a free port automatically and remember it per-workspace, so every window/repo gets its own stable endpoint and two windows never collide (which would make agents drive each other's browsers). Set a specific number only to pin a port for one workspace."
         },
+        "cobrowser.videoPipeline": {
+          "type": "boolean",
+          "default": false,
+          "description": "EXPERIMENTAL: render panels via hardware H.264 video (WebCodecs tab-capture) instead of per-frame JPEG — ~100x less bandwidth and near-zero CPU, smoother under motion. Panels fall back to the JPEG screencast automatically if capture fails. Takes effect when a panel next starts streaming (hide/show it, or reload).",
+          "tags": [
+            "experimental"
+          ]
+        },
         "cobrowser.uncapFrameRate": {
           "type": "boolean",
           "default": false,
@@ -136,12 +144,14 @@
   },
   "dependencies": {
     "@puppeteer/browsers": "^2.13.2",
-    "puppeteer-core": "^24.10.0"
+    "puppeteer-core": "^24.10.0",
+    "ws": "^8.21.1"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
     "@types/node": "^22.10.0",
     "@types/vscode": "^1.101.0",
+    "@types/ws": "^8.18.1",
     "@vscode/vsce": "^3.2.0",
     "esbuild": "^0.24.2",
     "ovsx": "^0.10.0",

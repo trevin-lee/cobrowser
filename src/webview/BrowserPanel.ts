@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as fs from 'node:fs';
 import type { CDPSession, Page } from 'puppeteer-core';
 import type { BrowserSession, ElementBox } from '../browser/BrowserSession';
+import type { CaptureHub, VideoHeader } from '../video/CaptureHub';
 
 interface FrameEvent {
   data: string;
@@ -51,6 +52,16 @@ export class BrowserPanel {
   /** Notified on any panel view-state change, so the host can persist the layout
    *  (a panel dragged to another editor group doesn't fire any session event). */
   static onLayoutChanged: (() => void) | undefined;
+
+  /** Hardware-video pipeline (H.264 over WebSocket). When enabled, visible panels
+   *  try video first and fall back to the JPEG screencast on any failure. */
+  static videoHub: CaptureHub | undefined;
+  static videoEnabled = false;
+
+  /** Route an encoded-video message from the hub to its panel's webview. */
+  static routeVideo(header: VideoHeader, payload: Buffer | undefined): void {
+    BrowserPanel.panels.get(header.pageId)?.postVideo(header, payload);
+  }
 
   /** Inlined webview assets (CSS/JS), read ONCE and cached in memory. */
   private static assetCache: { css: string; js: string } | undefined;
@@ -174,6 +185,8 @@ export class BrowserPanel {
   private origin = '';
   private appliedKey = '';
   private streaming = false;
+  /** True while this panel renders via the H.264 pipeline instead of the screencast. */
+  private videoMode = false;
 
   private constructor(
     private context: vscode.ExtensionContext,
@@ -241,9 +254,47 @@ export class BrowserPanel {
       await this.session.run(() => this.session.focusPage(this.id)).catch(() => undefined);
       this.appliedKey = '';
       void this.panel.webview.postMessage({ type: 'extension.remeasure' });
+      // Prefer the hardware-video pipeline when enabled; any failure (controller,
+      // capture, encoder) falls straight back to the JPEG screencast.
+      if (BrowserPanel.videoEnabled && BrowserPanel.videoHub) {
+        const ok = await BrowserPanel.videoHub.start(this.id, this.page);
+        if (ok && this.streaming) {
+          this.videoMode = true;
+          return;
+        }
+      }
       await this.startScreencast();
+    } else if (this.videoMode) {
+      this.videoMode = false;
+      BrowserPanel.videoHub?.stop(this.id);
+      void this.panel.webview.postMessage({ method: 'cobrowser.h264reset' });
     } else {
       await this.stopScreencast();
+    }
+  }
+
+  /** Forward encoded video (config or chunk) to the webview's VideoDecoder. */
+  private postVideo(header: VideoHeader, payload: Buffer | undefined): void {
+    if (!this.videoMode) return;
+    if (header.kind === 'config') {
+      void this.panel.webview.postMessage({
+        method: 'cobrowser.h264config',
+        codec: header.codec,
+        width: header.width,
+        height: header.height,
+        description: header.description ?? null,
+      });
+    } else if (header.kind === 'chunk' && payload) {
+      void this.panel.webview.postMessage({
+        method: 'cobrowser.h264',
+        type: header.type,
+        ts: header.ts,
+        bytes: new Uint8Array(payload.buffer, payload.byteOffset, payload.byteLength),
+      });
+    } else if (header.kind === 'error') {
+      // Capture died mid-stream (site revoked, encoder error) — fall back live.
+      this.videoMode = false;
+      void this.startScreencast();
     }
   }
 
@@ -345,6 +396,12 @@ export class BrowserPanel {
             this.ready = true;
             await this.syncRender();
             void this.panel.webview.postMessage({ type: 'extension.url', url: this.page.url() });
+            break;
+          case 'extension.videoerror':
+            // The webview's decoder failed — abandon video for this panel, fall back.
+            this.videoMode = false;
+            BrowserPanel.videoHub?.stop(this.id);
+            await this.startScreencast();
             break;
           case 'extension.contextinfo': {
             // Right-click: report what's under the cursor (selection / link) so the
@@ -520,6 +577,7 @@ export class BrowserPanel {
 
   dispose(): void {
     BrowserPanel.panels.delete(this.id);
+    if (this.videoMode) BrowserPanel.videoHub?.stop(this.id);
     this.page.off('framenavigated', this.onNav);
     if (this.cdp && this.frameHandler) {
       try {

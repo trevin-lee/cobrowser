@@ -9,6 +9,7 @@ import { startMcpHttpServer, type McpHttp } from './mcp/server';
 import { BrowserPanel } from './webview/BrowserPanel';
 import { SessionTreeProvider } from './webview/SessionTreeProvider';
 import { writeClientConfigs } from './clients/writeClientConfigs';
+import { CaptureHub } from './video/CaptureHub';
 
 const PID_KEY = 'cobrowser.browserPid';
 const BUILD_ID_KEY = 'cobrowser.chromeBuildId';
@@ -82,6 +83,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // Activity Bar sidebar: profile(s) + their open tabs. Created before getSession
   // so its `() => session` closure is always initialized when first read.
+  // Assigned after the MCP HTTP server is up (shares its port); wire() below runs
+  // later than that in practice, but keep the reference optional to stay safe.
+  let captureHub: CaptureHub | undefined;
+
   const tree = new SessionTreeProvider(
     { label: vscode.workspace.name ?? 'Default', path: profileDir },
     () => session,
@@ -92,6 +97,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // existing pages. Shared by launch (getSession) and reconnect-on-activate.
   const wire = async (s: BrowserSession): Promise<BrowserSession> => {
     session = s;
+    captureHub?.setSession(s); // old controller page died with the old Chrome
     const pid = s.pid();
     if (pid !== undefined) await context.globalState.update(PID_KEY, pid);
     await context.workspaceState.update(WAS_RUNNING_KEY, true);
@@ -243,6 +249,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // In-process MCP server (per-request stateless transport).
   mcp = await startMcpHttpServer(token, preferredPort, predecessorPid, getSession, log);
+
+  // Hardware-video pipeline (experimental, cobrowser.videoPipeline): a hidden in-browser
+  // controller captures tabs and streams WebCodecs H.264 over a WebSocket on the SAME
+  // port/token as the MCP server; panels fall back to the JPEG screencast on any failure.
+  captureHub = new CaptureHub(
+    token,
+    vscode.Uri.joinPath(context.extensionUri, 'media', 'capture.html').fsPath,
+    log,
+  );
+  captureHub.attach(mcp.httpServer, mcp.port);
+  captureHub.onFrame((h, payload) => BrowserPanel.routeVideo(h, payload));
+  if (session) captureHub.setSession(session); // session may already exist (fast restore)
+  BrowserPanel.videoHub = captureHub;
+  BrowserPanel.videoEnabled = cfg.get<boolean>('videoPipeline', false);
+  const hubRef = captureHub;
+  context.subscriptions.push({ dispose: () => hubRef.dispose() });
   // Remember the port we actually bound so the next reload of THIS workspace reuses it
   // (stable URL). Skip when the user pinned a port — that's already fixed by config.
   if (pinnedPort <= 0) await context.workspaceState.update(PORT_KEY, mcp.port);

@@ -7,6 +7,9 @@ import { bindPort } from '../util/ports';
 
 export interface McpHttp {
   port: number;
+  /** Exposed so the video-capture relay can attach a WebSocket upgrade handler
+   *  to the same localhost port (one port, one token, per workspace). */
+  httpServer: http.Server;
   close(): Promise<void>;
 }
 
@@ -101,6 +104,7 @@ export async function startMcpHttpServer(
 
   return {
     port,
+    httpServer,
     close: () =>
       new Promise<void>((resolve) => {
         // Destroy live sockets first so the listener actually releases the port

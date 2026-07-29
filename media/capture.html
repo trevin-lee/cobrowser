@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<!--
+  Hidden video-capture controller (one per browser, invisible to the agent/tab UI).
+
+  For each page the extension asks us to capture: getDisplayMedia grabs that tab's
+  MediaStream (the tab is briefly titled with the magic string that
+  ‑-auto-select-tab-capture-source-by-title auto-approves), WebCodecs encodes it with
+  the HARDWARE H.264 encoder, and encoded chunks stream to the extension host over a
+  WebSocket — ~2-5KB deltas instead of ~460KB JPEGs, at negligible CPU.
+
+  Wire format (controller -> host), one binary frame per message:
+    [u32le headerLen][header JSON][payload?]
+    header: { pageId, kind: 'chunk'|'config'|'started'|'error', ... }
+  Host -> controller: JSON text { cmd: 'start'|'stop'|'keyframe', pageId }.
+-->
+<html>
+<head><meta charset="utf-8"><title>cobrowser capture controller</title></head>
+<body>
+<script>
+'use strict';
+const params = new URLSearchParams(location.search);
+const PORT = params.get('port');
+const TOKEN = params.get('token');
+
+/** pageId -> { track, reader, enc, forceKey, width, height, stopped } */
+const captures = new Map();
+let ws;
+
+function send(header, payload) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const head = new TextEncoder().encode(JSON.stringify(header));
+  const out = new Uint8Array(4 + head.length + (payload ? payload.byteLength : 0));
+  new DataView(out.buffer).setUint32(0, head.length, true);
+  out.set(head, 4);
+  if (payload) out.set(new Uint8Array(payload), 4 + head.length);
+  ws.send(out);
+}
+
+function b64(buf) {
+  let s = '';
+  const bytes = new Uint8Array(buf);
+  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+  return btoa(s);
+}
+
+async function start(pageId) {
+  if (captures.has(pageId)) return;
+  const state = { stopped: false, forceKey: false, width: 0, height: 0, enc: null, track: null };
+  captures.set(pageId, state);
+  try {
+    // The target tab currently carries the magic title, so the flag auto-selects it.
+    const stream = await navigator.mediaDevices.getDisplayMedia({
+      video: { frameRate: { ideal: 60 }, width: { max: 8192 }, height: { max: 8192 } },
+      audio: false,
+    });
+    const track = stream.getVideoTracks()[0];
+    state.track = track;
+    send({ pageId, kind: 'started' });
+    track.addEventListener('ended', () => stop(pageId));
+
+    const configure = (w, h) => {
+      state.width = w;
+      state.height = h;
+      const enc = new VideoEncoder({
+        output: (chunk, meta) => {
+          if (meta && meta.decoderConfig) {
+            const dc = meta.decoderConfig;
+            send({
+              pageId, kind: 'config', codec: dc.codec,
+              width: dc.codedWidth || w, height: dc.codedHeight || h,
+              description: dc.description ? b64(dc.description) : null,
+            });
+          }
+          const data = new ArrayBuffer(chunk.byteLength);
+          chunk.copyTo(data);
+          send({ pageId, kind: 'chunk', type: chunk.type, ts: chunk.timestamp }, data);
+        },
+        error: (e) => send({ pageId, kind: 'error', message: 'encoder: ' + e.message }),
+      });
+      enc.configure({
+        codec: 'avc1.640028',
+        width: w, height: h,
+        bitrate: 12_000_000, // generous: text must stay crisp; deltas stay small anyway
+        framerate: 60,
+        latencyMode: 'realtime',
+        hardwareAcceleration: 'prefer-hardware',
+      });
+      return enc;
+    };
+
+    const reader = new MediaStreamTrackProcessor({ track }).readable.getReader();
+    state.reader = reader;
+    let n = 0;
+    while (!state.stopped) {
+      const { value: frame, done } = await reader.read();
+      if (done || state.stopped) { if (frame) frame.close(); break; }
+      const w = frame.codedWidth, h = frame.codedHeight;
+      if (!state.enc || w !== state.width || h !== state.height) {
+        // First frame or the tab was resized: (re)configure; the new decoderConfig
+        // flows to the decoder via the next 'config' message automatically.
+        if (state.enc) { try { state.enc.close(); } catch (_) {} }
+        state.enc = configure(w, h);
+        state.forceKey = true;
+      }
+      // Backpressure: drop frames rather than queue when the encoder or socket lags.
+      if (state.enc.encodeQueueSize > 2 || (ws && ws.bufferedAmount > 8_000_000)) {
+        frame.close();
+        continue;
+      }
+      n++;
+      const key = state.forceKey || n % 120 === 1;
+      state.forceKey = false;
+      state.enc.encode(frame, { keyFrame: key });
+      frame.close();
+    }
+  } catch (err) {
+    send({ pageId, kind: 'error', message: String((err && err.message) || err) });
+    stop(pageId);
+  }
+}
+
+function stop(pageId) {
+  const s = captures.get(pageId);
+  if (!s) return;
+  s.stopped = true;
+  try { if (s.reader) s.reader.cancel(); } catch (_) {}
+  try { if (s.track) s.track.stop(); } catch (_) {}
+  try { if (s.enc) s.enc.close(); } catch (_) {}
+  captures.delete(pageId);
+}
+
+function connect() {
+  ws = new WebSocket('ws://127.0.0.1:' + PORT + '/capture?token=' + encodeURIComponent(TOKEN));
+  ws.binaryType = 'arraybuffer';
+  ws.onmessage = (ev) => {
+    let m;
+    try { m = JSON.parse(ev.data); } catch (_) { return; }
+    if (m.cmd === 'start') void start(m.pageId);
+    else if (m.cmd === 'stop') stop(m.pageId);
+    else if (m.cmd === 'keyframe') { const s = captures.get(m.pageId); if (s) s.forceKey = true; }
+  };
+  ws.onclose = () => setTimeout(connect, 1000); // host restarted — reconnect
+}
+connect();
+</script>
+</body>
+</html>
