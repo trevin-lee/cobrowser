@@ -2,7 +2,7 @@
   "name": "cobrowser",
   "displayName": "Cobrowser",
   "description": "An embedded, agent-controllable browser inside your editor — co-driven by you (webview) and your AI agent (MCP).",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "publisher": "trevin-lee",
   "private": true,
   "license": "MIT",
@@ -108,6 +108,14 @@
           "type": "number",
           "default": 0,
           "description": "Localhost port for the in-process MCP server. 0 (default) = pick a free port automatically and remember it per-workspace, so every window/repo gets its own stable endpoint and two windows never collide (which would make agents drive each other's browsers). Set a specific number only to pin a port for one workspace."
+        },
+        "cobrowser.uncapFrameRate": {
+          "type": "boolean",
+          "default": false,
+          "description": "Remove headless Chrome's 60fps compositor cap so panels stream at up to ~90-100fps (the JPEG-encode ceiling). COSTLY: pages that animate via requestAnimationFrame will render thousands of frames per second internally (measured ~6800), pegging CPU and draining battery — leave off unless plugged in and chasing maximum smoothness. Takes effect after 'Cobrowser: Restart Browser'.",
+          "tags": [
+            "experimental"
+          ]
         },
         "cobrowser.autoFallbackPasskeys": {
           "type": "boolean",

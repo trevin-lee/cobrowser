@@ -208,7 +208,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         BrowserPanel.planColumns(savedTabs.map((t) => t.col));
         await cleanupOrphan(context, profileDir, log);
         const chromePath = await ensureChrome(context, cfg, log);
-        const s = await BrowserSession.launch(profileDir, chromePath, headless, autoFallbackPasskeys);
+        const s = await BrowserSession.launch(
+          profileDir,
+          chromePath,
+          headless,
+          autoFallbackPasskeys,
+          cfg.get<boolean>('uncapFrameRate', false),
+        );
         log(`Chromium launched (pid ${s.pid() ?? '?'}), profile ${profileDir}`);
         const wired = await wire(s);
         void restoreTabs(wired, savedTabs);

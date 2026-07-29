@@ -94,9 +94,10 @@ export class BrowserSession {
     chromePath: string,
     headless = true,
     autoFallbackPasskeys = true,
+    uncapFrameRate = false,
   ): Promise<BrowserSession> {
     const browser = await puppeteer.launch({
-      ...resolveLaunchOptions(profileDir, chromePath, headless),
+      ...resolveLaunchOptions(profileDir, chromePath, headless, uncapFrameRate),
       // Don't let puppeteer kill Chrome when the extension host dies/reloads — we detach
       // (disconnect) on reload and reconnect to the same browser, so tabs are never lost.
       handleSIGINT: false,
