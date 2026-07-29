@@ -58,7 +58,44 @@ async function start(pageId) {
     send({ pageId, kind: 'started' });
     track.addEventListener('ended', () => stop(pageId));
 
-    const configure = (w, h) => {
+    // H.264 levels cap the CODED AREA, and a retina panel blows past the low ones (a
+    // hardcoded level 4.0 capped us at 1920x1088 and rejected every frame). Walk levels
+    // upward and take the lowest that supports this size with hardware encode.
+    const LEVELS = [
+      'avc1.640028', // 4.0
+      'avc1.64002A', // 4.2
+      'avc1.640032', // 5.0
+      'avc1.640033', // 5.1
+      'avc1.640034', // 5.2
+      'avc1.64003C', // 6.0
+      'avc1.64003E', // 6.2
+    ];
+    const pickCodec = async (w, h) => {
+      for (const codec of LEVELS) {
+        for (const hw of ['prefer-hardware', 'no-preference']) {
+          try {
+            const s = await VideoEncoder.isConfigSupported({
+              codec, width: w, height: h, bitrate: 12_000_000,
+              framerate: 60, latencyMode: 'realtime', hardwareAcceleration: hw,
+            });
+            if (s.supported) return { codec, hw };
+          } catch (_) { /* invalid combo — keep looking */ }
+        }
+      }
+      return null;
+    };
+
+    // Even the top level can't take a full double-DPR panel (measured: 2724x3936 is
+    // unsupported at every level), so clamp the captured stream to something the
+    // hardware encoder accepts, preserving aspect ratio.
+    const MAX_AREA = 8_294_400; // 3840x2160
+    const fitted = (w, h) => {
+      if (w * h <= MAX_AREA && w <= 4096 && h <= 4096) return null;
+      const s = Math.min(Math.sqrt(MAX_AREA / (w * h)), 4096 / w, 4096 / h);
+      return { w: Math.max(2, Math.floor((w * s) / 2) * 2), h: Math.max(2, Math.floor((h * s) / 2) * 2) };
+    };
+
+    const configure = (w, h, codec) => {
       state.width = w;
       state.height = h;
       const enc = new VideoEncoder({
@@ -78,12 +115,12 @@ async function start(pageId) {
         error: (e) => send({ pageId, kind: 'error', message: 'encoder: ' + e.message }),
       });
       enc.configure({
-        codec: 'avc1.640028',
+        codec: codec.codec,
         width: w, height: h,
         bitrate: 12_000_000, // generous: text must stay crisp; deltas stay small anyway
         framerate: 60,
         latencyMode: 'realtime',
-        hardwareAcceleration: 'prefer-hardware',
+        hardwareAcceleration: codec.hw,
       });
       return enc;
     };
@@ -98,8 +135,24 @@ async function start(pageId) {
       if (!state.enc || w !== state.width || h !== state.height) {
         // First frame or the tab was resized: (re)configure; the new decoderConfig
         // flows to the decoder via the next 'config' message automatically.
-        if (state.enc) { try { state.enc.close(); } catch (_) {} }
-        state.enc = configure(w, h);
+        if (state.enc) { try { state.enc.close(); } catch (_) {} state.enc = null; }
+        const shrink = fitted(w, h);
+        if (shrink) {
+          // Too large for any hardware level — downscale the track and let the next
+          // frame come back at an encodable size.
+          frame.close();
+          await track.applyConstraints({
+            width: { max: shrink.w }, height: { max: shrink.h }, frameRate: { ideal: 60 },
+          }).catch(() => {});
+          state.width = 0; state.height = 0;
+          continue;
+        }
+        const codec = await pickCodec(w, h);
+        if (!codec) {
+          frame.close();
+          throw new Error(`no H.264 level supports ${w}x${h}`);
+        }
+        state.enc = configure(w, h, codec);
         state.forceKey = true;
       }
       // Backpressure: drop frames rather than queue when the encoder or socket lags.

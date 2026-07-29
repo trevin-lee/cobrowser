@@ -10,6 +10,11 @@ interface FrameEvent {
   metadata: unknown;
 }
 
+/** Ceiling on rendered pixels per frame (device px). 5Mpx sits above a full-screen
+ *  retina laptop panel (~3.6Mpx, measured 60fps) and below the point where JPEG
+ *  encode falls apart (~10.7Mpx → 46fps, 1.26MB frames) and H.264 levels run out. */
+const MAX_RENDER_PX = 5_000_000;
+
 // Every page lives in its own headless window (see BrowserSession.createPageInNewWindow),
 // so every visible panel screencasts at full compositor rate simultaneously — no
 // foreground coordination, no screenshot polling for background panels.
@@ -388,8 +393,19 @@ export class BrowserPanel {
     const { cssW, cssH, dpr } = this.metrics;
     if (cssW < 50 || cssH < 50) return;
     const zoom = this.getZoom();
-    const width = Math.max(1, Math.round((cssW * dpr) / zoom));
-    const height = Math.max(1, Math.round((cssH * dpr) / zoom));
+    let width = Math.max(1, Math.round((cssW * dpr) / zoom));
+    let height = Math.max(1, Math.round((cssH * dpr) / zoom));
+    // Cap the rendered area. Rendering at full device pixels keeps text crisp, but the
+    // cost is quadratic and unbounded: a large panel at dpr 2 reaches ~10.7Mpx, where the
+    // JPEG encoder drops to 46fps with 1.26MB frames (measured) — the "low framerate and
+    // jitter" — and no H.264 level accepts it either. Past the budget, back the effective
+    // scale off toward 1x: still sharper than CSS pixels, and 60fps again.
+    const area = width * height;
+    if (area > MAX_RENDER_PX) {
+      const s = Math.sqrt(MAX_RENDER_PX / area);
+      width = Math.max(1, Math.round(width * s));
+      height = Math.max(1, Math.round(height * s));
+    }
     void this.panel.webview.postMessage({ type: 'extension.zoomlabel', zoom });
     const key = `${width}x${height}`;
     if (key === this.appliedKey) return;
