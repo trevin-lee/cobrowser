@@ -113,7 +113,7 @@ function buttonName(button: number): string {
 let lastMove = 0;
 canvas.addEventListener('mousemove', (e) => {
   const now = performance.now();
-  if (now - lastMove < 33) return; // ~30fps throttle to avoid flooding CDP
+  if (now - lastMove < 16) return; // ~60fps — input now bypasses the agent queue, so it's cheap
   lastMove = now;
   const { x, y } = toPageCoords(e);
   // `buttons` must be carried on moves or CDP treats a held-button drag as a hover,

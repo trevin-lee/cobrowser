@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as fs from 'node:fs';
 import type { CDPSession, Page } from 'puppeteer-core';
 import type { BrowserSession, ElementBox } from '../browser/BrowserSession';
 
@@ -205,7 +206,7 @@ export class BrowserPanel {
         const cdp = await this.ensureCdp();
         const { data } = (await cdp.send('Page.captureScreenshot', {
           format: 'jpeg',
-          quality: 70,
+          quality: 60, // secondary view — a touch lower than the foreground stream
         })) as { data: string };
         if (this.renderMode !== 'poll') return; // mode changed mid-capture
         void this.panel.webview.postMessage({
@@ -246,7 +247,9 @@ export class BrowserPanel {
       const cdp = await this.ensureCdp();
       await cdp.send('Page.startScreencast', {
         format: 'jpeg',
-        quality: 90,
+        // q70 keeps text crisp but cuts ~35% off every frame vs q90 (457KB -> 295KB at a
+        // retina panel) — a big saving over the postMessage bridge at 30-60fps.
+        quality: 70,
         // High caps so a device-pixel-sized viewport isn't downscaled back to blurry.
         maxWidth: 4096,
         maxHeight: 4096,
@@ -359,12 +362,15 @@ export class BrowserPanel {
       return;
     }
 
-    // CDP passthrough (Input.*), serialized via the session queue against the agent.
+    // CDP passthrough (Input.*). Sent DIRECTLY, not through session.run(): human input must
+    // never queue behind a slow agent action (navigate / waitFor) — that head-of-line blocking
+    // was the main "laggy" feel. Input events are independent CDP calls, safe to interleave.
     const cdp = this.cdp;
     if (!cdp) return;
     try {
-      const result = await this.session.run(() =>
-        (cdp.send as (method: string, params?: unknown) => Promise<unknown>)(m.type, m.params),
+      const result = await (cdp.send as (method: string, params?: unknown) => Promise<unknown>)(
+        m.type,
+        m.params,
       );
       if (m.callbackId != null) {
         this.panel.webview.postMessage({ callbackId: m.callbackId, result });
@@ -377,16 +383,19 @@ export class BrowserPanel {
   }
 
   private html(): string {
-    const w = this.panel.webview;
-    const scriptUri = w.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'dist', 'webview.js'));
-    const cssUri = w.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', 'panel.css'));
     const nonce = getNonce();
+    // Inline CSS + JS instead of <link>/<script src>: an external asWebviewUri fetch can race
+    // or 404 (e.g. a retained webview still pointing at a pruned old build after an update),
+    // which showed up as the occasional fully-unstyled toolbar. Inlining makes each panel
+    // self-contained, so it can't render half-loaded.
+    const css = readAsset(this.context, 'media', 'panel.css');
+    const js = readAsset(this.context, 'dist', 'webview.js').replace(/<\/script/gi, '<\\/script');
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${w.cspSource} data:; style-src ${w.cspSource}; script-src 'nonce-${nonce}';" />
-  <link rel="stylesheet" href="${cssUri}" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}';" />
+  <style nonce="${nonce}">${css}</style>
   <title>Cobrowser</title>
 </head>
 <body>
@@ -416,7 +425,7 @@ export class BrowserPanel {
     <canvas id="screen" tabindex="0"></canvas>
     <div id="highlight" hidden></div>
   </div>
-  <script nonce="${nonce}" src="${scriptUri}"></script>
+  <script nonce="${nonce}">${js}</script>
 </body>
 </html>`;
   }
@@ -453,6 +462,15 @@ export class BrowserPanel {
 function hostOf(url: string): string {
   try {
     return new URL(url).host;
+  } catch {
+    return '';
+  }
+}
+
+/** Read a bundled asset (CSS/JS) off disk to inline into the webview HTML. */
+function readAsset(context: vscode.ExtensionContext, ...segments: string[]): string {
+  try {
+    return fs.readFileSync(vscode.Uri.joinPath(context.extensionUri, ...segments).fsPath, 'utf8');
   } catch {
     return '';
   }
