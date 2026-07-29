@@ -257,13 +257,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await getSession();
       void vscode.window.showInformationMessage('Cobrowser: browser restarted.');
     }),
-    // Fired by sidebar tab items. Was referenced by the tree but never registered —
-    // clicking a tab in the sidebar threw "command 'cobrowser.revealTab' not found".
-    vscode.commands.registerCommand('cobrowser.revealTab', async (pageId: string) => {
-      const s = await getSession();
-      // selectPage fires onPageReveal → BrowserPanel.reveal (focuses the editor tab).
-      await s.run(() => s.selectPage(pageId, true)).catch(() => undefined);
-    }),
   );
 
   // If a browser was running in this workspace before (e.g. a window reload), bring it
