@@ -272,12 +272,14 @@ export class BrowserPanel {
       const cdp = await this.ensureCdp();
       await cdp.send('Page.startScreencast', {
         format: 'jpeg',
-        // q70 keeps text crisp but cuts ~35% off every frame vs q90 (457KB -> 295KB at a
-        // retina panel) — a big saving over the postMessage bridge at 30-60fps.
-        quality: 70,
-        // High caps so a device-pixel-sized viewport isn't downscaled back to blurry.
-        maxWidth: 4096,
-        maxHeight: 4096,
+        // q90: JPEG ringing on text at q70 read as "grainy". The old q70 trade paid for
+        // the base64+main-thread-decode pipe; with binary transport + off-thread decode
+        // the extra ~35% per frame is absorbed, so favor fidelity.
+        quality: 90,
+        // Caps must exceed the largest device-pixel viewport or frames get downscaled
+        // back to blurry — 8192 clears even a 6K display's full width.
+        maxWidth: 8192,
+        maxHeight: 8192,
         everyNthFrame: 1,
       });
     } catch {

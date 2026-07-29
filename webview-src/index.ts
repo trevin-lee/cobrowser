@@ -419,6 +419,23 @@ new ResizeObserver(() => {
   highlightEl.classList.remove('show');
 }).observe(stage);
 
+// Re-report when the window lands on a monitor with a different devicePixelRatio:
+// the CSS size doesn't change (so the ResizeObserver stays silent) but the backing
+// resolution must, or the page keeps rendering at the old monitor's density and
+// looks soft. A matchMedia for the CURRENT dpr fires exactly when it stops matching;
+// re-arm for the new value each time.
+function watchDpr(): void {
+  const mq = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+  const onChange = (): void => {
+    mq.removeEventListener('change', onChange);
+    lastVp = ''; // force a fresh viewport push at the new density
+    reportViewport();
+    watchDpr();
+  };
+  mq.addEventListener('change', onChange);
+}
+watchDpr();
+
 // Tell the host we're listening so it (re)starts the screencast now that the message
 // handler exists — otherwise the initial frame is lost and a static page stays blank.
 fire('extension.ready');
