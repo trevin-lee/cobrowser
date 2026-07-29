@@ -9,15 +9,9 @@ interface FrameEvent {
   metadata: unknown;
 }
 
-// Adaptive frame intervals for background-but-visible panels (captureScreenshot poll).
-// Paced at 60Hz while the page is changing; the capture itself is the real throttle
-// (measured ~36fps at full-retina 2400x1500, faster at smaller panels — the JPEG
-// encode pipe, not this timer, is the ceiling). Backs off to ~4fps once frames repeat
-// so a static page costs almost nothing; identical frames are never posted. Only
-// VISIBLE non-foreground panels poll, so cost scales with on-screen tabs, not total.
-const POLL_FAST_MS = 16;
-const POLL_SLOW_MS = 250;
-const POLL_IDLE_AFTER = 5; // consecutive identical frames before backing off
+// Every page lives in its own headless window (see BrowserSession.createPageInNewWindow),
+// so every visible panel screencasts at full compositor rate simultaneously — no
+// foreground coordination, no screenshot polling for background panels.
 
 /**
  * One webview panel per browser page — so each browser tab is a native VS Code
@@ -36,16 +30,27 @@ export class BrowserPanel {
   /** id (stable page id) -> panel, so lifecycle events can find their panel. */
   private static panels = new Map<string, BrowserPanel>();
 
-  /** Headless Chrome composites only ONE page at a time, so exactly one panel may
-   *  stream. This is that panel's id — set to whichever the user last focused. It
-   *  survives focusing a non-webview editor, so a lone visible panel keeps streaming
-   *  while you work elsewhere, yet two visible panels can never both bringToFront. */
-  private static foregroundId: string | undefined;
+  /** Editor columns for the next panels to open, in order — set before a tab restore so
+   *  each recreated panel lands in the editor group it occupied before the reload
+   *  (otherwise the stacking logic below collapses a split into one group). */
+  private static plannedColumns: (number | undefined)[] = [];
 
-  /** Re-evaluate every panel's render mode after the foreground changes. */
-  private static syncAll(): void {
-    for (const p of BrowserPanel.panels.values()) void p.syncRender();
+  static planColumns(cols: (number | undefined)[]): void {
+    BrowserPanel.plannedColumns = [...cols];
   }
+
+  static clearColumnPlan(): void {
+    BrowserPanel.plannedColumns = [];
+  }
+
+  /** The editor column a page's panel currently occupies (for layout persistence). */
+  static columnOf(id: string): number | undefined {
+    return BrowserPanel.panels.get(id)?.panel.viewColumn;
+  }
+
+  /** Notified on any panel view-state change, so the host can persist the layout
+   *  (a panel dragged to another editor group doesn't fire any session event). */
+  static onLayoutChanged: (() => void) | undefined;
 
   /** Inlined webview assets (CSS/JS), read ONCE and cached in memory. */
   private static assetCache: { css: string; js: string } | undefined;
@@ -78,12 +83,13 @@ export class BrowserPanel {
       if (reveal) existing.panel.reveal(undefined, false); // focus it in its own group, don't move it
       return existing;
     }
-    // Stack new tabs in the column an existing cobrowser panel already occupies, so they group
-    // like browser tabs (one visible at a time) instead of spreading across splits — two
-    // simultaneously-visible panels would fight over Chrome's single foreground page.
-    const groupColumn = [...BrowserPanel.panels.values()]
-      .map((p) => p.panel.viewColumn)
-      .find((c) => c != null);
+    // A planned column (tab restore) wins — it recreates the pre-reload split. Otherwise
+    // stack new tabs in the column an existing cobrowser panel already occupies, so they
+    // group like browser tabs instead of spreading across splits.
+    const planned = BrowserPanel.plannedColumns.shift();
+    const groupColumn =
+      planned ??
+      [...BrowserPanel.panels.values()].map((p) => p.panel.viewColumn).find((c) => c != null);
     const panel = vscode.window.createWebviewPanel(
       'cobrowser',
       'Cobrowser',
@@ -122,12 +128,7 @@ export class BrowserPanel {
   private metrics = { cssW: 0, cssH: 0, dpr: 1 };
   private origin = '';
   private appliedKey = '';
-  /** 'screencast' = foreground push stream; 'poll' = background captureScreenshot loop
-   *  (renders without being Chrome's foreground, so split tabs stay live); 'off' = hidden. */
-  private renderMode: 'off' | 'screencast' | 'poll' = 'off';
-  private pollTimer: ReturnType<typeof setInterval> | undefined;
-  private vpW = 0;
-  private vpH = 0;
+  private streaming = false;
 
   private constructor(
     private context: vscode.ExtensionContext,
@@ -147,10 +148,8 @@ export class BrowserPanel {
     // own group), where there would be nothing to show anyway.
     this.panel.onDidChangeViewState(
       () => {
-        // Focusing a panel makes it the sole foreground streamer; re-sync all so the
-        // previously-streaming one stops (only one page can composite at a time).
-        if (this.panel.active) BrowserPanel.foregroundId = this.id;
-        BrowserPanel.syncAll();
+        void this.syncRender();
+        BrowserPanel.onLayoutChanged?.(); // panel may have moved groups — persist layout
       },
       null,
       this.disposables,
@@ -181,88 +180,25 @@ export class BrowserPanel {
     void this.panel.webview.postMessage({ type: 'extension.highlight', box });
   }
 
-  /** Start/stop the screencast to match whether this tab is on screen.
-   *  Gated on `visible` (shown anywhere), not `active` (focused), so switching
-   *  to another editor tab in a split doesn't freeze it. `streaming` is set
-   *  up-front so a re-entrant view-state change (e.g. from bringing the page to
-   *  the front) no-ops instead of looping. */
-  /** Match this panel's render mode to its state: the single foreground panel gets the
-   *  efficient push screencast; any OTHER visible panel gets a captureScreenshot poll (pull
-   *  rendering ignores foreground, so split tabs all stay live); hidden panels render nothing. */
+  /** Screencast whenever this panel is on screen. Each page owns a whole headless
+   *  window (BrowserSession.createPageInNewWindow), so its compositor pushes frames
+   *  at full rate regardless of which panel the human has focused — no foreground
+   *  coordination, no background polling. Hidden panels stream nothing. */
   private async syncRender(): Promise<void> {
-    const desired: 'off' | 'screencast' | 'poll' =
-      !this.panel.visible || !this.ready
-        ? 'off'
-        : BrowserPanel.foregroundId === this.id
-          ? 'screencast'
-          : 'poll';
-    if (desired === this.renderMode) return;
-    // Tear down the previous mode before starting the next.
-    if (this.renderMode === 'screencast') await this.stopScreencast();
-    else if (this.renderMode === 'poll') this.stopPoll();
-    this.renderMode = desired;
-    if (desired === 'screencast') {
-      // Bring this page to the front so its compositor pushes frames (screencast is
-      // foreground-only); no other panel is foreground, so nothing fights it back.
+    const shouldStream = this.panel.visible && this.ready;
+    if (shouldStream === this.streaming) return;
+    this.streaming = shouldStream;
+    if (shouldStream) {
+      // Becoming visible: make this the agent's current page too, and re-verify the
+      // viewport — it may be stale from a failed apply or a relaunch while hidden
+      // (the "stretched until you resize" bug). Dedupe keys drop on both sides so
+      // the re-apply actually runs.
       await this.session.run(() => this.session.focusPage(this.id)).catch(() => undefined);
-      // The page viewport may be stale from a failed apply or a relaunch while this tab
-      // was hidden — ask the webview to re-push its size (drops both dedupe keys so the
-      // re-apply actually runs). Fixes the "stretched until you resize" tab switch.
       this.appliedKey = '';
       void this.panel.webview.postMessage({ type: 'extension.remeasure' });
       await this.startScreencast();
-    } else if (desired === 'poll') {
-      this.startPoll();
-    }
-  }
-
-  /** Background-but-visible view: pull a fresh frame with captureScreenshot on a timer.
-   *  Unlike the screencast, this renders a page that isn't Chrome's foreground, so split
-   *  tabs stay live. Reuses the screencastFrame message path so the webview draws it the
-   *  same way. */
-  private lastPollFrame = '';
-  private pollIdleCount = 0;
-
-  private startPoll(): void {
-    if (this.pollTimer) return;
-    this.lastPollFrame = ''; // always paint the first frame on (re)entry
-    this.pollIdleCount = 0;
-    const loop = async (): Promise<void> => {
-      if (this.renderMode !== 'poll') return;
-      let delay = POLL_FAST_MS;
-      try {
-        const cdp = await this.ensureCdp();
-        const { data } = (await cdp.send('Page.captureScreenshot', {
-          format: 'jpeg',
-          quality: 60, // secondary view — a touch lower than the foreground stream
-        })) as { data: string };
-        if (this.renderMode !== 'poll') return; // mode changed mid-capture
-        if (data === this.lastPollFrame) {
-          // Page is static — don't re-send identical pixels, and back off the rate.
-          this.pollIdleCount++;
-          if (this.pollIdleCount >= POLL_IDLE_AFTER) delay = POLL_SLOW_MS;
-        } else {
-          this.pollIdleCount = 0;
-          this.lastPollFrame = data;
-          const buf = Buffer.from(data, 'base64');
-          void this.panel.webview.postMessage({
-            method: 'cobrowser.frame',
-            bytes: new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength),
-            metadata: { deviceWidth: this.vpW, deviceHeight: this.vpH },
-          });
-        }
-      } catch {
-        delay = POLL_SLOW_MS; // page navigating/closed — retry gently
-      }
-      this.pollTimer = setTimeout(() => void loop(), delay);
-    };
-    this.pollTimer = setTimeout(() => void loop(), 0);
-  }
-
-  private stopPoll(): void {
-    if (this.pollTimer) {
-      clearTimeout(this.pollTimer);
-      this.pollTimer = undefined;
+    } else {
+      await this.stopScreencast();
     }
   }
 
@@ -329,13 +265,11 @@ export class BrowserPanel {
       // (page mid-navigation, session churn) left the page stuck on the 1280x800 launch
       // default — stretched to the panel — until a manual resize changed the key.
       this.appliedKey = key;
-      this.vpW = width;
-      this.vpH = height;
     } catch {
       this.appliedKey = ''; // retry on the next viewport push / remeasure
       return;
     }
-    if (this.renderMode === 'screencast') await this.startScreencast();
+    if (this.streaming) await this.startScreencast();
   }
 
   private zoomMap(): Record<string, number> {
@@ -362,14 +296,65 @@ export class BrowserPanel {
         switch (m.type) {
           case 'extension.ready':
             this.ready = true;
-            // Claim foreground if this panel is focused, or if nothing else holds it yet
-            // (e.g. the first tab, so something streams immediately).
-            if (this.panel.active || BrowserPanel.foregroundId === undefined) {
-              BrowserPanel.foregroundId = this.id;
-            }
-            BrowserPanel.syncAll();
+            await this.syncRender();
             void this.panel.webview.postMessage({ type: 'extension.url', url: this.page.url() });
             break;
+          case 'extension.contextinfo': {
+            // Right-click: report what's under the cursor (selection / link) so the
+            // webview can render a context menu — headless Chrome's native menu is
+            // browser chrome and doesn't exist in the screencast.
+            const p = (m.params ?? {}) as { x?: number; y?: number; clientX?: number; clientY?: number };
+            const cdp = await this.ensureCdp();
+            const { result } = (await cdp.send('Runtime.evaluate', {
+              expression: `(() => {
+                const el = document.elementFromPoint(${Number(p.x) || 0}, ${Number(p.y) || 0});
+                const a = el && el.closest ? el.closest('a[href]') : null;
+                return JSON.stringify({ sel: String(window.getSelection() || ''), link: a ? a.href : null });
+              })()`,
+              returnByValue: true,
+            })) as { result: { value?: string } };
+            const info = JSON.parse(result?.value ?? '{}') as { sel?: string; link?: string | null };
+            void this.panel.webview.postMessage({
+              type: 'extension.contextmenu',
+              at: { clientX: p.clientX ?? 0, clientY: p.clientY ?? 0 },
+              hasSelection: !!info.sel,
+              link: info.link ?? null,
+            });
+            break;
+          }
+          case 'extension.copy': {
+            // Copy the page's selection to the OS clipboard. The headless browser's own
+            // clipboard is sandboxed away from the OS — route through vscode.env.
+            const cdp = await this.ensureCdp();
+            const { result } = (await cdp.send('Runtime.evaluate', {
+              expression: 'String(window.getSelection() || "")',
+              returnByValue: true,
+            })) as { result: { value?: string } };
+            if (result?.value) await vscode.env.clipboard.writeText(result.value);
+            break;
+          }
+          case 'extension.paste': {
+            const text = await vscode.env.clipboard.readText();
+            if (text) await (await this.ensureCdp()).send('Input.insertText', { text });
+            break;
+          }
+          case 'extension.selectall':
+            await (await this.ensureCdp()).send('Runtime.evaluate', {
+              expression: 'document.execCommand("selectAll")',
+            });
+            break;
+          case 'extension.openlink': {
+            const url = (m.params as { url?: string } | undefined)?.url;
+            if (url) {
+              await this.session.run(() => this.session.newPage(url).then(() => undefined));
+            }
+            break;
+          }
+          case 'extension.copylink': {
+            const url = (m.params as { url?: string } | undefined)?.url;
+            if (url) await vscode.env.clipboard.writeText(url);
+            break;
+          }
           case 'extension.viewport': {
             const p = (m.params ?? {}) as { cssW?: number; cssH?: number; dpr?: number };
             if (p.cssW && p.cssH) {
@@ -486,13 +471,6 @@ export class BrowserPanel {
 
   dispose(): void {
     BrowserPanel.panels.delete(this.id);
-    this.stopPoll();
-    // If the foreground tab is closing, release the slot so the next-focused panel can claim
-    // it (VS Code focuses an adjacent tab on close, which re-syncs via onDidChangeViewState).
-    if (BrowserPanel.foregroundId === this.id) {
-      BrowserPanel.foregroundId = undefined;
-      BrowserPanel.syncAll();
-    }
     this.page.off('framenavigated', this.onNav);
     if (this.cdp && this.frameHandler) {
       try {

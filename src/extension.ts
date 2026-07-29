@@ -31,11 +31,16 @@ const WAS_RUNNING_KEY = 'cobrowser.wasRunning';
 // The kept-alive Chrome's DevTools ws endpoint, so a reload can reconnect to it (tabs
 // intact) instead of relaunching + restoring.
 const WS_KEY = 'cobrowser.wsEndpoint';
-// Our own copy of the open-tab URLs, updated on every pages-change. Reconnect and
-// --restore-last-session both fail when Chrome dies WITH the extension host (a normal
-// window reload kills the whole tree, and an unclean exit disables Chrome's restore) —
-// this is the fallback that actually brings the tabs back.
+// Our own copy of the open tabs (URL + editor column), updated on every pages-change and
+// panel-layout change. Reconnect and --restore-last-session both fail when Chrome dies
+// WITH the extension host (a normal window reload kills the whole tree, and an unclean
+// exit disables Chrome's restore) — this is the fallback that actually brings the tabs
+// back, in the split layout they were arranged in.
 const TABS_KEY = 'cobrowser.openTabs';
+interface SavedTab {
+  url: string;
+  col?: number;
+}
 
 let session: BrowserSession | undefined;
 let sessionPromise: Promise<BrowserSession> | undefined;
@@ -113,12 +118,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // Keep the Activity Bar sidebar live: re-render its tab list whenever pages open,
     // close, navigate, or the active tab changes. (These fire sites existed but were
     // never connected to the tree, so the sidebar showed a stale first snapshot.)
-    // Also persist the open-tab URLs on every change, so a reload can restore them.
+    // Also persist the open tabs — URL + editor column — so a reload restores both the
+    // tabs and the split layout they were arranged in.
+    const saveTabs = (): void => {
+      const entries = s
+        .pageEntries()
+        .filter((e) => e.url && e.url !== 'about:blank')
+        .map((e) => ({ url: e.url, col: BrowserPanel.columnOf(e.id) }));
+      void context.workspaceState.update(TABS_KEY, entries);
+    };
     s.onPagesChanged(() => {
       tree.refresh();
-      const urls = s.pageUrls().filter((u) => u && u !== 'about:blank');
-      void context.workspaceState.update(TABS_KEY, urls);
+      saveTabs();
     });
+    // Dragging a panel to another editor group fires no session event — hook the panel
+    // layer so layout changes persist too.
+    BrowserPanel.onLayoutChanged = saveTabs;
 
     s.onDisconnected(() => {
       // Only for UNEXPECTED exits (crash / Cmd-Q). Intentional disconnect (reload) and
@@ -144,17 +159,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // After a fresh launch, reopen the tabs we saved from the previous session. Only runs
   // when the browser came up with nothing but the initial blank page — if Chrome's own
   // --restore-last-session worked, we skip rather than duplicate.
-  const restoreTabs = async (s: BrowserSession, urls: string[]): Promise<void> => {
-    if (urls.length === 0) return;
-    if (s.pageUrls().some((u) => u && u !== 'about:blank')) return;
-    log(`Restoring ${urls.length} saved tab(s).`);
+  const restoreTabs = async (s: BrowserSession, tabs: SavedTab[]): Promise<void> => {
+    if (tabs.length === 0) return;
+    if (s.pageEntries().some((e) => e.url && e.url !== 'about:blank')) {
+      BrowserPanel.clearColumnPlan(); // Chrome restored on its own — plan no longer applies
+      return;
+    }
+    log(`Restoring ${tabs.length} saved tab(s).`);
     try {
-      await s.run(() => s.navigate('url', urls[0])); // reuse the initial blank page
-      for (const u of urls.slice(1)) {
-        await s.run(() => s.newPage(u, { background: true }));
+      await s.run(() => s.navigate('url', tabs[0].url)); // reuse the initial blank page
+      for (const t of tabs.slice(1)) {
+        await s.run(() => s.newPage(t.url, { background: true }));
       }
     } catch (err) {
       log(`Tab restore failed: ${String(err)}`);
+    } finally {
+      BrowserPanel.clearColumnPlan(); // whatever's left no longer maps to anything
     }
   };
 
@@ -181,7 +201,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         // No live browser — clear any stale SingletonLock, then launch fresh.
         // Snapshot OUR saved tab list first: wire() fires pagesChanged for the fresh
         // blank page, which overwrites TABS_KEY before restore could read it.
-        const savedTabs = context.workspaceState.get<string[]>(TABS_KEY) ?? [];
+        const savedTabs = (context.workspaceState.get<Array<string | SavedTab>>(TABS_KEY) ?? [])
+          .map((t) => (typeof t === 'string' ? { url: t } : t)); // pre-0.1.25 saves were bare URLs
+        // Plan panel columns BEFORE wiring: the first restored page's panel opens during
+        // wire()/emitExisting, and each recreated panel must land in its pre-reload group.
+        BrowserPanel.planColumns(savedTabs.map((t) => t.col));
         await cleanupOrphan(context, profileDir, log);
         const chromePath = await ensureChrome(context, cfg, log);
         const s = await BrowserSession.launch(profileDir, chromePath, headless, autoFallbackPasskeys);

@@ -145,3 +145,40 @@ button.icon svg {
   opacity: 1;
   transition: opacity 0.08s ease;
 }
+
+/* ----- context menu (webview-rendered; headless Chrome has no native one) ----- */
+#ctxmenu {
+  position: fixed;
+  z-index: 100;
+  min-width: 190px;
+  padding: 4px;
+  background: var(--vscode-menu-background, var(--vscode-editorWidget-background, #252526));
+  color: var(--vscode-menu-foreground, var(--vscode-foreground, #ccc));
+  border: 1px solid var(--vscode-menu-border, rgba(128, 128, 128, 0.35));
+  border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+  font-size: 13px;
+  user-select: none;
+}
+#ctxmenu .item {
+  padding: 4px 12px;
+  border-radius: 4px;
+  cursor: default;
+  white-space: nowrap;
+}
+#ctxmenu .item:hover {
+  background: var(--vscode-menu-selectionBackground, #04395e);
+  color: var(--vscode-menu-selectionForeground, #fff);
+}
+#ctxmenu .item.disabled {
+  opacity: 0.45;
+}
+#ctxmenu .item.disabled:hover {
+  background: transparent;
+  color: inherit;
+}
+#ctxmenu .sep {
+  height: 1px;
+  margin: 4px 8px;
+  background: var(--vscode-menu-separatorBackground, rgba(128, 128, 128, 0.35));
+}

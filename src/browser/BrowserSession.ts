@@ -407,7 +407,7 @@ export class BrowserSession {
     const page = await (async (): Promise<Page> => {
       this.suppressOpen++;
       try {
-        const p = await this.browser.newPage();
+        const p = await this.createPageInNewWindow();
         await this.prepPage(p); // fail-fast passkeys before navigating anywhere
         if (url) await p.goto(url, { waitUntil: 'domcontentloaded' }).catch(() => undefined);
         return p;
@@ -427,6 +427,30 @@ export class BrowserSession {
       title: await page.title().catch(() => ''),
       selected: page === this.active,
     };
+  }
+
+  /** Open each page in its OWN headless window (Target.createTarget newWindow), not as
+   *  a tab of one shared window. Every window's sole tab is independently "visible", so
+   *  every panel's screencast pushes frames at full rate SIMULTANEOUSLY — verified 60fps
+   *  on two windows at once, unaffected by bringToFront. Tabs sharing one window share
+   *  one compositor, and all but the foreground tab freeze (the old poll workaround). */
+  private async createPageInNewWindow(): Promise<Page> {
+    const cdp = await this.browser.target().createCDPSession();
+    try {
+      const { targetId } = (await cdp.send('Target.createTarget', {
+        url: 'about:blank',
+        newWindow: true,
+      })) as { targetId: string };
+      const target = await this.browser.waitForTarget(
+        (t) => (t as unknown as { _targetId?: string })._targetId === targetId,
+        { timeout: 5000 },
+      );
+      const page = await target.page();
+      if (!page) throw new Error('newly created window has no page');
+      return page;
+    } finally {
+      await cdp.detach().catch(() => undefined);
+    }
   }
 
   async selectPage(pageId: string, bringToFront = true): Promise<void> {
@@ -625,11 +649,14 @@ export class BrowserSession {
     return this.browser.wsEndpoint();
   }
 
-  /** Current tab URLs in creation order, synchronously (no queue, no CDP round-trip) —
-   *  for persisting the open-tab list so a reload can restore it even when Chrome dies
-   *  with the extension host and --restore-last-session doesn't kick in. */
-  pageUrls(): string[] {
-    return [...this.ids.keys()].filter((p) => !p.isClosed()).map((p) => p.url());
+  /** Current pages (stable id + URL) in creation order, synchronously (no queue, no CDP
+   *  round-trip) — for persisting the open-tab list + panel layout so a reload can restore
+   *  both even when Chrome dies with the extension host and --restore-last-session doesn't
+   *  kick in. */
+  pageEntries(): { id: string; url: string }[] {
+    return [...this.ids.entries()]
+      .filter(([p]) => !p.isClosed())
+      .map(([p, id]) => ({ id, url: p.url() }));
   }
 
   /** Detach WITHOUT closing Chrome — keeps its tabs alive for a reconnect after a reload. */

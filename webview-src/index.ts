@@ -71,6 +71,14 @@ window.addEventListener('message', (event: MessageEvent) => {
     reportViewport();
     return;
   }
+  if (m?.type === 'extension.contextmenu') {
+    showMenu(
+      (m.at ?? { clientX: 0, clientY: 0 }) as { clientX: number; clientY: number },
+      !!m.hasSelection,
+      (m.link ?? null) as string | null,
+    );
+    return;
+  }
 });
 
 // Binary frame path: raw JPEG bytes arrive over postMessage (no base64, no data: URL)
@@ -203,7 +211,74 @@ window.addEventListener('mouseup', (e) => {
   });
 });
 
-canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+// ----- context menu -----
+// Headless Chrome's real context menu is browser chrome — it doesn't exist in the
+// screencast — so we render our own, populated from what's under the cursor (the host
+// answers 'extension.contextinfo' with selection/link state, then we show the menu).
+const ctxMenu = document.createElement('div');
+ctxMenu.id = 'ctxmenu';
+ctxMenu.hidden = true;
+document.body.appendChild(ctxMenu);
+
+canvas.addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+  const { x, y } = toPageCoords(e);
+  fire('extension.contextinfo', { x, y, clientX: e.clientX, clientY: e.clientY });
+});
+
+function hideMenu(): void {
+  ctxMenu.hidden = true;
+}
+window.addEventListener('mousedown', (e) => {
+  if (!ctxMenu.contains(e.target as Node)) hideMenu();
+}, true);
+window.addEventListener('blur', hideMenu);
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') hideMenu();
+}, true);
+
+type MenuEntry = { label: string; action: () => void; enabled?: boolean } | 'sep';
+
+function showMenu(at: { clientX: number; clientY: number }, hasSelection: boolean, link: string | null): void {
+  const items: MenuEntry[] = [
+    { label: 'Back', action: () => fire('extension.back') },
+    { label: 'Forward', action: () => fire('extension.forward') },
+    { label: 'Reload', action: () => fire('extension.reload') },
+    'sep',
+    { label: 'Copy', action: () => fire('extension.copy'), enabled: hasSelection },
+    { label: 'Paste', action: () => fire('extension.paste') },
+    { label: 'Select All', action: () => fire('extension.selectall') },
+  ];
+  if (link) {
+    items.push(
+      'sep',
+      { label: 'Open Link in New Tab', action: () => fire('extension.openlink', { url: link }) },
+      { label: 'Copy Link Address', action: () => fire('extension.copylink', { url: link }) },
+    );
+  }
+  ctxMenu.textContent = '';
+  for (const it of items) {
+    if (it === 'sep') {
+      const s = document.createElement('div');
+      s.className = 'sep';
+      ctxMenu.appendChild(s);
+      continue;
+    }
+    const d = document.createElement('div');
+    d.className = 'item' + (it.enabled === false ? ' disabled' : '');
+    d.textContent = it.label;
+    d.addEventListener('click', () => {
+      if (it.enabled === false) return;
+      hideMenu();
+      it.action();
+    });
+    ctxMenu.appendChild(d);
+  }
+  ctxMenu.hidden = false;
+  // Clamp inside the panel so the menu never renders half off-screen.
+  ctxMenu.style.left = Math.max(0, Math.min(at.clientX, window.innerWidth - ctxMenu.offsetWidth - 4)) + 'px';
+  ctxMenu.style.top = Math.max(0, Math.min(at.clientY, window.innerHeight - ctxMenu.offsetHeight - 4)) + 'px';
+}
 
 canvas.addEventListener(
   'wheel',
@@ -231,6 +306,10 @@ canvas.addEventListener('keydown', (e) => {
     if (e.key === '=' || e.key === '+') { e.preventDefault(); fire('extension.zoom', { dir: 'in' }); return; }
     if (e.key === '-' || e.key === '_') { e.preventDefault(); fire('extension.zoom', { dir: 'out' }); return; }
     if (e.key === '0') { e.preventDefault(); fire('extension.zoom', { dir: 'reset' }); return; }
+    // Clipboard/selection parity: the headless browser's clipboard is sandboxed away
+    // from the OS, so copy must be routed through the host (paste already is, below).
+    if (e.key === 'c') { e.preventDefault(); fire('extension.copy'); return; }
+    if (e.key === 'a') { e.preventDefault(); fire('extension.selectall'); return; }
   }
   e.preventDefault();
   const printable = e.key.length === 1 && !e.ctrlKey && !e.metaKey;
