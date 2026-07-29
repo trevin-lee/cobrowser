@@ -263,6 +263,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   if (session) captureHub.setSession(session); // session may already exist (fast restore)
   BrowserPanel.videoHub = captureHub;
   BrowserPanel.videoEnabled = cfg.get<boolean>('videoPipeline', false);
+  // Live-apply the toggle: re-read on change and restart streaming so switching
+  // pipelines doesn't need a window reload (the setting is read at activation only).
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (!e.affectsConfiguration('cobrowser.videoPipeline')) return;
+      BrowserPanel.videoEnabled = vscode.workspace
+        .getConfiguration('cobrowser')
+        .get<boolean>('videoPipeline', false);
+      log(`Video pipeline ${BrowserPanel.videoEnabled ? 'enabled' : 'disabled'}.`);
+      void BrowserPanel.restartStreaming();
+    }),
+  );
   const hubRef = captureHub;
   context.subscriptions.push({ dispose: () => hubRef.dispose() });
   // Remember the port we actually bound so the next reload of THIS workspace reuses it

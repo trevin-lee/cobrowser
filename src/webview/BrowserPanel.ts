@@ -63,6 +63,23 @@ export class BrowserPanel {
     BrowserPanel.panels.get(header.pageId)?.postVideo(header, payload);
   }
 
+  /** Tear down and re-establish every visible panel's stream — used when the
+   *  render pipeline changes under us (videoPipeline toggled). */
+  static async restartStreaming(): Promise<void> {
+    for (const p of BrowserPanel.panels.values()) {
+      if (!p.streaming) continue;
+      p.streaming = false;
+      if (p.videoMode) {
+        p.videoMode = false;
+        BrowserPanel.videoHub?.stop(p.id);
+        void p.panel.webview.postMessage({ method: 'cobrowser.h264reset' });
+      } else {
+        await p.stopScreencast();
+      }
+      await p.syncRender();
+    }
+  }
+
   /** Inlined webview assets (CSS/JS), read ONCE and cached in memory. */
   private static assetCache: { css: string; js: string } | undefined;
 
