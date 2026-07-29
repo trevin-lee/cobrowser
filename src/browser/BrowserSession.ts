@@ -625,6 +625,13 @@ export class BrowserSession {
     return this.browser.wsEndpoint();
   }
 
+  /** Current tab URLs in creation order, synchronously (no queue, no CDP round-trip) —
+   *  for persisting the open-tab list so a reload can restore it even when Chrome dies
+   *  with the extension host and --restore-last-session doesn't kick in. */
+  pageUrls(): string[] {
+    return [...this.ids.keys()].filter((p) => !p.isClosed()).map((p) => p.url());
+  }
+
   /** Detach WITHOUT closing Chrome — keeps its tabs alive for a reconnect after a reload. */
   async disconnect(): Promise<void> {
     this.disposing = true;

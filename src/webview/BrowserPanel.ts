@@ -201,6 +201,11 @@ export class BrowserPanel {
       // Bring this page to the front so its compositor pushes frames (screencast is
       // foreground-only); no other panel is foreground, so nothing fights it back.
       await this.session.run(() => this.session.focusPage(this.id)).catch(() => undefined);
+      // The page viewport may be stale from a failed apply or a relaunch while this tab
+      // was hidden — ask the webview to re-push its size (drops both dedupe keys so the
+      // re-apply actually runs). Fixes the "stretched until you resize" tab switch.
+      this.appliedKey = '';
+      void this.panel.webview.postMessage({ type: 'extension.remeasure' });
       await this.startScreencast();
     } else if (desired === 'poll') {
       this.startPoll();
@@ -292,10 +297,18 @@ export class BrowserPanel {
     void this.panel.webview.postMessage({ type: 'extension.zoomlabel', zoom });
     const key = `${width}x${height}`;
     if (key === this.appliedKey) return;
-    this.appliedKey = key;
-    this.vpW = width;
-    this.vpH = height;
-    await this.session.run(() => this.session.setViewport(this.page, width, height, 1));
+    try {
+      await this.session.run(() => this.session.setViewport(this.page, width, height, 1));
+      // Mark applied only AFTER success. Setting it up-front meant a transient failure
+      // (page mid-navigation, session churn) left the page stuck on the 1280x800 launch
+      // default — stretched to the panel — until a manual resize changed the key.
+      this.appliedKey = key;
+      this.vpW = width;
+      this.vpH = height;
+    } catch {
+      this.appliedKey = ''; // retry on the next viewport push / remeasure
+      return;
+    }
     if (this.renderMode === 'screencast') await this.startScreencast();
   }
 

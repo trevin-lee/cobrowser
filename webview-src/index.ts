@@ -64,6 +64,13 @@ window.addEventListener('message', (event: MessageEvent) => {
     zoomLabel.textContent = Math.round((m.zoom ?? 1) * 100) + '%';
     return;
   }
+  if (m?.type === 'extension.remeasure') {
+    // Host wants the current panel size re-pushed (e.g. this tab just became the
+    // foreground and the page viewport may be stale). Bypass the dedupe key.
+    lastVp = '';
+    reportViewport();
+    return;
+  }
 });
 
 const image = new Image();

@@ -31,6 +31,11 @@ const WAS_RUNNING_KEY = 'cobrowser.wasRunning';
 // The kept-alive Chrome's DevTools ws endpoint, so a reload can reconnect to it (tabs
 // intact) instead of relaunching + restoring.
 const WS_KEY = 'cobrowser.wsEndpoint';
+// Our own copy of the open-tab URLs, updated on every pages-change. Reconnect and
+// --restore-last-session both fail when Chrome dies WITH the extension host (a normal
+// window reload kills the whole tree, and an unclean exit disables Chrome's restore) —
+// this is the fallback that actually brings the tabs back.
+const TABS_KEY = 'cobrowser.openTabs';
 
 let session: BrowserSession | undefined;
 let sessionPromise: Promise<BrowserSession> | undefined;
@@ -108,7 +113,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // Keep the Activity Bar sidebar live: re-render its tab list whenever pages open,
     // close, navigate, or the active tab changes. (These fire sites existed but were
     // never connected to the tree, so the sidebar showed a stale first snapshot.)
-    s.onPagesChanged(() => tree.refresh());
+    // Also persist the open-tab URLs on every change, so a reload can restore them.
+    s.onPagesChanged(() => {
+      tree.refresh();
+      const urls = s.pageUrls().filter((u) => u && u !== 'about:blank');
+      void context.workspaceState.update(TABS_KEY, urls);
+    });
 
     s.onDisconnected(() => {
       // Only for UNEXPECTED exits (crash / Cmd-Q). Intentional disconnect (reload) and
@@ -129,6 +139,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     s.emitExisting();
     tree.refresh(); // reflect the now-running session (state + initial tabs)
     return s;
+  };
+
+  // After a fresh launch, reopen the tabs we saved from the previous session. Only runs
+  // when the browser came up with nothing but the initial blank page — if Chrome's own
+  // --restore-last-session worked, we skip rather than duplicate.
+  const restoreTabs = async (s: BrowserSession, urls: string[]): Promise<void> => {
+    if (urls.length === 0) return;
+    if (s.pageUrls().some((u) => u && u !== 'about:blank')) return;
+    log(`Restoring ${urls.length} saved tab(s).`);
+    try {
+      await s.run(() => s.navigate('url', urls[0])); // reuse the initial blank page
+      for (const u of urls.slice(1)) {
+        await s.run(() => s.newPage(u, { background: true }));
+      }
+    } catch (err) {
+      log(`Tab restore failed: ${String(err)}`);
+    }
   };
 
   // Lazily launch the browser only when first needed (a tool call or the panel opening),
@@ -152,11 +179,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           }
         }
         // No live browser — clear any stale SingletonLock, then launch fresh.
+        // Snapshot OUR saved tab list first: wire() fires pagesChanged for the fresh
+        // blank page, which overwrites TABS_KEY before restore could read it.
+        const savedTabs = context.workspaceState.get<string[]>(TABS_KEY) ?? [];
         await cleanupOrphan(context, profileDir, log);
         const chromePath = await ensureChrome(context, cfg, log);
         const s = await BrowserSession.launch(profileDir, chromePath, headless, autoFallbackPasskeys);
         log(`Chromium launched (pid ${s.pid() ?? '?'}), profile ${profileDir}`);
-        return wire(s);
+        const wired = await wire(s);
+        void restoreTabs(wired, savedTabs);
+        return wired;
       })();
       sessionPromise.catch((err) => {
         sessionPromise = undefined;
@@ -224,6 +256,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await disposeSession(context);
       await getSession();
       void vscode.window.showInformationMessage('Cobrowser: browser restarted.');
+    }),
+    // Fired by sidebar tab items. Was referenced by the tree but never registered —
+    // clicking a tab in the sidebar threw "command 'cobrowser.revealTab' not found".
+    vscode.commands.registerCommand('cobrowser.revealTab', async (pageId: string) => {
+      const s = await getSession();
+      // selectPage fires onPageReveal → BrowserPanel.reveal (focuses the editor tab).
+      await s.run(() => s.selectPage(pageId, true)).catch(() => undefined);
     }),
   );
 
