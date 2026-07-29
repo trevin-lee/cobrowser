@@ -34,7 +34,9 @@ export async function writeClientConfigs(port: number, token: string, log: Log):
     .then(undefined, () => undefined);
   await mergeJson(vscode.Uri.joinPath(root, '.cursor', 'mcp.json'), (json) => {
     const servers = (json.mcpServers ??= {});
-    servers.cobrowser = { url, headers };
+    // `type: 'http'` for consistency with .mcp.json — both clients accept it, and
+    // an entry without it can be treated as a stdio server (expecting `command`).
+    servers.cobrowser = { type: 'http', url, headers };
     return json;
   }, log);
 

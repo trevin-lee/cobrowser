@@ -2,7 +2,7 @@
   "name": "cobrowser",
   "displayName": "Cobrowser",
   "description": "An embedded, agent-controllable browser inside your editor — co-driven by you (webview) and your AI agent (MCP).",
-  "version": "0.1.0",
+  "version": "0.2.3",
   "publisher": "trevin-lee",
   "private": true,
   "license": "MIT",
@@ -34,7 +34,8 @@
   ],
   "main": "./dist/extension.js",
   "activationEvents": [
-    "onStartupFinished"
+    "onStartupFinished",
+    "onWebviewPanel:cobrowser"
   ],
   "contributes": {
     "commands": [
@@ -45,7 +46,7 @@
       {
         "command": "cobrowser.newTab",
         "title": "Cobrowser: New Browser Tab",
-        "icon": "$(add)"
+        "icon": "media/icon.png"
       },
       {
         "command": "cobrowser.restartBrowser",
@@ -53,6 +54,12 @@
       }
     ],
     "menus": {
+      "editor/title": [
+        {
+          "command": "cobrowser.newTab",
+          "group": "navigation@100"
+        }
+      ],
       "view/title": [
         {
           "command": "cobrowser.newTab",
@@ -99,8 +106,21 @@
         },
         "cobrowser.port": {
           "type": "number",
-          "default": 39273,
-          "description": "Preferred localhost port for the in-process MCP server. Falls back to an ephemeral port if taken."
+          "default": 0,
+          "description": "Localhost port for the in-process MCP server. 0 (default) = pick a free port automatically and remember it per-workspace, so every window/repo gets its own stable endpoint and two windows never collide (which would make agents drive each other's browsers). Set a specific number only to pin a port for one workspace."
+        },
+        "cobrowser.uncapFrameRate": {
+          "type": "boolean",
+          "default": false,
+          "description": "Remove headless Chrome's 60fps compositor cap so panels stream at up to ~90-100fps (the JPEG-encode ceiling). COSTLY: pages that animate via requestAnimationFrame will render thousands of frames per second internally (measured ~6800), pegging CPU and draining battery — leave off unless plugged in and chasing maximum smoothness. Takes effect after 'Cobrowser: Restart Browser'.",
+          "tags": [
+            "experimental"
+          ]
+        },
+        "cobrowser.autoFallbackPasskeys": {
+          "type": "boolean",
+          "default": true,
+          "description": "Install a virtual WebAuthn authenticator so passkey/WebAuthn prompts fail fast and sites fall back to a password. Headless Chromium can't show the OS fingerprint prompt, so a passkey ceremony would otherwise hang forever. Turn OFF only when running headful (cobrowser.headless: false) to sign in with the real OS prompt."
         }
       }
     }
@@ -111,7 +131,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.webview.json",
     "package": "vsce package",
     "publish:ovsx": "ovsx publish",
-    "vscode:prepublish": "node esbuild.mjs --production"
+    "vscode:prepublish": "node esbuild.mjs --production",
+    "release": "node scripts/release.mjs"
   },
   "dependencies": {
     "@puppeteer/browsers": "^2.13.2",

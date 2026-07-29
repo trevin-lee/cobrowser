@@ -32,6 +32,7 @@ export function resolveLaunchOptions(
   profileDir: string,
   chromePath: string,
   headless: boolean,
+  uncapFrameRate = false,
 ): LaunchOptions {
   return {
     executablePath: chromePath,
@@ -47,6 +48,11 @@ export function resolveLaunchOptions(
       // the browser) doesn't lose your open tabs. Verified to work in headless.
       '--restore-last-session',
       ...(headless ? ['--window-size=1280,800'] : []),
+      // Opt-in beyond-60fps: headless self-paces its compositor at 60 (no real monitor).
+      // Removing the limit lifts the screencast to ~90-100fps (JPEG-encode ceiling), but
+      // rAF-driven pages then render THOUSANDS of frames/s (measured 6867) — heavy CPU
+      // and battery cost, which is why this is off by default.
+      ...(uncapFrameRate ? ['--disable-frame-rate-limit', '--disable-gpu-vsync'] : []),
     ],
   };
 }

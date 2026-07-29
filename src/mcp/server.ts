@@ -37,6 +37,7 @@ function parseHostname(host: string | undefined): string | undefined {
 export async function startMcpHttpServer(
   token: string,
   preferredPort: number,
+  predecessorPid: number | undefined,
   getSession: GetSession,
   log: Log,
 ): Promise<McpHttp> {
@@ -46,6 +47,16 @@ export async function startMcpHttpServer(
       if (!res.headersSent) res.writeHead(500).end('Internal Server Error');
       else res.end();
     });
+  });
+
+  // Track live sockets so close() can DESTROY them. http.Server.close() only
+  // stops accepting new connections; a keep-alive MCP client connection would
+  // otherwise keep the port bound and the extension host alive as a zombie —
+  // which is exactly why the preferred port was never free on the next reload.
+  const sockets = new Set<import('node:net').Socket>();
+  httpServer.on('connection', (s) => {
+    sockets.add(s);
+    s.on('close', () => sockets.delete(s));
   });
 
   async function handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -85,14 +96,20 @@ export async function startMcpHttpServer(
     await transport.handleRequest(req, res, body);
   }
 
-  const port = await bindPort(httpServer, preferredPort);
+  const port = await bindPort(httpServer, preferredPort, predecessorPid, log);
   log(`MCP server listening on http://127.0.0.1:${port}/mcp`);
 
   return {
     port,
     close: () =>
       new Promise<void>((resolve) => {
+        // Destroy live sockets first so the listener actually releases the port
+        // now (not whenever a keep-alive client happens to disconnect).
+        for (const s of sockets) s.destroy();
+        sockets.clear();
         httpServer.close(() => resolve());
+        // Belt-and-suspenders: don't let a laggy close() hold up deactivation.
+        setTimeout(resolve, 500).unref?.();
       }),
   };
 }

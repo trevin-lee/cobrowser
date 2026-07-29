@@ -4,6 +4,7 @@
 
 interface VsCodeApi {
   postMessage(message: unknown): void;
+  setState(state: unknown): void;
 }
 declare function acquireVsCodeApi(): VsCodeApi;
 
@@ -47,13 +48,16 @@ function fire(type: string, params?: Record<string, unknown>): void {
 
 window.addEventListener('message', (event: MessageEvent) => {
   const m = event.data;
-  if (m?.method === 'Page.screencastFrame') {
-    drawFrame(m.result as { data: string; metadata: FrameMetadata });
+  if (m?.method === 'cobrowser.frame') {
+    onFrame(m as { bytes: Uint8Array | ArrayBuffer; metadata: FrameMetadata });
     return;
   }
   if (m?.type === 'extension.url') {
     // Don't clobber what the user is typing.
     if (document.activeElement !== urlInput) urlInput.value = m.url;
+    // Persist for VS Code's panel serializer: on reload the restored tab shell hands
+    // this state back, letting the host match it to its page (instant tabs).
+    vscode.setState({ url: m.url });
     return;
   }
   if (m?.type === 'extension.highlight') {
@@ -64,31 +68,60 @@ window.addEventListener('message', (event: MessageEvent) => {
     zoomLabel.textContent = Math.round((m.zoom ?? 1) * 100) + '%';
     return;
   }
-});
-
-const image = new Image();
-let pendingData: string | null = null;
-image.onload = () => {
-  if (canvas.width !== image.width || canvas.height !== image.height) {
-    canvas.width = image.width;
-    canvas.height = image.height;
-  }
-  ctx.drawImage(image, 0, 0);
-  // If a newer frame arrived mid-decode, render it next.
-  if (pendingData) {
-    const next = pendingData;
-    pendingData = null;
-    image.src = 'data:image/jpeg;base64,' + next;
-  }
-};
-
-function drawFrame(result: { data: string; metadata: FrameMetadata }): void {
-  lastMeta = result.metadata || {};
-  if (!image.complete) {
-    pendingData = result.data; // coalesce: skip stale frames while one is decoding
+  if (m?.type === 'extension.remeasure') {
+    // Host wants the current panel size re-pushed (e.g. this tab just became the
+    // foreground and the page viewport may be stale). Bypass the dedupe key.
+    lastVp = '';
+    reportViewport();
     return;
   }
-  image.src = 'data:image/jpeg;base64,' + result.data;
+  if (m?.type === 'extension.contextmenu') {
+    showMenu(
+      (m.at ?? { clientX: 0, clientY: 0 }) as { clientX: number; clientY: number },
+      !!m.hasSelection,
+      (m.link ?? null) as string | null,
+    );
+    return;
+  }
+});
+
+// Binary frame path: raw JPEG bytes arrive over postMessage (no base64, no data: URL)
+// and decode OFF the main thread via createImageBitmap. Latest-frame-wins: if a new
+// frame lands while one is decoding, the queued one is replaced, never backlogged.
+interface BinaryFrame {
+  bytes: Uint8Array | ArrayBuffer;
+  metadata: FrameMetadata;
+}
+let decoding = false;
+let queuedFrame: BinaryFrame | null = null;
+
+function onFrame(frame: BinaryFrame): void {
+  if (decoding) {
+    queuedFrame = frame;
+    return;
+  }
+  decoding = true;
+  void renderFrame(frame).finally(() => {
+    decoding = false;
+    const next = queuedFrame;
+    queuedFrame = null;
+    if (next) onFrame(next);
+  });
+}
+
+async function renderFrame(frame: BinaryFrame): Promise<void> {
+  try {
+    lastMeta = frame.metadata || {};
+    const bmp = await createImageBitmap(new Blob([frame.bytes as BlobPart], { type: 'image/jpeg' }));
+    if (canvas.width !== bmp.width || canvas.height !== bmp.height) {
+      canvas.width = bmp.width;
+      canvas.height = bmp.height;
+    }
+    ctx.drawImage(bmp, 0, 0);
+    bmp.close();
+  } catch {
+    /* malformed/torn frame — skip it, the next one repaints */
+  }
 }
 
 // ----- coordinate mapping: displayed canvas px -> page CSS px -----
@@ -96,8 +129,12 @@ function toPageCoords(e: MouseEvent): { x: number; y: number } {
   const rect = canvas.getBoundingClientRect();
   const deviceWidth = lastMeta.deviceWidth || canvas.width;
   const deviceHeight = lastMeta.deviceHeight || canvas.height;
-  const x = ((e.clientX - rect.left) / rect.width) * deviceWidth;
-  const y = ((e.clientY - rect.top) / rect.height) * deviceHeight + (lastMeta.offsetTop || 0);
+  // Clamp: drags tracked at window level can leave the canvas — pin them to the
+  // page edge (matches how a real browser selects when you drag past the window).
+  const fx = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+  const fy = Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height));
+  const x = fx * deviceWidth;
+  const y = fy * deviceHeight + (lastMeta.offsetTop || 0);
   return { x: Math.round(x), y: Math.round(y) };
 }
 
@@ -110,19 +147,38 @@ function buttonName(button: number): string {
 }
 
 // ----- mouse -----
+/** CDP name of the currently-held primary button, for move events. Blink only
+ *  treats a move as part of a drag (text selection, sliders, drag-and-drop)
+ *  when `button` is set on the move — the `buttons` bitmask alone is not enough
+ *  (puppeteer's Mouse does the same). */
+function heldButton(buttons: number): string | undefined {
+  if (buttons & 1) return 'left';
+  if (buttons & 2) return 'right';
+  if (buttons & 4) return 'middle';
+  return undefined;
+}
+
 let lastMove = 0;
-canvas.addEventListener('mousemove', (e) => {
+let dragging = false;
+
+function sendMove(e: MouseEvent): void {
   const now = performance.now();
-  if (now - lastMove < 33) return; // ~30fps throttle to avoid flooding CDP
+  if (now - lastMove < 16) return; // ~60fps — input bypasses the agent queue, so it's cheap
   lastMove = now;
   const { x, y } = toPageCoords(e);
-  // `buttons` must be carried on moves or CDP treats a held-button drag as a hover,
-  // and drag-select / sliders / drag-and-drop never register.
-  fire('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, buttons: e.buttons, modifiers: modifiers(e) });
-});
+  fire('Input.dispatchMouseEvent', {
+    type: 'mouseMoved',
+    x,
+    y,
+    button: heldButton(e.buttons),
+    buttons: e.buttons,
+    modifiers: modifiers(e),
+  });
+}
 
 canvas.addEventListener('mousedown', (e) => {
   canvas.focus();
+  dragging = true;
   const { x, y } = toPageCoords(e);
   fire('Input.dispatchMouseEvent', {
     type: 'mousePressed',
@@ -135,7 +191,18 @@ canvas.addEventListener('mousedown', (e) => {
   });
 });
 
-canvas.addEventListener('mouseup', (e) => {
+// Moves and releases are tracked on WINDOW, not the canvas: a drag that leaves the
+// canvas must keep selecting and must end when the button is released anywhere —
+// canvas-scoped listeners froze the drag at the edge (parity gap vs a real browser).
+// toPageCoords clamps out-of-bounds positions to the page viewport.
+window.addEventListener('mousemove', (e) => {
+  if (!dragging && e.target !== canvas) return;
+  sendMove(e);
+});
+
+window.addEventListener('mouseup', (e) => {
+  if (!dragging && e.target !== canvas) return;
+  dragging = false;
   const { x, y } = toPageCoords(e);
   fire('Input.dispatchMouseEvent', {
     type: 'mouseReleased',
@@ -148,7 +215,74 @@ canvas.addEventListener('mouseup', (e) => {
   });
 });
 
-canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+// ----- context menu -----
+// Headless Chrome's real context menu is browser chrome — it doesn't exist in the
+// screencast — so we render our own, populated from what's under the cursor (the host
+// answers 'extension.contextinfo' with selection/link state, then we show the menu).
+const ctxMenu = document.createElement('div');
+ctxMenu.id = 'ctxmenu';
+ctxMenu.hidden = true;
+document.body.appendChild(ctxMenu);
+
+canvas.addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+  const { x, y } = toPageCoords(e);
+  fire('extension.contextinfo', { x, y, clientX: e.clientX, clientY: e.clientY });
+});
+
+function hideMenu(): void {
+  ctxMenu.hidden = true;
+}
+window.addEventListener('mousedown', (e) => {
+  if (!ctxMenu.contains(e.target as Node)) hideMenu();
+}, true);
+window.addEventListener('blur', hideMenu);
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') hideMenu();
+}, true);
+
+type MenuEntry = { label: string; action: () => void; enabled?: boolean } | 'sep';
+
+function showMenu(at: { clientX: number; clientY: number }, hasSelection: boolean, link: string | null): void {
+  const items: MenuEntry[] = [
+    { label: 'Back', action: () => fire('extension.back') },
+    { label: 'Forward', action: () => fire('extension.forward') },
+    { label: 'Reload', action: () => fire('extension.reload') },
+    'sep',
+    { label: 'Copy', action: () => fire('extension.copy'), enabled: hasSelection },
+    { label: 'Paste', action: () => fire('extension.paste') },
+    { label: 'Select All', action: () => fire('extension.selectall') },
+  ];
+  if (link) {
+    items.push(
+      'sep',
+      { label: 'Open Link in New Tab', action: () => fire('extension.openlink', { url: link }) },
+      { label: 'Copy Link Address', action: () => fire('extension.copylink', { url: link }) },
+    );
+  }
+  ctxMenu.textContent = '';
+  for (const it of items) {
+    if (it === 'sep') {
+      const s = document.createElement('div');
+      s.className = 'sep';
+      ctxMenu.appendChild(s);
+      continue;
+    }
+    const d = document.createElement('div');
+    d.className = 'item' + (it.enabled === false ? ' disabled' : '');
+    d.textContent = it.label;
+    d.addEventListener('click', () => {
+      if (it.enabled === false) return;
+      hideMenu();
+      it.action();
+    });
+    ctxMenu.appendChild(d);
+  }
+  ctxMenu.hidden = false;
+  // Clamp inside the panel so the menu never renders half off-screen.
+  ctxMenu.style.left = Math.max(0, Math.min(at.clientX, window.innerWidth - ctxMenu.offsetWidth - 4)) + 'px';
+  ctxMenu.style.top = Math.max(0, Math.min(at.clientY, window.innerHeight - ctxMenu.offsetHeight - 4)) + 'px';
+}
 
 canvas.addEventListener(
   'wheel',
@@ -176,6 +310,10 @@ canvas.addEventListener('keydown', (e) => {
     if (e.key === '=' || e.key === '+') { e.preventDefault(); fire('extension.zoom', { dir: 'in' }); return; }
     if (e.key === '-' || e.key === '_') { e.preventDefault(); fire('extension.zoom', { dir: 'out' }); return; }
     if (e.key === '0') { e.preventDefault(); fire('extension.zoom', { dir: 'reset' }); return; }
+    // Clipboard/selection parity: the headless browser's clipboard is sandboxed away
+    // from the OS, so copy must be routed through the host (paste already is, below).
+    if (e.key === 'c') { e.preventDefault(); fire('extension.copy'); return; }
+    if (e.key === 'a') { e.preventDefault(); fire('extension.selectall'); return; }
   }
   e.preventDefault();
   const printable = e.key.length === 1 && !e.ctrlKey && !e.metaKey;
@@ -280,6 +418,23 @@ new ResizeObserver(() => {
   // resize rather than let a stale box sit misaligned until the next action.
   highlightEl.classList.remove('show');
 }).observe(stage);
+
+// Re-report when the window lands on a monitor with a different devicePixelRatio:
+// the CSS size doesn't change (so the ResizeObserver stays silent) but the backing
+// resolution must, or the page keeps rendering at the old monitor's density and
+// looks soft. A matchMedia for the CURRENT dpr fires exactly when it stops matching;
+// re-arm for the new value each time.
+function watchDpr(): void {
+  const mq = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+  const onChange = (): void => {
+    mq.removeEventListener('change', onChange);
+    lastVp = ''; // force a fresh viewport push at the new density
+    reportViewport();
+    watchDpr();
+  };
+  mq.addEventListener('change', onChange);
+}
+watchDpr();
 
 // Tell the host we're listening so it (re)starts the screencast now that the message
 // handler exists — otherwise the initial frame is lost and a static page stays blank.

@@ -46,17 +46,14 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<TreeNode> {
     }
 
     const p = node.page;
+    // Display-only: no click command. The editor tabs are the real tab bar; making these
+    // clickable duplicated that (buggily) and pulled focus around.
     const item = new vscode.TreeItem(p.title || hostOf(p.url) || 'New tab');
     item.description = hostOf(p.url);
     item.tooltip = p.url;
     // Filled dot marks the active (foreground) tab; hollow for the rest.
     item.iconPath = new vscode.ThemeIcon(p.selected ? 'circle-filled' : 'circle-outline');
     item.contextValue = 'cobrowser.tab';
-    item.command = {
-      command: 'cobrowser.revealTab',
-      title: 'Reveal Tab',
-      arguments: [p.pageId],
-    };
     return item;
   }
 
