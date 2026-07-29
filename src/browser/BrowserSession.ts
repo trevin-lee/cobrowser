@@ -501,6 +501,60 @@ export class BrowserSession {
     };
   }
 
+  /**
+   * Resize the OS-level window that owns `page` to a CSS size. Tab capture (the WebRTC
+   * path) renders the WINDOW surface — not the emulated viewport — and delivers it at 2x,
+   * so matching the window to the panel is what makes the video the right shape and
+   * natively crisp. Each page has its own window (createPageInNewWindow), so this only
+   * affects that tab. No-op'd errors: sizing is an optimization, never load-bearing.
+   */
+  async setWindowSize(page: Page, cssWidth: number, cssHeight: number): Promise<void> {
+    if (cssWidth < 50 || cssHeight < 50) return;
+    try {
+      const cdp = await withTimeout(this.browser.target().createCDPSession(), 2000);
+      if (!cdp) return;
+      try {
+        const targetId = (page.target() as unknown as { _targetId?: string })._targetId;
+        if (!targetId) return;
+        const { windowId } = (await withTimeout(
+          cdp.send('Browser.getWindowForTarget', { targetId }),
+          2000,
+        )) as { windowId: number };
+        // The window includes chrome above the content area, so the content comes out
+        // shorter than the bounds we ask for. Measure the delta once and compensate.
+        const before = await page.evaluate(() => window.innerHeight).catch(() => 0);
+        await withTimeout(
+          cdp.send('Browser.setWindowBounds', {
+            windowId,
+            bounds: { width: cssWidth, height: cssHeight + this.windowChromeH },
+          }),
+          2000,
+        );
+        if (!this.windowChromeMeasured && before > 0) {
+          const after = await page.evaluate(() => window.innerHeight).catch(() => 0);
+          if (after > 0 && after < cssHeight) {
+            this.windowChromeH = cssHeight - after;
+            this.windowChromeMeasured = true;
+            await withTimeout(
+              cdp.send('Browser.setWindowBounds', {
+                windowId,
+                bounds: { width: cssWidth, height: cssHeight + this.windowChromeH },
+              }),
+              2000,
+            );
+          }
+        }
+      } finally {
+        await cdp.detach().catch(() => undefined);
+      }
+    } catch {
+      /* window sizing unsupported — capture just keeps its previous shape */
+    }
+  }
+
+  private windowChromeH = 0;
+  private windowChromeMeasured = false;
+
   /** Open an infrastructure page (own window) that is invisible to the agent's tab
    *  list, panels, persistence, and last-tab-quit — used by the video-capture hub. */
   async createInternalPage(url: string): Promise<Page> {

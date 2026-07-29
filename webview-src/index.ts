@@ -21,6 +21,7 @@ const vscode = acquireVsCodeApi();
 
 const stage = document.getElementById('stage') as HTMLDivElement;
 const canvas = document.getElementById('screen') as HTMLCanvasElement;
+const videoEl = document.getElementById('video') as HTMLVideoElement;
 const ctx = canvas.getContext('2d')!;
 const urlInput = document.getElementById('url') as HTMLInputElement;
 const backBtn = document.getElementById('back') as HTMLButtonElement;
@@ -52,15 +53,11 @@ window.addEventListener('message', (event: MessageEvent) => {
     onFrame(m as { bytes: Uint8Array | ArrayBuffer; metadata: FrameMetadata });
     return;
   }
-  if (m?.method === 'cobrowser.h264config') {
-    configureVideo(m as { codec: string; width: number; height: number; description: string | null });
+  if (m?.method === 'cobrowser.rtcstart') {
+    startRtc(m as { url: string });
     return;
   }
-  if (m?.method === 'cobrowser.h264') {
-    onVideoChunk(m as { type: 'key' | 'delta'; ts: number; bytes: Uint8Array | ArrayBuffer });
-    return;
-  }
-  if (m?.method === 'cobrowser.h264reset') {
+  if (m?.method === 'cobrowser.rtcstop') {
     resetVideo();
     return;
   }
@@ -136,72 +133,86 @@ async function renderFrame(frame: BinaryFrame): Promise<void> {
   }
 }
 
-// ----- hardware-video path: H.264 chunks decoded by VideoDecoder (hardware) -----
-let videoDecoder: VideoDecoder | null = null;
-let awaitingKeyframe = true;
-
-function b64ToBytes(s: string): Uint8Array {
-  const bin = atob(s);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
+// ----- WebRTC path: the page arrives as a live MediaStream in a <video> element -----
+// This is the fast path. The editor composites <video> natively — no per-frame
+// JavaScript, no canvas blit, no structured-clone IPC — and WebRTC supplies frame
+// pacing and a jitter buffer. The canvas above stays as the fallback renderer.
+let pc: RTCPeerConnection | null = null;
+let sigWs: WebSocket | null = null;
 
 function resetVideo(): void {
   try {
-    videoDecoder?.close();
+    pc?.close();
   } catch {
     /* already closed */
   }
-  videoDecoder = null;
-  awaitingKeyframe = true;
+  try {
+    sigWs?.close();
+  } catch {
+    /* already closed */
+  }
+  pc = null;
+  sigWs = null;
+  videoEl.srcObject = null;
+  videoEl.hidden = true;
+  canvas.hidden = false;
 }
 
-function configureVideo(cfg: { codec: string; width: number; height: number; description: string | null }): void {
+function startRtc(cfg: { url: string }): void {
   resetVideo();
   try {
-    videoDecoder = new VideoDecoder({
-      output: (frame: VideoFrame) => {
-        if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
-          canvas.width = frame.displayWidth;
-          canvas.height = frame.displayHeight;
-        }
-        // The stream is the tab at device resolution, same mapping as the screencast.
-        lastMeta = { deviceWidth: frame.displayWidth, deviceHeight: frame.displayHeight };
-        ctx.drawImage(frame, 0, 0);
-        frame.close();
-      },
-      error: () => {
+    const ws = new WebSocket(cfg.url);
+    sigWs = ws;
+    const conn = new RTCPeerConnection({ iceServers: [] }); // loopback: host candidates
+    pc = conn;
+
+    conn.ontrack = (e) => {
+      videoEl.srcObject = e.streams[0];
+      void videoEl.play().catch(() => undefined);
+      // Only swap away from the canvas once real frames are flowing, so a failed
+      // negotiation never leaves a blank panel.
+      videoEl.onloadeddata = () => {
+        videoEl.hidden = false;
+        canvas.hidden = true;
+      };
+    };
+    conn.onicecandidate = (e) => {
+      if (e.candidate && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ kind: 'ice', payload: e.candidate }));
+      }
+    };
+    conn.onconnectionstatechange = () => {
+      if (conn.connectionState === 'failed' || conn.connectionState === 'disconnected') {
         resetVideo();
         fire('extension.videoerror'); // host falls back to the JPEG screencast
-      },
-    });
-    videoDecoder.configure({
-      codec: cfg.codec,
-      codedWidth: cfg.width,
-      codedHeight: cfg.height,
-      description: cfg.description ? b64ToBytes(cfg.description) : undefined,
-      hardwareAcceleration: 'prefer-hardware',
-    } as VideoDecoderConfig);
-    awaitingKeyframe = true;
-  } catch {
-    resetVideo();
-    fire('extension.videoerror');
-  }
-}
+      }
+    };
 
-function onVideoChunk(m: { type: 'key' | 'delta'; ts: number; bytes: Uint8Array | ArrayBuffer }): void {
-  if (!videoDecoder || videoDecoder.state !== 'configured') return;
-  if (awaitingKeyframe && m.type !== 'key') return; // can't start mid-GOP
-  awaitingKeyframe = false;
-  try {
-    videoDecoder.decode(
-      new EncodedVideoChunk({
-        type: m.type,
-        timestamp: m.ts,
-        data: m.bytes as BufferSource,
-      }),
-    );
+    ws.onmessage = async (ev: MessageEvent) => {
+      let m: { kind: string; payload: unknown };
+      try {
+        m = JSON.parse(String(ev.data));
+      } catch {
+        return;
+      }
+      try {
+        if (m.kind === 'offer') {
+          await conn.setRemoteDescription(m.payload as RTCSessionDescriptionInit);
+          const answer = await conn.createAnswer();
+          await conn.setLocalDescription(answer);
+          ws.send(JSON.stringify({ kind: 'answer', payload: conn.localDescription }));
+        } else if (m.kind === 'ice') {
+          await conn.addIceCandidate(m.payload as RTCIceCandidateInit).catch(() => undefined);
+        }
+      } catch {
+        resetVideo();
+        fire('extension.videoerror');
+      }
+    };
+    ws.onerror = () => {
+      resetVideo();
+      fire('extension.videoerror');
+    };
   } catch {
     resetVideo();
     fire('extension.videoerror');
@@ -210,15 +221,19 @@ function onVideoChunk(m: { type: 'key' | 'delta'; ts: number; bytes: Uint8Array 
 
 // ----- coordinate mapping: displayed canvas px -> page CSS px -----
 function toPageCoords(e: MouseEvent): { x: number; y: number } {
-  const rect = canvas.getBoundingClientRect();
-  const deviceWidth = lastMeta.deviceWidth || canvas.width;
-  const deviceHeight = lastMeta.deviceHeight || canvas.height;
+  // Map against whichever surface is live: the <video> in WebRTC mode (its intrinsic
+  // size is the captured page), otherwise the canvas.
+  const live = !videoEl.hidden && videoEl.videoWidth > 0;
+  const rect = (live ? videoEl : canvas).getBoundingClientRect();
+  const deviceWidth = live ? videoEl.videoWidth : lastMeta.deviceWidth || canvas.width;
+  const deviceHeight = live ? videoEl.videoHeight : lastMeta.deviceHeight || canvas.height;
   // Clamp: drags tracked at window level can leave the canvas — pin them to the
   // page edge (matches how a real browser selects when you drag past the window).
   const fx = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
   const fy = Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height));
   const x = fx * deviceWidth;
-  const y = fy * deviceHeight + (lastMeta.offsetTop || 0);
+  // offsetTop is a screencast-metadata concept; the WebRTC stream has no such offset.
+  const y = fy * deviceHeight + (live ? 0 : lastMeta.offsetTop || 0);
   return { x: Math.round(x), y: Math.round(y) };
 }
 

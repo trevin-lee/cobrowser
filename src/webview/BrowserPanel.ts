@@ -63,9 +63,9 @@ export class BrowserPanel {
   static videoHub: CaptureHub | undefined;
   static videoEnabled = false;
 
-  /** Route an encoded-video message from the hub to its panel's webview. */
-  static routeVideo(header: VideoHeader, payload: Buffer | undefined): void {
-    BrowserPanel.panels.get(header.pageId)?.postVideo(header, payload);
+  /** Deliver capture-side status (errors) from the hub to the owning panel. */
+  static routeVideo(header: VideoHeader): void {
+    BrowserPanel.panels.get(header.pageId)?.postVideo(header);
   }
 
   /** Tear down and re-establish every visible panel's stream — used when the
@@ -303,46 +303,48 @@ export class BrowserPanel {
       await this.session.run(() => this.session.focusPage(this.id)).catch(() => undefined);
       this.appliedKey = '';
       void this.panel.webview.postMessage({ type: 'extension.remeasure' });
-      // Prefer the hardware-video pipeline when enabled; any failure (controller,
-      // capture, encoder) falls straight back to the JPEG screencast.
+      // Prefer the WebRTC pipeline when enabled; any failure (controller, capture,
+      // negotiation, decode) falls straight back to the JPEG screencast.
       if (BrowserPanel.videoEnabled && BrowserPanel.videoHub) {
+        // Tab capture follows the WINDOW, not the emulated viewport, and delivers 2x.
+        // Size this page's window to the panel so the stream matches its aspect.
+        const { cssW, cssH } = this.metrics;
+        if (cssW > 50 && cssH > 50) {
+          await this.session
+            .run(() => this.session.setWindowSize(this.page, Math.round(cssW), Math.round(cssH)))
+            .catch(() => undefined);
+        }
+        // Tell the webview to join as the receiver BEFORE the offer is created, so the
+        // controller's offer has somewhere to land.
+        void this.panel.webview.postMessage({
+          method: 'cobrowser.rtcstart',
+          url: BrowserPanel.videoHub.viewerUrl(this.id),
+        });
         const ok = await BrowserPanel.videoHub.start(this.id, this.page);
         if (ok && this.streaming) {
           this.videoMode = true;
           return;
         }
+        void this.panel.webview.postMessage({ method: 'cobrowser.rtcstop' });
       }
       await this.startScreencast();
     } else if (this.videoMode) {
       this.videoMode = false;
       BrowserPanel.videoHub?.stop(this.id);
-      void this.panel.webview.postMessage({ method: 'cobrowser.h264reset' });
+      void this.panel.webview.postMessage({ method: 'cobrowser.rtcstop' });
     } else {
       await this.stopScreencast();
     }
   }
 
-  /** Forward encoded video (config or chunk) to the webview's VideoDecoder. */
-  private postVideo(header: VideoHeader, payload: Buffer | undefined): void {
+  /** Capture-side status. Media itself never reaches this process — it flows
+   *  peer-to-peer from the browser into the webview — so only failures matter here. */
+  private postVideo(header: VideoHeader): void {
     if (!this.videoMode) return;
-    if (header.kind === 'config') {
-      void this.panel.webview.postMessage({
-        method: 'cobrowser.h264config',
-        codec: header.codec,
-        width: header.width,
-        height: header.height,
-        description: header.description ?? null,
-      });
-    } else if (header.kind === 'chunk' && payload) {
-      void this.panel.webview.postMessage({
-        method: 'cobrowser.h264',
-        type: header.type,
-        ts: header.ts,
-        bytes: new Uint8Array(payload.buffer, payload.byteOffset, payload.byteLength),
-      });
-    } else if (header.kind === 'error') {
-      // Capture died mid-stream (site revoked, encoder error) — fall back live.
+    if (header.kind === 'error') {
+      // Capture died mid-stream (track ended, negotiation failed) — fall back live.
       this.videoMode = false;
+      void this.panel.webview.postMessage({ method: 'cobrowser.rtcstop' });
       void this.startScreencast();
     }
   }
@@ -631,7 +633,7 @@ export class BrowserPanel {
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}';" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}'; connect-src ws://127.0.0.1:*; media-src blob: mediastream:;" />
   <style nonce="${nonce}">${css}</style>
   <title>Cobrowser</title>
 </head>
@@ -660,6 +662,7 @@ export class BrowserPanel {
   </div>
   <div id="stage">
     <canvas id="screen" tabindex="0"></canvas>
+    <video id="video" tabindex="0" autoplay muted playsinline hidden></video>
     <div id="highlight" hidden></div>
   </div>
   <script nonce="${nonce}">${js}</script>

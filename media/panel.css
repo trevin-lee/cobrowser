@@ -182,3 +182,15 @@ button.icon svg {
   margin: 4px 8px;
   background: var(--vscode-menu-separatorBackground, rgba(128, 128, 128, 0.35));
 }
+
+/* WebRTC surface: same box as the canvas it replaces. Composited natively by the
+   editor, so there is no per-frame JS in this path. */
+#video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: #fff;
+  object-fit: fill; /* the stream is already the panel's aspect (window-sized capture) */
+}
+#video[hidden] { display: none; }
+#screen[hidden] { display: none; }

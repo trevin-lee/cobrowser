@@ -17,6 +17,15 @@ export interface VideoHeader {
   message?: string;
 }
 
+/** WebRTC signaling relayed between the in-browser capture controller and a panel's
+ *  webview. Only setup traffic crosses the extension host — the media itself flows
+ *  peer-to-peer over loopback, straight from Chrome into the webview's <video>. */
+interface SignalMessage {
+  pageId: string;
+  kind: 'offer' | 'answer' | 'ice' | 'stop';
+  payload?: unknown;
+}
+
 /** The tab title the --auto-select-tab-capture-source-by-title flag auto-approves.
  *  A page carries it only for the ~100ms it takes getDisplayMedia to bind. */
 const MAGIC_TITLE = '__cobrowser_capture__';
@@ -49,6 +58,14 @@ export class CaptureHub {
     this.frameCb = cb;
   }
 
+  /** Panel webviews connected as WebRTC receivers, keyed by pageId. */
+  private viewers = new Map<string, WebSocket>();
+
+  /** ws:// URL a webview uses to join as the viewer for a page. */
+  viewerUrl(pageId: string): string {
+    return `ws://127.0.0.1:${this.port}/capture?token=${encodeURIComponent(this.token)}&role=viewer&pageId=${encodeURIComponent(pageId)}`;
+  }
+
   /** Accept the controller's WebSocket on the existing MCP HTTP server. */
   attach(httpServer: http.Server, port: number): void {
     this.port = port;
@@ -59,10 +76,45 @@ export class CaptureHub {
         socket.destroy();
         return;
       }
+      // A panel webview joining as the WebRTC receiver for one page. Signaling only —
+      // once the peer connection is up, media bypasses this process entirely.
+      if (url.searchParams.get('role') === 'viewer') {
+        const pageId = url.searchParams.get('pageId') ?? '';
+        this.wss?.handleUpgrade(req, socket, head, (ws) => {
+          this.viewers.get(pageId)?.close(); // replace any stale viewer for this page
+          this.viewers.set(pageId, ws);
+          ws.on('message', (data: Buffer) => {
+            // answer / ice from the webview → forward to the controller
+            try {
+              const msg = JSON.parse(data.toString('utf8')) as SignalMessage;
+              this.controllerWs?.send(JSON.stringify({ cmd: 'signal', ...msg, pageId }));
+            } catch {
+              /* malformed */
+            }
+          });
+          ws.on('close', () => {
+            if (this.viewers.get(pageId) === ws) this.viewers.delete(pageId);
+          });
+        });
+        return;
+      }
       this.wss?.handleUpgrade(req, socket, head, (ws) => {
         this.controllerWs = ws;
         ws.on('message', (data: Buffer, isBinary: boolean) => {
-          if (!isBinary) return;
+          if (!isBinary) {
+            // Text = WebRTC signaling from the controller (offer / ice) → its viewer.
+            try {
+              const msg = JSON.parse(data.toString('utf8')) as SignalMessage;
+              if (msg.kind === 'offer' || msg.kind === 'ice') {
+                this.viewers.get(msg.pageId)?.send(JSON.stringify(msg));
+              } else if (msg.kind === 'stop') {
+                this.pendingStarts.get(msg.pageId)?.(false);
+              }
+            } catch {
+              /* malformed */
+            }
+            return;
+          }
           try {
             const headerLen = data.readUInt32LE(0);
             const header = JSON.parse(data.subarray(4, 4 + headerLen).toString('utf8')) as VideoHeader;

@@ -259,7 +259,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     log,
   );
   captureHub.attach(mcp.httpServer, mcp.port);
-  captureHub.onFrame((h, payload) => BrowserPanel.routeVideo(h, payload));
+  captureHub.onFrame((h) => BrowserPanel.routeVideo(h));
   if (session) captureHub.setSession(session); // session may already exist (fast restore)
   BrowserPanel.videoHub = captureHub;
   BrowserPanel.videoEnabled = cfg.get<boolean>('videoPipeline', false);
