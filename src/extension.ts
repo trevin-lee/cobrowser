@@ -160,13 +160,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // when the browser came up with nothing but the initial blank page — if Chrome's own
   // --restore-last-session worked, we skip rather than duplicate.
   const restoreTabs = async (s: BrowserSession, tabs: SavedTab[]): Promise<void> => {
-    if (tabs.length === 0) return;
-    if (s.pageEntries().some((e) => e.url && e.url !== 'about:blank')) {
-      BrowserPanel.clearColumnPlan(); // Chrome restored on its own — plan no longer applies
-      return;
-    }
-    log(`Restoring ${tabs.length} saved tab(s).`);
     try {
+      if (tabs.length === 0) return;
+      if (s.pageEntries().some((e) => e.url && e.url !== 'about:blank')) return; // Chrome restored on its own
+      log(`Restoring ${tabs.length} saved tab(s).`);
       await s.run(() => s.navigate('url', tabs[0].url)); // reuse the initial blank page
       for (const t of tabs.slice(1)) {
         await s.run(() => s.newPage(t.url, { background: true }));
@@ -175,6 +172,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       log(`Tab restore failed: ${String(err)}`);
     } finally {
       BrowserPanel.clearColumnPlan(); // whatever's left no longer maps to anything
+      BrowserPanel.disposeUnclaimedRestored(); // ghost shells whose pages never came back
     }
   };
 
@@ -192,7 +190,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           try {
             const s = await BrowserSession.connect(savedWs, headless, autoFallbackPasskeys);
             log('Reconnected to the browser from before the reload — tabs intact.');
-            return wire(s);
+            const wired = await wire(s);
+            BrowserPanel.disposeUnclaimedRestored(); // pages adopted their shells in wire()
+            return wired;
           } catch {
             await context.workspaceState.update(WS_KEY, undefined);
             log('Previous browser is gone; launching a fresh one.');
@@ -222,6 +222,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     return sessionPromise;
   };
+
+  // Restore cobrowser tabs INSTANTLY on reload, like editor tabs: VS Code recreates the
+  // panel shells at startup and hands them here — each paints its toolbar immediately and
+  // waits to be adopted by its page once the browser is up (openForPage matches by URL).
+  context.subscriptions.push(
+    vscode.window.registerWebviewPanelSerializer('cobrowser', {
+      deserializeWebviewPanel: async (panel, state) => {
+        BrowserPanel.addRestored(context, panel, (state as { url?: string } | undefined)?.url);
+        void getSession(); // ensure the browser comes back to claim the shells
+      },
+    }),
+  );
 
   // In-process MCP server (per-request stateless transport).
   mcp = await startMcpHttpServer(token, preferredPort, predecessorPid, getSession, log);

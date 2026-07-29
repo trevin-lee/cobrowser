@@ -4,6 +4,7 @@
 
 interface VsCodeApi {
   postMessage(message: unknown): void;
+  setState(state: unknown): void;
 }
 declare function acquireVsCodeApi(): VsCodeApi;
 
@@ -54,6 +55,9 @@ window.addEventListener('message', (event: MessageEvent) => {
   if (m?.type === 'extension.url') {
     // Don't clobber what the user is typing.
     if (document.activeElement !== urlInput) urlInput.value = m.url;
+    // Persist for VS Code's panel serializer: on reload the restored tab shell hands
+    // this state back, letting the host match it to its page (instant tabs).
+    vscode.setState({ url: m.url });
     return;
   }
   if (m?.type === 'extension.highlight') {

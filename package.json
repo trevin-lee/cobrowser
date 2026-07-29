@@ -2,7 +2,7 @@
   "name": "cobrowser",
   "displayName": "Cobrowser",
   "description": "An embedded, agent-controllable browser inside your editor — co-driven by you (webview) and your AI agent (MCP).",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "trevin-lee",
   "private": true,
   "license": "MIT",
@@ -34,7 +34,8 @@
   ],
   "main": "./dist/extension.js",
   "activationEvents": [
-    "onStartupFinished"
+    "onStartupFinished",
+    "onWebviewPanel:cobrowser"
   ],
   "contributes": {
     "commands": [

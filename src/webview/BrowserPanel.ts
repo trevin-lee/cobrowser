@@ -69,6 +69,47 @@ export class BrowserPanel {
     return BrowserPanel.panels.get(id);
   }
 
+  /** Panels restored by VS Code's serializer at startup — the tab shell exists
+   *  instantly (like editor tabs); each waits here to be adopted by its page once
+   *  the session is up. Keyed by the page URL the webview saved as state. */
+  private static restoredPool: Array<{ panel: vscode.WebviewPanel; url?: string }> = [];
+
+  /** Park a deserialized panel until its page exists. Paints the toolbar shell
+   *  immediately so the restored tab isn't a blank void while Chrome launches. */
+  static addRestored(
+    context: vscode.ExtensionContext,
+    panel: vscode.WebviewPanel,
+    url: string | undefined,
+  ): void {
+    panel.webview.options = { enableScripts: true };
+    panel.iconPath = vscode.Uri.joinPath(context.extensionUri, 'media', 'icon.png');
+    panel.webview.html = BrowserPanel.renderHtml(context);
+    const entry = { panel, url };
+    BrowserPanel.restoredPool.push(entry);
+    // If the user closes the placeholder before adoption, forget it.
+    panel.onDidDispose(() => {
+      BrowserPanel.restoredPool = BrowserPanel.restoredPool.filter((e) => e !== entry);
+    });
+  }
+
+  /** Claim a restored panel for a page: exact URL match first; a page still on
+   *  about:blank (the initial page, adopted before its restore-navigation runs)
+   *  takes the oldest one — restore order equals creation order. */
+  private static takeRestored(url: string): vscode.WebviewPanel | undefined {
+    let idx = BrowserPanel.restoredPool.findIndex((e) => e.url === url);
+    if (idx < 0 && url === 'about:blank' && BrowserPanel.restoredPool.length > 0) idx = 0;
+    if (idx < 0) return undefined;
+    const [entry] = BrowserPanel.restoredPool.splice(idx, 1);
+    return entry.panel;
+  }
+
+  /** Dispose restored panels no page claimed (their tabs were closed pre-reload,
+   *  or the session came back with a different set). */
+  static disposeUnclaimedRestored(): void {
+    for (const e of [...BrowserPanel.restoredPool]) e.panel.dispose();
+    BrowserPanel.restoredPool = [];
+  }
+
   /** Open (or reveal) the panel for a page. Reveal=false opens it as a tab
    *  without stealing focus (agent background tabs). */
   static openForPage(
@@ -82,6 +123,14 @@ export class BrowserPanel {
     if (existing) {
       if (reveal) existing.panel.reveal(undefined, false); // focus it in its own group, don't move it
       return existing;
+    }
+    // Adopt a serializer-restored shell if one matches: it's already sitting in its
+    // pre-reload editor group, so this also restores the split layout exactly.
+    const adopted = BrowserPanel.takeRestored(page.url());
+    if (adopted) {
+      const bp = new BrowserPanel(context, session, adopted, page, id);
+      BrowserPanel.panels.set(id, bp);
+      return bp;
     }
     // A planned column (tab restore) wins — it recreates the pre-reload split. Otherwise
     // stack new tabs in the column an existing cobrowser panel already occupies, so they
@@ -97,10 +146,6 @@ export class BrowserPanel {
       {
         enableScripts: true,
         retainContextWhenHidden: true,
-        localResourceRoots: [
-          vscode.Uri.joinPath(context.extensionUri, 'dist'),
-          vscode.Uri.joinPath(context.extensionUri, 'media'),
-        ],
       },
     );
     panel.iconPath = vscode.Uri.joinPath(context.extensionUri, 'media', 'icon.png');
@@ -138,7 +183,7 @@ export class BrowserPanel {
     private id: string,
   ) {
     this.origin = hostOf(page.url());
-    this.panel.webview.html = this.html();
+    this.panel.webview.html = BrowserPanel.renderHtml(this.context);
     this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
     this.panel.webview.onDidReceiveMessage((m) => void this.onMessage(m), null, this.disposables);
 
@@ -419,14 +464,16 @@ export class BrowserPanel {
     }
   }
 
-  private html(): string {
+  /** Full panel HTML. Static so serializer-restored shells can paint before any
+   *  BrowserPanel instance exists (instant tabs on reload). */
+  private static renderHtml(context: vscode.ExtensionContext): string {
     const nonce = getNonce();
     // Inline CSS + JS instead of <link>/<script src>: an external asWebviewUri fetch can race
     // or 404 (e.g. a retained webview still pointing at a pruned old build after an update),
     // which showed up as the occasional fully-unstyled toolbar. Inlining makes each panel
     // self-contained, so it can't render half-loaded. Assets come from the activation-time
     // cache (falls back to a live read if activation didn't prime it).
-    if (!BrowserPanel.assetCache) BrowserPanel.primeAssets(this.context);
+    if (!BrowserPanel.assetCache) BrowserPanel.primeAssets(context);
     const { css, js: rawJs } = BrowserPanel.assetCache ?? { css: '', js: '' };
     const js = rawJs.replace(/<\/script/gi, '<\\/script');
     return `<!DOCTYPE html>
