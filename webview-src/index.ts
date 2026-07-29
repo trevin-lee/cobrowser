@@ -47,8 +47,8 @@ function fire(type: string, params?: Record<string, unknown>): void {
 
 window.addEventListener('message', (event: MessageEvent) => {
   const m = event.data;
-  if (m?.method === 'Page.screencastFrame') {
-    drawFrame(m.result as { data: string; metadata: FrameMetadata });
+  if (m?.method === 'cobrowser.frame') {
+    onFrame(m as { bytes: Uint8Array | ArrayBuffer; metadata: FrameMetadata });
     return;
   }
   if (m?.type === 'extension.url') {
@@ -73,29 +73,43 @@ window.addEventListener('message', (event: MessageEvent) => {
   }
 });
 
-const image = new Image();
-let pendingData: string | null = null;
-image.onload = () => {
-  if (canvas.width !== image.width || canvas.height !== image.height) {
-    canvas.width = image.width;
-    canvas.height = image.height;
-  }
-  ctx.drawImage(image, 0, 0);
-  // If a newer frame arrived mid-decode, render it next.
-  if (pendingData) {
-    const next = pendingData;
-    pendingData = null;
-    image.src = 'data:image/jpeg;base64,' + next;
-  }
-};
+// Binary frame path: raw JPEG bytes arrive over postMessage (no base64, no data: URL)
+// and decode OFF the main thread via createImageBitmap. Latest-frame-wins: if a new
+// frame lands while one is decoding, the queued one is replaced, never backlogged.
+interface BinaryFrame {
+  bytes: Uint8Array | ArrayBuffer;
+  metadata: FrameMetadata;
+}
+let decoding = false;
+let queuedFrame: BinaryFrame | null = null;
 
-function drawFrame(result: { data: string; metadata: FrameMetadata }): void {
-  lastMeta = result.metadata || {};
-  if (!image.complete) {
-    pendingData = result.data; // coalesce: skip stale frames while one is decoding
+function onFrame(frame: BinaryFrame): void {
+  if (decoding) {
+    queuedFrame = frame;
     return;
   }
-  image.src = 'data:image/jpeg;base64,' + result.data;
+  decoding = true;
+  void renderFrame(frame).finally(() => {
+    decoding = false;
+    const next = queuedFrame;
+    queuedFrame = null;
+    if (next) onFrame(next);
+  });
+}
+
+async function renderFrame(frame: BinaryFrame): Promise<void> {
+  try {
+    lastMeta = frame.metadata || {};
+    const bmp = await createImageBitmap(new Blob([frame.bytes as BlobPart], { type: 'image/jpeg' }));
+    if (canvas.width !== bmp.width || canvas.height !== bmp.height) {
+      canvas.width = bmp.width;
+      canvas.height = bmp.height;
+    }
+    ctx.drawImage(bmp, 0, 0);
+    bmp.close();
+  } catch {
+    /* malformed/torn frame — skip it, the next one repaints */
+  }
 }
 
 // ----- coordinate mapping: displayed canvas px -> page CSS px -----
@@ -103,8 +117,12 @@ function toPageCoords(e: MouseEvent): { x: number; y: number } {
   const rect = canvas.getBoundingClientRect();
   const deviceWidth = lastMeta.deviceWidth || canvas.width;
   const deviceHeight = lastMeta.deviceHeight || canvas.height;
-  const x = ((e.clientX - rect.left) / rect.width) * deviceWidth;
-  const y = ((e.clientY - rect.top) / rect.height) * deviceHeight + (lastMeta.offsetTop || 0);
+  // Clamp: drags tracked at window level can leave the canvas — pin them to the
+  // page edge (matches how a real browser selects when you drag past the window).
+  const fx = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+  const fy = Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height));
+  const x = fx * deviceWidth;
+  const y = fy * deviceHeight + (lastMeta.offsetTop || 0);
   return { x: Math.round(x), y: Math.round(y) };
 }
 
@@ -117,19 +135,38 @@ function buttonName(button: number): string {
 }
 
 // ----- mouse -----
+/** CDP name of the currently-held primary button, for move events. Blink only
+ *  treats a move as part of a drag (text selection, sliders, drag-and-drop)
+ *  when `button` is set on the move — the `buttons` bitmask alone is not enough
+ *  (puppeteer's Mouse does the same). */
+function heldButton(buttons: number): string | undefined {
+  if (buttons & 1) return 'left';
+  if (buttons & 2) return 'right';
+  if (buttons & 4) return 'middle';
+  return undefined;
+}
+
 let lastMove = 0;
-canvas.addEventListener('mousemove', (e) => {
+let dragging = false;
+
+function sendMove(e: MouseEvent): void {
   const now = performance.now();
-  if (now - lastMove < 16) return; // ~60fps — input now bypasses the agent queue, so it's cheap
+  if (now - lastMove < 16) return; // ~60fps — input bypasses the agent queue, so it's cheap
   lastMove = now;
   const { x, y } = toPageCoords(e);
-  // `buttons` must be carried on moves or CDP treats a held-button drag as a hover,
-  // and drag-select / sliders / drag-and-drop never register.
-  fire('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, buttons: e.buttons, modifiers: modifiers(e) });
-});
+  fire('Input.dispatchMouseEvent', {
+    type: 'mouseMoved',
+    x,
+    y,
+    button: heldButton(e.buttons),
+    buttons: e.buttons,
+    modifiers: modifiers(e),
+  });
+}
 
 canvas.addEventListener('mousedown', (e) => {
   canvas.focus();
+  dragging = true;
   const { x, y } = toPageCoords(e);
   fire('Input.dispatchMouseEvent', {
     type: 'mousePressed',
@@ -142,7 +179,18 @@ canvas.addEventListener('mousedown', (e) => {
   });
 });
 
-canvas.addEventListener('mouseup', (e) => {
+// Moves and releases are tracked on WINDOW, not the canvas: a drag that leaves the
+// canvas must keep selecting and must end when the button is released anywhere —
+// canvas-scoped listeners froze the drag at the edge (parity gap vs a real browser).
+// toPageCoords clamps out-of-bounds positions to the page viewport.
+window.addEventListener('mousemove', (e) => {
+  if (!dragging && e.target !== canvas) return;
+  sendMove(e);
+});
+
+window.addEventListener('mouseup', (e) => {
+  if (!dragging && e.target !== canvas) return;
+  dragging = false;
   const { x, y } = toPageCoords(e);
   fire('Input.dispatchMouseEvent', {
     type: 'mouseReleased',

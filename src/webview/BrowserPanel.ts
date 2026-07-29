@@ -244,9 +244,11 @@ export class BrowserPanel {
         } else {
           this.pollIdleCount = 0;
           this.lastPollFrame = data;
+          const buf = Buffer.from(data, 'base64');
           void this.panel.webview.postMessage({
-            method: 'Page.screencastFrame',
-            result: { data, metadata: { deviceWidth: this.vpW, deviceHeight: this.vpH } },
+            method: 'cobrowser.frame',
+            bytes: new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength),
+            metadata: { deviceWidth: this.vpW, deviceHeight: this.vpH },
           });
         }
       } catch {
@@ -268,9 +270,15 @@ export class BrowserPanel {
     if (this.cdp) return this.cdp;
     this.cdp = await this.page.createCDPSession();
     this.frameHandler = (e: FrameEvent) => {
-      this.panel.webview.postMessage({
-        method: 'Page.screencastFrame',
-        result: { data: e.data, metadata: e.metadata },
+      // Binary transport: decode the base64 ONCE here with native Buffer and hand the
+      // webview raw JPEG bytes. The old path shipped a 33%-larger base64 string through
+      // the JSON message channel and decoded it via an <img data:> URL on the webview's
+      // main thread — most of the same-device latency lived there, not in capture.
+      const buf = Buffer.from(e.data, 'base64');
+      void this.panel.webview.postMessage({
+        method: 'cobrowser.frame',
+        bytes: new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength),
+        metadata: e.metadata,
       });
       this.cdp?.send('Page.screencastFrameAck', { sessionId: e.sessionId }).catch(() => undefined);
     };
