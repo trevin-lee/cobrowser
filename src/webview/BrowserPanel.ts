@@ -10,11 +10,12 @@ interface FrameEvent {
 }
 
 // Adaptive frame intervals for background-but-visible panels (captureScreenshot poll).
-// ~30fps while the page is actually changing (capture keeps up even at retina sizes —
-// measured ~36fps at 2400x1500), backing off to ~4fps once frames repeat so a static
-// page costs almost nothing. Identical frames are never posted to the webview. Only
+// Paced at 60Hz while the page is changing; the capture itself is the real throttle
+// (measured ~36fps at full-retina 2400x1500, faster at smaller panels — the JPEG
+// encode pipe, not this timer, is the ceiling). Backs off to ~4fps once frames repeat
+// so a static page costs almost nothing; identical frames are never posted. Only
 // VISIBLE non-foreground panels poll, so cost scales with on-screen tabs, not total.
-const POLL_FAST_MS = 33;
+const POLL_FAST_MS = 16;
 const POLL_SLOW_MS = 250;
 const POLL_IDLE_AFTER = 5; // consecutive identical frames before backing off
 
