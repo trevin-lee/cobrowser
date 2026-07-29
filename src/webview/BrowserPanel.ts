@@ -43,6 +43,19 @@ export class BrowserPanel {
     for (const p of BrowserPanel.panels.values()) void p.syncRender();
   }
 
+  /** Inlined webview assets (CSS/JS), read ONCE and cached in memory. */
+  private static assetCache: { css: string; js: string } | undefined;
+
+  /** Read the webview CSS/JS at activation, when this version's install dir is guaranteed
+   *  to exist, and cache them. A later `npm run release` prunes older install dirs — if the
+   *  running host's dir gets pruned, reading assets at panel-creation time would return
+   *  empty (the "unstyled toolbar"). Caching at startup makes open windows immune. */
+  static primeAssets(context: vscode.ExtensionContext): void {
+    const css = readAsset(context, 'media', 'panel.css');
+    const js = readAsset(context, 'dist', 'webview.js');
+    if (css && js) BrowserPanel.assetCache = { css, js };
+  }
+
   static get(id: string): BrowserPanel | undefined {
     return BrowserPanel.panels.get(id);
   }
@@ -387,9 +400,11 @@ export class BrowserPanel {
     // Inline CSS + JS instead of <link>/<script src>: an external asWebviewUri fetch can race
     // or 404 (e.g. a retained webview still pointing at a pruned old build after an update),
     // which showed up as the occasional fully-unstyled toolbar. Inlining makes each panel
-    // self-contained, so it can't render half-loaded.
-    const css = readAsset(this.context, 'media', 'panel.css');
-    const js = readAsset(this.context, 'dist', 'webview.js').replace(/<\/script/gi, '<\\/script');
+    // self-contained, so it can't render half-loaded. Assets come from the activation-time
+    // cache (falls back to a live read if activation didn't prime it).
+    if (!BrowserPanel.assetCache) BrowserPanel.primeAssets(this.context);
+    const { css, js: rawJs } = BrowserPanel.assetCache ?? { css: '', js: '' };
+    const js = rawJs.replace(/<\/script/gi, '<\\/script');
     return `<!DOCTYPE html>
 <html lang="en">
 <head>

@@ -44,6 +44,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(output);
   const log = (m: string) => output.appendLine(m);
 
+  // Cache the webview assets now, while this version's install dir is guaranteed present —
+  // a later release prunes old dirs, and a panel opened afterward must not read from a
+  // deleted dir (the unstyled-toolbar bug).
+  BrowserPanel.primeAssets(context);
+
   let token = context.workspaceState.get<string>(TOKEN_KEY);
   if (!token) {
     token = crypto.randomUUID();
