@@ -77,7 +77,7 @@ export class BrowserPanel {
       if (p.videoMode) {
         p.videoMode = false;
         BrowserPanel.videoHub?.stop(p.id);
-        void p.panel.webview.postMessage({ method: 'cobrowser.h264reset' });
+        void p.panel.webview.postMessage({ method: 'cobrowser.rtcstop' });
       } else {
         await p.stopScreencast();
       }
@@ -231,14 +231,6 @@ export class BrowserPanel {
   /** True from the moment WebRTC negotiation starts until frames actually arrive (or it
    *  fails). The screencast keeps painting throughout, so the swap is invisible. */
   private videoPending = false;
-  /** Adaptive-quality state: reduced fidelity while the page is in motion. */
-  private motionMode = false;
-  private lastFrameAt = 0;
-  private rapidFrames = 0;
-  private settleTimer: ReturnType<typeof setTimeout> | undefined;
-  /** Applied device-pixel viewport, used to derive the motion-mode capture size. */
-  private vpW = 0;
-  private vpH = 0;
 
   private constructor(
     private context: vscode.ExtensionContext,
@@ -370,7 +362,6 @@ export class BrowserPanel {
     if (this.cdp) return this.cdp;
     this.cdp = await this.page.createCDPSession();
     this.frameHandler = (e: FrameEvent) => {
-      this.noteFrameForAdaptiveQuality();
       // Binary transport: decode the base64 ONCE here with native Buffer and hand the
       // webview raw JPEG bytes. The old path shipped a 33%-larger base64 string through
       // the JSON message channel and decoded it via an <img data:> URL on the webview's
@@ -392,48 +383,27 @@ export class BrowserPanel {
    *  frame is a FULL-size JPEG — at q90/5Mpx that caps out around 20-25fps and reads as
    *  sluggish. Detail is imperceptible mid-scroll anyway, so trade it for frame rate and
    *  restore crispness the moment things settle. */
-  private async startScreencast(motion = false): Promise<void> {
+  /** Always full fidelity. The adaptive "drop quality while moving" scheme that used to
+   *  live here was solving a bottleneck that measurement showed does not exist: with the
+   *  frame path instrumented end to end, frames DRAWN always equalled frames RECEIVED —
+   *  nothing was being dropped in transport or decode. The real limit is Chrome
+   *  rendering and JPEG-encoding the page (~32-42fps on a real page at these sizes), and
+   *  lowering quality did not raise it. So the softening during scroll was pure loss. */
+  private async startScreencast(): Promise<void> {
     try {
       const cdp = await this.ensureCdp();
       await cdp.send('Page.startScreencast', {
         format: 'jpeg',
-        // Still: q90 (q70 ringing on text read as "grainy"). Moving: q45 — roughly a
-        // third the bytes to encode, ship over IPC, and decode.
-        quality: motion ? 45 : 90,
-        // Moving: also halve the linear resolution (quarter the pixels). Chrome
-        // downscales during capture, so encode AND transport both get cheaper.
-        maxWidth: motion ? Math.max(320, Math.round(this.vpW / 2)) : 8192,
-        maxHeight: motion ? Math.max(240, Math.round(this.vpH / 2)) : 8192,
+        quality: 90, // q70 ringing on text reads as "grainy"
+        // Caps must exceed the largest device-pixel viewport or frames get downscaled
+        // back to blurry — 8192 clears even a 6K display's full width.
+        maxWidth: 8192,
+        maxHeight: 8192,
         everyNthFrame: 1,
       });
-      this.motionMode = motion;
     } catch {
       /* page may be navigating/closed; a later view-state change retries */
     }
-  }
-
-  /** Called on every frame: rapid frames mean the page is animating/scrolling, so drop
-   *  to motion quality; a quiet gap means it settled, so restore full fidelity. */
-  private noteFrameForAdaptiveQuality(): void {
-    const now = Date.now();
-    const gap = now - this.lastFrameAt;
-    this.lastFrameAt = now;
-    if (this.settleTimer) clearTimeout(this.settleTimer);
-    // Frames <50ms apart = sustained change. Require a couple in a row so a single
-    // repaint doesn't drop quality.
-    if (gap < 50) {
-      this.rapidFrames++;
-      if (this.rapidFrames >= 3 && !this.motionMode && this.streaming) {
-        void this.startScreencast(true);
-      }
-    } else {
-      this.rapidFrames = 0;
-    }
-    // Settled → back to crisp.
-    this.settleTimer = setTimeout(() => {
-      this.rapidFrames = 0;
-      if (this.motionMode && this.streaming) void this.startScreencast(false);
-    }, 180);
   }
 
   private async stopScreencast(): Promise<void> {
@@ -480,8 +450,6 @@ export class BrowserPanel {
       // (page mid-navigation, session churn) left the page stuck on the 1280x800 launch
       // default — stretched to the panel — until a manual resize changed the key.
       this.appliedKey = key;
-      this.vpW = width;
-      this.vpH = height;
       if (this.videoMode) {
         // Keep the window (what tab capture records) the same size as the viewport,
         // and tell the webview the page's coordinate space so input maps correctly —
@@ -499,7 +467,7 @@ export class BrowserPanel {
       this.appliedKey = ''; // retry on the next viewport push / remeasure
       return;
     }
-    if (this.streaming && !this.videoMode) await this.startScreencast(this.motionMode);
+    if (this.streaming && !this.videoMode) await this.startScreencast();
   }
 
   private zoomMap(): Record<string, number> {
@@ -725,7 +693,6 @@ export class BrowserPanel {
 
   dispose(): void {
     BrowserPanel.panels.delete(this.id);
-    if (this.settleTimer) clearTimeout(this.settleTimer);
     if (this.videoMode) BrowserPanel.videoHub?.stop(this.id);
     this.page.off('framenavigated', this.onNav);
     if (this.cdp && this.frameHandler) {
