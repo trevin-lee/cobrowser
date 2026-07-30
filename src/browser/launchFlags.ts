@@ -44,10 +44,21 @@ export function resolveLaunchOptions(
     args: [
       '--no-first-run',
       '--no-default-browser-check',
+      // Present as the ordinary browser this is. Headless Chromium otherwise sets
+      // navigator.webdriver = true and ships an "Automation" blink feature set, which
+      // sites read as "scripted client" and answer with CAPTCHA walls — even for a
+      // human reading a page in the panel. (The UA string is corrected per-page in
+      // prepPage, since it must carry a real Chrome version + client hints.)
+      '--disable-blink-features=AutomationControlled',
+      '--lang=en-US,en',
       // Reopen the previous session's tabs on relaunch, so an editor reload (which closes
       // the browser) doesn't lose your open tabs. Verified to work in headless.
       '--restore-last-session',
       ...(headless ? ['--window-size=1280,800'] : []),
+      // Auto-approve getDisplayMedia tab-capture for the video pipeline's hidden
+      // controller page: any tab briefly titled with this magic string is selected
+      // without a picker (headless has no picker UI). Inert unless capture runs.
+      '--auto-select-tab-capture-source-by-title=__cobrowser_capture__',
       // Opt-in beyond-60fps: headless self-paces its compositor at 60 (no real monitor).
       // Removing the limit lifts the screencast to ~90-100fps (JPEG-encode ceiling), but
       // rAF-driven pages then render THOUSANDS of frames/s (measured 6867) — heavy CPU

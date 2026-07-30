@@ -52,6 +52,9 @@ export class BrowserSession {
   /** Stable per-page id, so panels and the agent can refer to a tab across
    *  opens/closes (indices shift; these don't). */
   private ids = new Map<Page, string>();
+  /** Infrastructure pages (e.g. the video-capture controller) — excluded from the
+   *  agent's tab list, panels, persistence, and the last-tab-quit heuristic. */
+  private internalPages = new Set<Page>();
   private idSeq = 0;
 
   /** Per-page CDP session holding a virtual WebAuthn authenticator, so passkey
@@ -142,6 +145,7 @@ export class BrowserSession {
         try {
           const page = await target.page();
           if (!page) return; // not a page target
+          if (session.internalPages.has(page)) return; // infrastructure, not a user tab
           const id = session.idFor(page);
           session.pushEvent('tab-opened', id, page.url());
           await session.prepPage(page); // fail-fast passkeys before any site script runs
@@ -171,7 +175,9 @@ export class BrowserSession {
             }
           }
           session.pagesChangedCb?.();
-          const open = (await browser.pages()).filter((p) => !p.isClosed());
+          const open = (await browser.pages()).filter(
+            (p) => !p.isClosed() && !session.internalPages.has(p),
+          );
           if (open.length === 0) {
             // Last tab closed → quit the whole Chrome instance (onDisconnected then
             // clears the session, so the next new tab relaunches a fresh browser).
@@ -245,7 +251,46 @@ export class BrowserSession {
    * The CDP session is kept in `authSessions` for the page's lifetime — the
    * virtual authenticator is bound to it and would vanish if it detached.
    */
+  /**
+   * Describe ourselves accurately: this IS an ordinary Chrome rendering real pages for
+   * a human, but headless defaults advertise otherwise — the UA literally contains
+   * "HeadlessChrome" and the client-hint brands say unbranded "Chromium". Sites match
+   * those strings and serve CAPTCHA walls instead of content. Rewrite both to the plain
+   * Chrome equivalent of the SAME build (version taken from the real UA, never invented),
+   * so the only thing that changes is the false "I am headless" claim.
+   */
+  private async fixUserAgent(page: Page): Promise<void> {
+    try {
+      const real = await withTimeout(this.browser.version(), 2000); // "HeadlessChrome/151.0.7922.47"
+      const full = /[\d.]+/.exec(real ?? '')?.[0] ?? '';
+      const major = full.split('.')[0] || '151';
+      const ua =
+        `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ` +
+        `(KHTML, like Gecko) Chrome/${full || major + '.0.0.0'} Safari/537.36`;
+      await withTimeout(
+        page.setUserAgent(ua, {
+          // Client hints must agree with the UA string; a mismatch is itself a signal.
+          brands: [
+            { brand: 'Chromium', version: major },
+            { brand: 'Google Chrome', version: major },
+            { brand: 'Not=A?Brand', version: '99' },
+          ],
+          fullVersion: full,
+          platform: 'macOS',
+          platformVersion: '15.0.0',
+          architecture: 'arm',
+          model: '',
+          mobile: false,
+        }),
+        3000,
+      );
+    } catch {
+      /* UA override unsupported — cosmetic only, keep going */
+    }
+  }
+
   private async prepPage(page: Page): Promise<void> {
+    void this.fixUserAgent(page); // independent of the passkey work below
     if (!this.autoFallbackPasskeys || this.authSessions.has(page)) return;
     try {
       // Every await is timeout-bounded: a hung/unresponsive page must never
@@ -351,6 +396,32 @@ export class BrowserSession {
       page.setViewport({ width, height, deviceScaleFactor: deviceScaleFactor || 1 }),
       3000,
     ).catch(() => undefined);
+    // Headless keeps a stock 800x600 phantom screen, so sizing the viewport to the panel
+    // (device pixels, for crisp text) leaves window.innerWidth LARGER than screen.width —
+    // physically impossible on real hardware, and a giveaway that reads as "scripted".
+    // Report a screen that plausibly contains the viewport instead.
+    try {
+      const cdp = this.authSessions.get(page) ?? (await withTimeout(page.createCDPSession(), 2000));
+      if (!cdp) return;
+      const screenWidth = Math.max(width, 1512);
+      const screenHeight = Math.max(height, 982);
+      await withTimeout(
+        cdp.send('Emulation.setDeviceMetricsOverride', {
+          width,
+          height,
+          deviceScaleFactor: deviceScaleFactor || 1,
+          mobile: false,
+          screenWidth,
+          screenHeight,
+          // Sit the window at a natural offset below the menu bar rather than 0,0.
+          positionX: 0,
+          positionY: 25,
+        }),
+        2000,
+      );
+    } catch {
+      /* emulation unsupported — the viewport itself is already applied */
+    }
   }
 
   /** Serialize every browser action (agent + human) through one FIFO queue. */
@@ -384,7 +455,7 @@ export class BrowserSession {
   // ----- tool-facing operations (uid model mirrors chrome-devtools-mcp naming) -----
 
   async listPages(): Promise<PageInfo[]> {
-    const pages = await this.browser.pages();
+    const pages = (await this.browser.pages()).filter((p) => !this.internalPages.has(p));
     const infos: PageInfo[] = [];
     for (let i = 0; i < pages.length; i++) {
       const p = pages[i];
@@ -428,6 +499,74 @@ export class BrowserSession {
       title: await page.title().catch(() => ''),
       selected: page === this.active,
     };
+  }
+
+  /**
+   * Resize the OS-level window that owns `page` to a CSS size. Tab capture (the WebRTC
+   * path) renders the WINDOW surface — not the emulated viewport — and delivers it at 2x,
+   * so matching the window to the panel is what makes the video the right shape and
+   * natively crisp. Each page has its own window (createPageInNewWindow), so this only
+   * affects that tab. No-op'd errors: sizing is an optimization, never load-bearing.
+   */
+  async setWindowSize(page: Page, cssWidth: number, cssHeight: number): Promise<void> {
+    if (cssWidth < 50 || cssHeight < 50) return;
+    try {
+      const cdp = await withTimeout(this.browser.target().createCDPSession(), 2000);
+      if (!cdp) return;
+      try {
+        const targetId = (page.target() as unknown as { _targetId?: string })._targetId;
+        if (!targetId) return;
+        const { windowId } = (await withTimeout(
+          cdp.send('Browser.getWindowForTarget', { targetId }),
+          2000,
+        )) as { windowId: number };
+        // The window includes chrome above the content area, so the content comes out
+        // shorter than the bounds we ask for. Measure the delta once and compensate.
+        const before = await page.evaluate(() => window.innerHeight).catch(() => 0);
+        await withTimeout(
+          cdp.send('Browser.setWindowBounds', {
+            windowId,
+            bounds: { width: cssWidth, height: cssHeight + this.windowChromeH },
+          }),
+          2000,
+        );
+        if (!this.windowChromeMeasured && before > 0) {
+          const after = await page.evaluate(() => window.innerHeight).catch(() => 0);
+          if (after > 0 && after < cssHeight) {
+            this.windowChromeH = cssHeight - after;
+            this.windowChromeMeasured = true;
+            await withTimeout(
+              cdp.send('Browser.setWindowBounds', {
+                windowId,
+                bounds: { width: cssWidth, height: cssHeight + this.windowChromeH },
+              }),
+              2000,
+            );
+          }
+        }
+      } finally {
+        await cdp.detach().catch(() => undefined);
+      }
+    } catch {
+      /* window sizing unsupported — capture just keeps its previous shape */
+    }
+  }
+
+  private windowChromeH = 0;
+  private windowChromeMeasured = false;
+
+  /** Open an infrastructure page (own window) that is invisible to the agent's tab
+   *  list, panels, persistence, and last-tab-quit — used by the video-capture hub. */
+  async createInternalPage(url: string): Promise<Page> {
+    this.suppressOpen++;
+    try {
+      const page = await this.createPageInNewWindow();
+      this.internalPages.add(page);
+      await page.goto(url, { waitUntil: 'domcontentloaded' }).catch(() => undefined);
+      return page;
+    } finally {
+      this.suppressOpen--;
+    }
   }
 
   /** Open each page in its OWN headless window (Target.createTarget newWindow), not as

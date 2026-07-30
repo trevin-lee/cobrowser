@@ -21,6 +21,7 @@ const vscode = acquireVsCodeApi();
 
 const stage = document.getElementById('stage') as HTMLDivElement;
 const canvas = document.getElementById('screen') as HTMLCanvasElement;
+const videoEl = document.getElementById('video') as HTMLVideoElement;
 const ctx = canvas.getContext('2d')!;
 const urlInput = document.getElementById('url') as HTMLInputElement;
 const backBtn = document.getElementById('back') as HTMLButtonElement;
@@ -40,6 +41,8 @@ interface Box {
 
 let lastVp = '';
 let lastMeta: FrameMetadata = {};
+/** Page CSS viewport while in WebRTC mode (host-supplied); the input coordinate space. */
+let rtcPage = { w: 0, h: 0 };
 
 /** Fire-and-forget command to the host (input events + toolbar actions). */
 function fire(type: string, params?: Record<string, unknown>): void {
@@ -50,6 +53,20 @@ window.addEventListener('message', (event: MessageEvent) => {
   const m = event.data;
   if (m?.method === 'cobrowser.frame') {
     onFrame(m as { bytes: Uint8Array | ArrayBuffer; metadata: FrameMetadata });
+    return;
+  }
+  if (m?.method === 'cobrowser.rtcstart') {
+    startRtc(m as { url: string });
+    return;
+  }
+  if (m?.method === 'cobrowser.rtcstop') {
+    resetVideo();
+    return;
+  }
+  if (m?.method === 'cobrowser.rtcpagesize') {
+    // The page's CSS coordinate space. The video is a 2x recording of it, so its
+    // intrinsic size must NOT be used to place input events.
+    rtcPage = { w: Number(m.width) || 0, h: Number(m.height) || 0 };
     return;
   }
   if (m?.type === 'extension.url') {
@@ -112,7 +129,14 @@ function onFrame(frame: BinaryFrame): void {
 async function renderFrame(frame: BinaryFrame): Promise<void> {
   try {
     lastMeta = frame.metadata || {};
-    const bmp = await createImageBitmap(new Blob([frame.bytes as BlobPart], { type: 'image/jpeg' }));
+    // Frames may be JPEG or PNG (cobrowser.imageFormat) — sniff the magic bytes rather
+    // than trust a hard-coded MIME type. PNG starts with 0x89 'P' 'N' 'G'.
+    const u8 =
+      frame.bytes instanceof Uint8Array ? frame.bytes : new Uint8Array(frame.bytes as ArrayBuffer);
+    const isPng = u8[0] === 0x89 && u8[1] === 0x50 && u8[2] === 0x4e && u8[3] === 0x47;
+    const bmp = await createImageBitmap(
+      new Blob([u8 as BlobPart], { type: isPng ? 'image/png' : 'image/jpeg' }),
+    );
     if (canvas.width !== bmp.width || canvas.height !== bmp.height) {
       canvas.width = bmp.width;
       canvas.height = bmp.height;
@@ -124,17 +148,116 @@ async function renderFrame(frame: BinaryFrame): Promise<void> {
   }
 }
 
+// ----- WebRTC path: the page arrives as a live MediaStream in a <video> element -----
+// This is the fast path. The editor composites <video> natively — no per-frame
+// JavaScript, no canvas blit, no structured-clone IPC — and WebRTC supplies frame
+// pacing and a jitter buffer. The canvas above stays as the fallback renderer.
+let pc: RTCPeerConnection | null = null;
+let sigWs: WebSocket | null = null;
+
+function resetVideo(): void {
+  try {
+    pc?.close();
+  } catch {
+    /* already closed */
+  }
+  try {
+    sigWs?.close();
+  } catch {
+    /* already closed */
+  }
+  pc = null;
+  sigWs = null;
+  rtcPage = { w: 0, h: 0 }; // stale dims must not leak into the fallback path
+  videoEl.srcObject = null;
+  videoEl.hidden = true;
+  canvas.hidden = false;
+}
+
+function startRtc(cfg: { url: string }): void {
+  resetVideo();
+  try {
+    const ws = new WebSocket(cfg.url);
+    sigWs = ws;
+    const conn = new RTCPeerConnection({ iceServers: [] }); // loopback: host candidates
+    pc = conn;
+
+    conn.ontrack = (e) => {
+      videoEl.srcObject = e.streams[0];
+      void videoEl.play().catch(() => undefined);
+      // Only swap away from the canvas once real frames are flowing, so a failed
+      // negotiation never leaves a blank panel.
+      // Swap surfaces only once frames are genuinely decoding, and tell the host so it
+      // can retire the screencast that has been covering the ~1.7s negotiation.
+      videoEl.onloadeddata = () => {
+        videoEl.hidden = false;
+        canvas.hidden = true;
+        fire('extension.videolive');
+      };
+    };
+    conn.onicecandidate = (e) => {
+      if (e.candidate && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ kind: 'ice', payload: e.candidate }));
+      }
+    };
+    conn.onconnectionstatechange = () => {
+      if (conn.connectionState === 'failed' || conn.connectionState === 'disconnected') {
+        resetVideo();
+        fire('extension.videoerror'); // host falls back to the JPEG screencast
+      }
+    };
+
+    ws.onmessage = async (ev: MessageEvent) => {
+      let m: { kind: string; payload: unknown };
+      try {
+        m = JSON.parse(String(ev.data));
+      } catch {
+        return;
+      }
+      try {
+        if (m.kind === 'offer') {
+          await conn.setRemoteDescription(m.payload as RTCSessionDescriptionInit);
+          const answer = await conn.createAnswer();
+          await conn.setLocalDescription(answer);
+          ws.send(JSON.stringify({ kind: 'answer', payload: conn.localDescription }));
+        } else if (m.kind === 'ice') {
+          await conn.addIceCandidate(m.payload as RTCIceCandidateInit).catch(() => undefined);
+        }
+      } catch {
+        resetVideo();
+        fire('extension.videoerror');
+      }
+    };
+    ws.onerror = () => {
+      resetVideo();
+      fire('extension.videoerror');
+    };
+  } catch {
+    resetVideo();
+    fire('extension.videoerror');
+  }
+}
+
 // ----- coordinate mapping: displayed canvas px -> page CSS px -----
 function toPageCoords(e: MouseEvent): { x: number; y: number } {
-  const rect = canvas.getBoundingClientRect();
-  const deviceWidth = lastMeta.deviceWidth || canvas.width;
-  const deviceHeight = lastMeta.deviceHeight || canvas.height;
+  // Map against whichever surface is live. In WebRTC mode the target space is the page's
+  // CSS viewport (supplied by the host) — NOT the video's intrinsic size, which is a 2x
+  // recording of it; using the latter sent every event to double its true position.
+  const live = !videoEl.hidden && videoEl.videoWidth > 0;
+  const rect = (live ? videoEl : canvas).getBoundingClientRect();
+  const deviceWidth = live
+    ? rtcPage.w || videoEl.videoWidth
+    : lastMeta.deviceWidth || canvas.width;
+  const deviceHeight = live
+    ? rtcPage.h || videoEl.videoHeight
+    : lastMeta.deviceHeight || canvas.height;
   // Clamp: drags tracked at window level can leave the canvas — pin them to the
   // page edge (matches how a real browser selects when you drag past the window).
   const fx = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
   const fy = Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height));
   const x = fx * deviceWidth;
-  const y = fy * deviceHeight + (lastMeta.offsetTop || 0);
+  // offsetTop is a screencast-metadata concept; the WebRTC stream has no such offset.
+  const y = fy * deviceHeight + (live ? 0 : lastMeta.offsetTop || 0);
   return { x: Math.round(x), y: Math.round(y) };
 }
 
@@ -176,8 +299,8 @@ function sendMove(e: MouseEvent): void {
   });
 }
 
-canvas.addEventListener('mousedown', (e) => {
-  canvas.focus();
+stage.addEventListener('mousedown', (e) => {
+  stage.focus();
   dragging = true;
   const { x, y } = toPageCoords(e);
   fire('Input.dispatchMouseEvent', {
@@ -224,7 +347,7 @@ ctxMenu.id = 'ctxmenu';
 ctxMenu.hidden = true;
 document.body.appendChild(ctxMenu);
 
-canvas.addEventListener('contextmenu', (e) => {
+stage.addEventListener('contextmenu', (e) => {
   e.preventDefault();
   const { x, y } = toPageCoords(e);
   fire('extension.contextinfo', { x, y, clientX: e.clientX, clientY: e.clientY });
@@ -284,7 +407,7 @@ function showMenu(at: { clientX: number; clientY: number }, hasSelection: boolea
   ctxMenu.style.top = Math.max(0, Math.min(at.clientY, window.innerHeight - ctxMenu.offsetHeight - 4)) + 'px';
 }
 
-canvas.addEventListener(
+stage.addEventListener(
   'wheel',
   (e) => {
     e.preventDefault();
@@ -304,7 +427,7 @@ canvas.addEventListener(
 );
 
 // ----- keyboard -----
-canvas.addEventListener('keydown', (e) => {
+stage.addEventListener('keydown', (e) => {
   // ⌘/Ctrl +/-/0 → per-site zoom, don't forward to the page.
   if (e.metaKey || e.ctrlKey) {
     if (e.key === '=' || e.key === '+') { e.preventDefault(); fire('extension.zoom', { dir: 'in' }); return; }
@@ -333,7 +456,7 @@ canvas.addEventListener('keydown', (e) => {
   }
 });
 
-canvas.addEventListener('keyup', (e) => {
+stage.addEventListener('keyup', (e) => {
   fire('Input.dispatchKeyEvent', {
     type: 'keyUp',
     key: e.key,
@@ -346,7 +469,7 @@ canvas.addEventListener('keyup', (e) => {
 // Paste (⌘V/Ctrl+V): the canvas isn't a real input, and a headless browser has no system
 // clipboard, so forward the clipboard text and inject it into the page's focused field.
 window.addEventListener('paste', (e: ClipboardEvent) => {
-  if (document.activeElement !== canvas) return; // let the URL bar paste normally
+  if (!stage.contains(document.activeElement)) return; // let the URL bar paste normally
   const text = e.clipboardData?.getData('text/plain');
   if (text) {
     e.preventDefault();

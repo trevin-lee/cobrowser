@@ -2,12 +2,18 @@ import * as vscode from 'vscode';
 import * as fs from 'node:fs';
 import type { CDPSession, Page } from 'puppeteer-core';
 import type { BrowserSession, ElementBox } from '../browser/BrowserSession';
+import type { CaptureHub, VideoHeader } from '../video/CaptureHub';
 
 interface FrameEvent {
   data: string;
   sessionId: number;
   metadata: unknown;
 }
+
+/** Ceiling on rendered pixels per frame (device px). 5Mpx sits above a full-screen
+ *  retina laptop panel (~3.6Mpx, measured 60fps) and below the point where JPEG
+ *  encode falls apart (~10.7Mpx → 46fps, 1.26MB frames) and H.264 levels run out. */
+const MAX_RENDER_PX = 5_000_000;
 
 // Every page lives in its own headless window (see BrowserSession.createPageInNewWindow),
 // so every visible panel screencasts at full compositor rate simultaneously — no
@@ -52,6 +58,33 @@ export class BrowserPanel {
    *  (a panel dragged to another editor group doesn't fire any session event). */
   static onLayoutChanged: (() => void) | undefined;
 
+  /** Hardware-video pipeline (H.264 over WebSocket). When enabled, visible panels
+   *  try video first and fall back to the JPEG screencast on any failure. */
+  static videoHub: CaptureHub | undefined;
+  static videoEnabled = false;
+
+  /** Deliver capture-side status (errors) from the hub to the owning panel. */
+  static routeVideo(header: VideoHeader): void {
+    BrowserPanel.panels.get(header.pageId)?.postVideo(header);
+  }
+
+  /** Tear down and re-establish every visible panel's stream — used when the
+   *  render pipeline changes under us (videoPipeline toggled). */
+  static async restartStreaming(): Promise<void> {
+    for (const p of BrowserPanel.panels.values()) {
+      if (!p.streaming) continue;
+      p.streaming = false;
+      if (p.videoMode) {
+        p.videoMode = false;
+        BrowserPanel.videoHub?.stop(p.id);
+        void p.panel.webview.postMessage({ method: 'cobrowser.rtcstop' });
+      } else {
+        await p.stopScreencast();
+      }
+      await p.syncRender();
+    }
+  }
+
   /** Inlined webview assets (CSS/JS), read ONCE and cached in memory. */
   private static assetCache: { css: string; js: string } | undefined;
 
@@ -72,7 +105,11 @@ export class BrowserPanel {
   /** Panels restored by VS Code's serializer at startup — the tab shell exists
    *  instantly (like editor tabs); each waits here to be adopted by its page once
    *  the session is up. Keyed by the page URL the webview saved as state. */
-  private static restoredPool: Array<{ panel: vscode.WebviewPanel; url?: string }> = [];
+  private static restoredPool: Array<{
+    panel: vscode.WebviewPanel;
+    url?: string;
+    timer?: ReturnType<typeof setTimeout>;
+  }> = [];
 
   /** Park a deserialized panel until its page exists. Paints the toolbar shell
    *  immediately so the restored tab isn't a blank void while Chrome launches. */
@@ -84,10 +121,21 @@ export class BrowserPanel {
     panel.webview.options = { enableScripts: true };
     panel.iconPath = vscode.Uri.joinPath(context.extensionUri, 'media', 'icon.png');
     panel.webview.html = BrowserPanel.renderHtml(context);
-    const entry = { panel, url };
+    const entry: { panel: vscode.WebviewPanel; url?: string; timer?: ReturnType<typeof setTimeout> } =
+      { panel, url };
+    // Self-destruct if no page claims this shell. VS Code can deserialize panels at any
+    // point — including AFTER the restore sweep has already run — and such a late shell
+    // would otherwise linger forever as a blank tab with an empty URL bar.
+    entry.timer = setTimeout(() => {
+      if (BrowserPanel.restoredPool.includes(entry)) {
+        BrowserPanel.restoredPool = BrowserPanel.restoredPool.filter((e) => e !== entry);
+        panel.dispose();
+      }
+    }, 10_000);
     BrowserPanel.restoredPool.push(entry);
     // If the user closes the placeholder before adoption, forget it.
     panel.onDidDispose(() => {
+      if (entry.timer) clearTimeout(entry.timer);
       BrowserPanel.restoredPool = BrowserPanel.restoredPool.filter((e) => e !== entry);
     });
   }
@@ -100,13 +148,17 @@ export class BrowserPanel {
     if (idx < 0 && url === 'about:blank' && BrowserPanel.restoredPool.length > 0) idx = 0;
     if (idx < 0) return undefined;
     const [entry] = BrowserPanel.restoredPool.splice(idx, 1);
+    if (entry.timer) clearTimeout(entry.timer); // adopted — cancel self-destruct
     return entry.panel;
   }
 
   /** Dispose restored panels no page claimed (their tabs were closed pre-reload,
    *  or the session came back with a different set). */
   static disposeUnclaimedRestored(): void {
-    for (const e of [...BrowserPanel.restoredPool]) e.panel.dispose();
+    for (const e of [...BrowserPanel.restoredPool]) {
+      if (e.timer) clearTimeout(e.timer);
+      e.panel.dispose();
+    }
     BrowserPanel.restoredPool = [];
   }
 
@@ -174,6 +226,11 @@ export class BrowserPanel {
   private origin = '';
   private appliedKey = '';
   private streaming = false;
+  /** True while this panel renders via the WebRTC pipeline instead of the screencast. */
+  private videoMode = false;
+  /** True from the moment WebRTC negotiation starts until frames actually arrive (or it
+   *  fails). The screencast keeps painting throughout, so the swap is invisible. */
+  private videoPending = false;
 
   private constructor(
     private context: vscode.ExtensionContext,
@@ -241,9 +298,63 @@ export class BrowserPanel {
       await this.session.run(() => this.session.focusPage(this.id)).catch(() => undefined);
       this.appliedKey = '';
       void this.panel.webview.postMessage({ type: 'extension.remeasure' });
+      // Prefer the WebRTC pipeline when enabled; any failure (controller, capture,
+      // negotiation, decode) falls straight back to the JPEG screencast.
+      if (BrowserPanel.videoEnabled && BrowserPanel.videoHub) {
+        // WebRTC needs ~1.7s to first frame (capture + offer/answer + ICE + keyframe),
+        // where the screencast delivers in ~10ms. So paint with JPEG straight away and
+        // hand over only once video is actually playing — the panel is never blank.
+        // Mark the handover as pending FIRST so the viewport is laid out in the size
+        // video will want, avoiding a reflow at the swap.
+        this.videoPending = true;
+        this.appliedKey = '';
+        void this.panel.webview.postMessage({ type: 'extension.remeasure' });
+        await this.startScreencast();
+        // Tell the webview to join as the receiver BEFORE the offer is created, so the
+        // controller's offer has somewhere to land.
+        void this.panel.webview.postMessage({
+          method: 'cobrowser.rtcstart',
+          url: BrowserPanel.videoHub.viewerUrl(this.id),
+        });
+        const ok = await BrowserPanel.videoHub.start(this.id, this.page);
+        // Success only means negotiation began; the webview reports 'extension.videolive'
+        // when frames actually arrive, and that is what stops the screencast.
+        if (!ok || !this.streaming) {
+          this.videoPending = false;
+          void this.panel.webview.postMessage({ method: 'cobrowser.rtcstop' });
+          this.appliedKey = ''; // back to the device-pixel viewport JPEG wants
+          void this.panel.webview.postMessage({ type: 'extension.remeasure' });
+        }
+        return;
+      }
       await this.startScreencast();
+    } else if (this.videoMode || this.videoPending) {
+      // Hidden while on (or mid-handover to) video: tear both down. Clearing
+      // videoPending matters — it selects the viewport strategy.
+      this.videoMode = false;
+      this.videoPending = false;
+      BrowserPanel.videoHub?.stop(this.id);
+      void this.panel.webview.postMessage({ method: 'cobrowser.rtcstop' });
+      await this.stopScreencast(); // may still be covering the negotiation
     } else {
       await this.stopScreencast();
+    }
+  }
+
+  /** Capture-side status. Media itself never reaches this process — it flows
+   *  peer-to-peer from the browser into the webview — so only failures matter here. */
+  private postVideo(header: VideoHeader): void {
+    // Also while pending: capture can fail during negotiation, before video is live.
+    if (!this.videoMode && !this.videoPending) return;
+    if (header.kind === 'error') {
+      // Capture died mid-stream (track ended, negotiation failed) — fall back live.
+      this.videoMode = false;
+      this.videoPending = false;
+      void this.panel.webview.postMessage({ method: 'cobrowser.rtcstop' });
+      // Back to the device-pixel viewport the screencast path expects.
+      this.appliedKey = '';
+      void this.panel.webview.postMessage({ type: 'extension.remeasure' });
+      void this.startScreencast();
     }
   }
 
@@ -267,15 +378,37 @@ export class BrowserPanel {
     return this.cdp;
   }
 
+  /** Adaptive quality, the way remote-desktop protocols do it: full fidelity when the
+   *  page is still, reduced while it's moving. Scrolling changes every pixel, so each
+   *  frame is a FULL-size JPEG — at q90/5Mpx that caps out around 20-25fps and reads as
+   *  sluggish. Detail is imperceptible mid-scroll anyway, so trade it for frame rate and
+   *  restore crispness the moment things settle. */
+  /** Frame format for the screencast, from `cobrowser.imageFormat`. */
+  static imageFormat: 'jpeg' | 'png' = 'jpeg';
+
+  /**
+   * Always full fidelity. The adaptive "drop quality while moving" scheme that used to
+   * live here was solving a bottleneck that measurement showed does not exist: with the
+   * frame path instrumented end to end, frames DRAWN always equalled frames RECEIVED.
+   * The real limit is Chrome rendering + encoding the page, which varies hugely by site
+   * (measured ~40fps on a dense article, ~90fps on Hacker News), and lowering quality
+   * did not raise it — so softening during scroll was pure loss.
+   *
+   * Format is a genuine either/or rather than a quality dial (measured, 3.1Mpx,
+   * scrolling): on text-heavy pages PNG is both LOSSLESS and slightly smaller than
+   * JPEG q90 (457KB vs 478KB) at 41 vs 46fps, because JPEG spends bits encoding the
+   * ringing it creates around glyphs. On photo-heavy pages PNG doubles the bytes
+   * (780KB vs 375KB) at comparable frame rate. Bandwidth is not the bottleneck here,
+   * so this is really "perfect text" vs "lighter frames".
+   */
   private async startScreencast(): Promise<void> {
     try {
       const cdp = await this.ensureCdp();
+      const png = BrowserPanel.imageFormat === 'png';
       await cdp.send('Page.startScreencast', {
-        format: 'jpeg',
-        // q90: JPEG ringing on text at q70 read as "grainy". The old q70 trade paid for
-        // the base64+main-thread-decode pipe; with binary transport + off-thread decode
-        // the extra ~35% per frame is absorbed, so favor fidelity.
-        quality: 90,
+        format: png ? 'png' : 'jpeg',
+        // PNG is lossless — `quality` is meaningless and must not be sent.
+        ...(png ? {} : { quality: 90 }), // q70 ringing on text reads as "grainy"
         // Caps must exceed the largest device-pixel viewport or frames get downscaled
         // back to blurry — 8192 clears even a 6K display's full width.
         maxWidth: 8192,
@@ -301,8 +434,27 @@ export class BrowserPanel {
     const { cssW, cssH, dpr } = this.metrics;
     if (cssW < 50 || cssH < 50) return;
     const zoom = this.getZoom();
-    const width = Math.max(1, Math.round((cssW * dpr) / zoom));
-    const height = Math.max(1, Math.round((cssH * dpr) / zoom));
+    // Two viewport strategies, one per render path:
+    //  - JPEG: inflate the CSS viewport to DEVICE pixels, because the screencast captures
+    //    the emulated viewport at scale 1 (that is what makes text crisp there).
+    //  - WebRTC: keep the viewport at CSS size and let the WINDOW (sized to match) drive
+    //    capture — tab capture already delivers 2x, so crispness is free. Inflating here
+    //    too would lay the page out at 2x inside a 1x window (squashed, unreadable) and
+    //    put page coordinates 2x out of step with the video.
+    const renderScale = this.videoMode || this.videoPending ? 1 : dpr;
+    let width = Math.max(1, Math.round((cssW * renderScale) / zoom));
+    let height = Math.max(1, Math.round((cssH * renderScale) / zoom));
+    // Cap the rendered area. Rendering at full device pixels keeps text crisp, but the
+    // cost is quadratic and unbounded: a large panel at dpr 2 reaches ~10.7Mpx, where the
+    // JPEG encoder drops to 46fps with 1.26MB frames (measured) — the "low framerate and
+    // jitter" — and no H.264 level accepts it either. Past the budget, back the effective
+    // scale off toward 1x: still sharper than CSS pixels, and 60fps again.
+    const area = width * height;
+    if (area > MAX_RENDER_PX) {
+      const s = Math.sqrt(MAX_RENDER_PX / area);
+      width = Math.max(1, Math.round(width * s));
+      height = Math.max(1, Math.round(height * s));
+    }
     void this.panel.webview.postMessage({ type: 'extension.zoomlabel', zoom });
     const key = `${width}x${height}`;
     if (key === this.appliedKey) return;
@@ -312,11 +464,24 @@ export class BrowserPanel {
       // (page mid-navigation, session churn) left the page stuck on the 1280x800 launch
       // default — stretched to the panel — until a manual resize changed the key.
       this.appliedKey = key;
+      if (this.videoMode) {
+        // Keep the window (what tab capture records) the same size as the viewport,
+        // and tell the webview the page's coordinate space so input maps correctly —
+        // the video is 2x this, so it cannot be used as the coordinate reference.
+        await this.session
+          .run(() => this.session.setWindowSize(this.page, width, height))
+          .catch(() => undefined);
+        void this.panel.webview.postMessage({
+          method: 'cobrowser.rtcpagesize',
+          width,
+          height,
+        });
+      }
     } catch {
       this.appliedKey = ''; // retry on the next viewport push / remeasure
       return;
     }
-    if (this.streaming) await this.startScreencast();
+    if (this.streaming && !this.videoMode) await this.startScreencast();
   }
 
   private zoomMap(): Record<string, number> {
@@ -345,6 +510,24 @@ export class BrowserPanel {
             this.ready = true;
             await this.syncRender();
             void this.panel.webview.postMessage({ type: 'extension.url', url: this.page.url() });
+            break;
+          case 'extension.videolive':
+            // Frames are on screen — retire the screencast now, not before.
+            if (this.videoPending) {
+              this.videoPending = false;
+              this.videoMode = true;
+              await this.stopScreencast();
+            }
+            break;
+          case 'extension.videoerror':
+            // Receiver-side failure (negotiation, connection state) — abandon video for
+            // this panel and restore the screencast's device-pixel viewport.
+            this.videoMode = false;
+            this.videoPending = false;
+            BrowserPanel.videoHub?.stop(this.id);
+            this.appliedKey = '';
+            void this.panel.webview.postMessage({ type: 'extension.remeasure' });
+            await this.startScreencast();
             break;
           case 'extension.contextinfo': {
             // Right-click: report what's under the cursor (selection / link) so the
@@ -482,7 +665,7 @@ export class BrowserPanel {
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}';" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}'; connect-src ws://127.0.0.1:*; media-src blob: mediastream:;" />
   <style nonce="${nonce}">${css}</style>
   <title>Cobrowser</title>
 </head>
@@ -509,8 +692,12 @@ export class BrowserPanel {
       <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M8 4v8M4 8h8"/></svg>
     </button>
   </div>
-  <div id="stage">
-    <canvas id="screen" tabindex="0"></canvas>
+  <!-- Input binds to the STAGE, not to a render surface: the canvas is display:none in
+       WebRTC mode, and listeners on a hidden element receive nothing (that is why input
+       died when video engaged). The stage is present in both modes. -->
+  <div id="stage" tabindex="0">
+    <canvas id="screen"></canvas>
+    <video id="video" autoplay muted playsinline hidden></video>
     <div id="highlight" hidden></div>
   </div>
   <script nonce="${nonce}">${js}</script>
@@ -520,6 +707,7 @@ export class BrowserPanel {
 
   dispose(): void {
     BrowserPanel.panels.delete(this.id);
+    if (this.videoMode) BrowserPanel.videoHub?.stop(this.id);
     this.page.off('framenavigated', this.onNav);
     if (this.cdp && this.frameHandler) {
       try {
