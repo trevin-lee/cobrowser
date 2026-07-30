@@ -2,7 +2,7 @@
   "name": "cobrowser",
   "displayName": "Cobrowser",
   "description": "An embedded, agent-controllable browser inside your editor — co-driven by you (webview) and your AI agent (MCP).",
-  "version": "0.4.5",
+  "version": "0.5.0",
   "publisher": "trevin-lee",
   "private": true,
   "license": "MIT",
@@ -121,6 +121,37 @@
             "Lossless — pixel-perfect text, no compression artifacts ever."
           ],
           "description": "Frame format for the browser stream. Measured while scrolling at 3.1Mpx: on text-heavy pages PNG is lossless AND slightly smaller than JPEG q90 (457KB vs 478KB per frame) at 41 vs 46fps; on photo-heavy pages PNG doubles the bytes (780KB vs 375KB) at similar frame rate. Bandwidth is not the bottleneck, so this is mostly 'perfect text' vs 'lighter frames'. Applies immediately."
+        },
+        "cobrowser.backend": {
+          "type": "string",
+          "default": "local",
+          "enum": [
+            "local",
+            "container"
+          ],
+          "enumDescriptions": [
+            "Chromium as a local child process. Instant start, shared macOS profile, no dependencies. Frame rate is capped ~45fps by Chromium's own capture path.",
+            "Chromium inside a Docker container, captured from its X11 framebuffer. Measured ~248fps of changed frames — bypasses Chromium's capture ceiling. Requires Docker; the browser profile is separate from the local one."
+          ],
+          "description": "Where the browser runs. 'container' trades a Docker dependency and a separate browser profile for a large frame-rate increase, because Chromium's own capture path (both startScreencast and captureScreenshot) tops out near 45fps while the page renders at 80.",
+          "tags": [
+            "experimental"
+          ]
+        },
+        "cobrowser.containerWidth": {
+          "type": "number",
+          "default": 2200,
+          "description": "Container display width in pixels. The page fills this exactly (the panel letterboxes to fit), so pick something near your panel's aspect ratio. Applied on browser restart."
+        },
+        "cobrowser.containerHeight": {
+          "type": "number",
+          "default": 1400,
+          "description": "Container display height in pixels. Applied on browser restart."
+        },
+        "cobrowser.containerFps": {
+          "type": "number",
+          "default": 120,
+          "description": "Frame capture rate inside the container. Only CHANGED frames are sent (a still page costs nothing), so this is a ceiling rather than a constant load."
         },
         "cobrowser.videoPipeline": {
           "type": "boolean",

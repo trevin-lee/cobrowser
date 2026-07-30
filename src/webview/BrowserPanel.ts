@@ -298,6 +298,16 @@ export class BrowserPanel {
       await this.session.run(() => this.session.focusPage(this.id)).catch(() => undefined);
       this.appliedKey = '';
       void this.panel.webview.postMessage({ type: 'extension.remeasure' });
+      // Container backend: the webview pulls frames straight from the container's frame
+      // server (X11 capture, ~248fps of changed frames vs Chromium's ~45fps ceiling).
+      // Nothing to screencast here — this process is not in the pixel path.
+      if (BrowserPanel.containerFrameUrl) {
+        void this.panel.webview.postMessage({
+          method: 'cobrowser.wsstart',
+          url: BrowserPanel.containerFrameUrl,
+        });
+        return;
+      }
       // Prefer the WebRTC pipeline when enabled; any failure (controller, capture,
       // negotiation, decode) falls straight back to the JPEG screencast.
       if (BrowserPanel.videoEnabled && BrowserPanel.videoHub) {
@@ -328,6 +338,8 @@ export class BrowserPanel {
         return;
       }
       await this.startScreencast();
+    } else if (BrowserPanel.containerFrameUrl) {
+      void this.panel.webview.postMessage({ method: 'cobrowser.wsstop' });
     } else if (this.videoMode || this.videoPending) {
       // Hidden while on (or mid-handover to) video: tear both down. Clearing
       // videoPending matters — it selects the viewport strategy.
@@ -386,6 +398,11 @@ export class BrowserPanel {
   /** Frame format for the screencast, from `cobrowser.imageFormat`. */
   static imageFormat: 'jpeg' | 'png' = 'jpeg';
 
+  /** When the browser runs in a container, frames come straight from its frame server
+   *  over a WebSocket (X11 capture — no Chromium capture ceiling) and this process is
+   *  not in the pixel path at all. Undefined means the normal local screencast. */
+  static containerFrameUrl: string | undefined;
+
   /**
    * Always full fidelity. The adaptive "drop quality while moving" scheme that used to
    * live here was solving a bottleneck that measurement showed does not exist: with the
@@ -433,6 +450,10 @@ export class BrowserPanel {
   private async applyViewport(): Promise<void> {
     const { cssW, cssH, dpr } = this.metrics;
     if (cssW < 50 || cssH < 50) return;
+    // Container backend: the page fills the container's Xvfb screen, and X11 capture
+    // records that screen. Overriding the viewport here would desync layout from what is
+    // actually captured (and from the input coordinate space), so leave it alone.
+    if (BrowserPanel.containerFrameUrl) return;
     const zoom = this.getZoom();
     // Two viewport strategies, one per render path:
     //  - JPEG: inflate the CSS viewport to DEVICE pixels, because the screencast captures

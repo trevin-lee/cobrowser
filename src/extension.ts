@@ -10,6 +10,7 @@ import { BrowserPanel } from './webview/BrowserPanel';
 import { SessionTreeProvider } from './webview/SessionTreeProvider';
 import { writeClientConfigs } from './clients/writeClientConfigs';
 import { CaptureHub } from './video/CaptureHub';
+import { ContainerRuntime } from './browser/ContainerRuntime';
 
 const PID_KEY = 'cobrowser.browserPid';
 const BUILD_ID_KEY = 'cobrowser.chromeBuildId';
@@ -86,6 +87,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // Assigned after the MCP HTTP server is up (shares its port); wire() below runs
   // later than that in practice, but keep the reference optional to stay safe.
   let captureHub: CaptureHub | undefined;
+  let container: ContainerRuntime | undefined;
 
   const tree = new SessionTreeProvider(
     { label: vscode.workspace.name ?? 'Default', path: profileDir },
@@ -190,6 +192,38 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       sessionPromise = (async () => {
         const headless = cfg.get<boolean>('headless', true);
         const autoFallbackPasskeys = cfg.get<boolean>('autoFallbackPasskeys', true);
+
+        // Container backend: run the browser in a container and capture its X11
+        // framebuffer, which bypasses Chromium's ~45fps capture ceiling (measured ~248fps
+        // of changed frames). Automation is unchanged — we just connect CDP to it.
+        if (cfg.get<string>('backend', 'local') === 'container') {
+          if (!(await ContainerRuntime.dockerAvailable())) {
+            void vscode.window.showErrorMessage(
+              'Cobrowser: cobrowser.backend is "container" but Docker is not running.',
+            );
+            throw new Error('docker unavailable');
+          }
+          const w = cfg.get<number>('containerWidth', 2200);
+          const h = cfg.get<number>('containerHeight', 1400);
+          const cdpPort = (mcp?.port ?? 39273) + 1;
+          const framePort = (mcp?.port ?? 39273) + 2;
+          container ??= new ContainerRuntime(
+            `cobrowser-${vscode.workspace.name ?? 'default'}`.replace(/[^a-zA-Z0-9_.-]/g, '-'),
+            profileDir,
+            log,
+          );
+          await container.start({ cdpPort, framePort, width: w, height: h });
+          const wsEndpoint = await container.wsEndpoint(cdpPort);
+          const s = await BrowserSession.connect(wsEndpoint, true, autoFallbackPasskeys);
+          BrowserPanel.containerFrameUrl = container.frameUrl(
+            framePort,
+            cfg.get<'png' | 'h264'>('imageFormat', 'png') === 'h264' ? 'h264' : 'png',
+            cfg.get<number>('containerFps', 120),
+          );
+          log(`Container backend ready: CDP ${cdpPort}, frames ${framePort} (${w}x${h}).`);
+          return wire(s);
+        }
+
         // Reconnect to a Chrome kept alive across a reload (tabs intact) before launching.
         const savedWs = context.workspaceState.get<string>(WS_KEY);
         if (savedWs) {
@@ -282,6 +316,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
   const hubRef = captureHub;
   context.subscriptions.push({ dispose: () => hubRef.dispose() });
+  // Don't leave a container (and its published ports) running after the window closes.
+  context.subscriptions.push({ dispose: () => void container?.stop() });
   // Remember the port we actually bound so the next reload of THIS workspace reuses it
   // (stable URL). Skip when the user pinned a port — that's already fixed by config.
   if (pinnedPort <= 0) await context.workspaceState.update(PORT_KEY, mcp.port);

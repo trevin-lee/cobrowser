@@ -55,6 +55,14 @@ window.addEventListener('message', (event: MessageEvent) => {
     onFrame(m as { bytes: Uint8Array | ArrayBuffer; metadata: FrameMetadata });
     return;
   }
+  if (m?.method === 'cobrowser.wsstart') {
+    startFrameSocket(m as { url: string });
+    return;
+  }
+  if (m?.method === 'cobrowser.wsstop') {
+    stopFrameSocket();
+    return;
+  }
   if (m?.method === 'cobrowser.rtcstart') {
     startRtc(m as { url: string });
     return;
@@ -145,6 +153,48 @@ async function renderFrame(frame: BinaryFrame): Promise<void> {
     bmp.close();
   } catch {
     /* malformed/torn frame — skip it, the next one repaints */
+  }
+}
+
+// ----- container path: frames stream straight from the container's frame server -----
+// The browser runs in a container that captures the X11 framebuffer, which sidesteps
+// Chromium's own ~45fps capture ceiling (measured ~248fps of changed frames). Frames
+// arrive here directly over a WebSocket — the extension host is not in the pixel path —
+// framed as [u32le length][payload] and decoded by the same off-thread path as before.
+let frameWs: WebSocket | null = null;
+
+function stopFrameSocket(): void {
+  try {
+    frameWs?.close();
+  } catch {
+    /* already closed */
+  }
+  frameWs = null;
+}
+
+function startFrameSocket(cfg: { url: string }): void {
+  stopFrameSocket();
+  try {
+    const ws = new WebSocket(cfg.url);
+    ws.binaryType = 'arraybuffer';
+    frameWs = ws;
+    ws.onmessage = (ev: MessageEvent) => {
+      if (typeof ev.data === 'string') return; // JSON hello: {format,width,height,fps}
+      const buf = ev.data as ArrayBuffer;
+      if (buf.byteLength < 4) return;
+      const len = new DataView(buf).getUint32(0, true);
+      const bytes = new Uint8Array(buf, 4, Math.min(len, buf.byteLength - 4));
+      // Same decode path as the screencast: sniffs PNG vs JPEG, decodes off-thread,
+      // latest-frame-wins so a burst never backs up.
+      onFrame({ bytes, metadata: {} });
+    };
+    ws.onerror = () => {
+      stopFrameSocket();
+      fire('extension.videoerror'); // host falls back to the local screencast
+    };
+  } catch {
+    stopFrameSocket();
+    fire('extension.videoerror');
   }
 }
 
