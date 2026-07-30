@@ -170,6 +170,48 @@ function stopFrameSocket(): void {
     /* already closed */
   }
   frameWs = null;
+  pendingSegments.length = 0;
+  sourceBuffer = null;
+  if (mediaSource) {
+    try {
+      if (mediaSource.readyState === 'open') mediaSource.endOfStream();
+    } catch {
+      /* already torn down */
+    }
+    mediaSource = null;
+    videoEl.removeAttribute('src');
+    videoEl.load();
+  }
+  videoEl.hidden = true;
+  canvas.hidden = false;
+}
+
+let mediaSource: MediaSource | null = null;
+let sourceBuffer: SourceBuffer | null = null;
+const pendingSegments: Uint8Array[] = [];
+
+/** Read the real codec string out of the fMP4 init segment's avcC box, rather than
+ *  guessing one: MediaSource rejects the whole stream if the string does not match the
+ *  bitstream's profile/level exactly. */
+function codecFromAvcC(bytes: Uint8Array): string | null {
+  for (let i = 0; i + 8 < bytes.length; i++) {
+    if (bytes[i] === 0x61 && bytes[i + 1] === 0x76 && bytes[i + 2] === 0x63 && bytes[i + 3] === 0x43) {
+      const p = bytes[i + 5], c = bytes[i + 6], l = bytes[i + 7];
+      const hex = (n: number): string => n.toString(16).padStart(2, '0');
+      return `avc1.${hex(p)}${hex(c)}${hex(l)}`;
+    }
+  }
+  return null;
+}
+
+function pumpSegments(): void {
+  if (!sourceBuffer || sourceBuffer.updating || pendingSegments.length === 0) return;
+  const next = pendingSegments.shift()!;
+  try {
+    sourceBuffer.appendBuffer(next as BufferSource);
+  } catch {
+    /* buffer full or closed — drop and keep going */
+  }
 }
 
 function startFrameSocket(cfg: { url: string }): void {
@@ -184,9 +226,58 @@ function startFrameSocket(cfg: { url: string }): void {
       if (buf.byteLength < 4) return;
       const len = new DataView(buf).getUint32(0, true);
       const bytes = new Uint8Array(buf, 4, Math.min(len, buf.byteLength - 4));
-      // Same decode path as the screencast: sniffs PNG vs JPEG, decodes off-thread,
-      // latest-frame-wins so a burst never backs up.
-      onFrame({ bytes, metadata: {} });
+
+      // PNG/JPEG still frames go through the existing off-thread image path.
+      if (bytes[0] === 0x89 || (bytes[0] === 0xff && bytes[1] === 0xd8)) {
+        onFrame({ bytes, metadata: {} });
+        return;
+      }
+
+      // Otherwise this is fragmented MP4: feed MediaSource and let the editor composite
+      // a real <video>. First chunk carries ftyp+moov, from which we read the codec.
+      if (!mediaSource) {
+        const codec = codecFromAvcC(bytes);
+        if (!codec) return; // wait for the init segment
+        const mime = `video/mp4; codecs="${codec}"`;
+        if (!('MediaSource' in window) || !MediaSource.isTypeSupported(mime)) {
+          stopFrameSocket();
+          fire('extension.videoerror');
+          return;
+        }
+        mediaSource = new MediaSource();
+        videoEl.src = URL.createObjectURL(mediaSource);
+        void videoEl.play().catch(() => undefined);
+        mediaSource.addEventListener('sourceopen', () => {
+          try {
+            sourceBuffer = mediaSource!.addSourceBuffer(mime);
+            sourceBuffer.mode = 'sequence';
+            sourceBuffer.addEventListener('updateend', () => {
+              // Never let the buffer grow: this is a live view, history is worthless and
+              // an unbounded SourceBuffer eventually stalls playback.
+              try {
+                const b = sourceBuffer!.buffered;
+                if (b.length && videoEl.currentTime - b.start(0) > 4) {
+                  sourceBuffer!.remove(b.start(0), videoEl.currentTime - 2);
+                }
+              } catch {
+                /* removal races an append — harmless */
+              }
+              pumpSegments();
+            });
+            videoEl.hidden = false;
+            canvas.hidden = true;
+            pendingSegments.push(bytes);
+            pumpSegments();
+          } catch {
+            stopFrameSocket();
+            fire('extension.videoerror');
+          }
+        });
+        return;
+      }
+      pendingSegments.push(bytes);
+      if (pendingSegments.length > 240) pendingSegments.splice(0, pendingSegments.length - 120);
+      pumpSegments();
     };
     ws.onerror = () => {
       stopFrameSocket();

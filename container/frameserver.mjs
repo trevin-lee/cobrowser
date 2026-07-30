@@ -16,6 +16,7 @@
 // unmasked server->client binary frames), and keeping the image slim matters when it is
 // pulled on first run.
 import http from 'node:http';
+import net from 'node:net';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 
@@ -156,3 +157,74 @@ server.on('upgrade', (req, socket) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => log(`listening on :${PORT} (display ${DISPLAY})`));
+
+// ---------------------------------------------------------------------------
+// CDP proxy.
+//
+// Chromium IGNORES --remote-debugging-address and always binds its DevTools port to
+// 127.0.0.1 (verified: /proc/net/tcp shows 0100007F). Docker publishes ports to the
+// container's eth0, which can never reach a loopback-only listener — so CDP worked
+// inside the container and was unreachable from the host. This proxy bridges the two.
+//
+// It also rewrites the Host header on the way in, and the advertised host:port in
+// /json/* responses on the way out. That solves the OTHER Chromium quirk — it validates
+// Host on the DevTools endpoint and resets requests whose port does not match the one it
+// bound — and means the published port no longer has to equal the internal one.
+// ---------------------------------------------------------------------------
+const CDP_INTERNAL = Number(process.env.COBROWSER_CDP_INTERNAL || 9222);
+const CDP_PROXY_PORT = Number(process.env.COBROWSER_CDP_PORT || 9221);
+const INTERNAL_HOST = `127.0.0.1:${CDP_INTERNAL}`;
+
+const cdpProxy = http.createServer((req, res) => {
+  const upstream = http.request(
+    {
+      host: '127.0.0.1',
+      port: CDP_INTERNAL,
+      path: req.url,
+      method: req.method,
+      headers: { ...req.headers, host: INTERNAL_HOST },
+    },
+    (up) => {
+      const isJson = (up.headers['content-type'] ?? '').includes('json');
+      if (!isJson) {
+        res.writeHead(up.statusCode ?? 502, up.headers);
+        up.pipe(res);
+        return;
+      }
+      // Rewrite webSocketDebuggerUrl etc. so the client dials US, not the internal port.
+      let body = '';
+      up.on('data', (c) => (body += c));
+      up.on('end', () => {
+        const clientHost = req.headers.host ?? `127.0.0.1:${CDP_PROXY_PORT}`;
+        body = body.split(INTERNAL_HOST).join(clientHost).split(`localhost:${CDP_INTERNAL}`).join(clientHost);
+        const headers = { ...up.headers };
+        delete headers['content-length'];
+        res.writeHead(up.statusCode ?? 200, headers);
+        res.end(body);
+      });
+    },
+  );
+  upstream.on('error', () => { if (!res.headersSent) res.writeHead(502); res.end(); });
+  req.pipe(upstream);
+});
+
+cdpProxy.on('upgrade', (req, socket, head) => {
+  const upstream = net.connect(CDP_INTERNAL, '127.0.0.1', () => {
+    const lines = [`GET ${req.url} HTTP/1.1`, `Host: ${INTERNAL_HOST}`];
+    for (const [k, v] of Object.entries(req.headers)) {
+      if (k.toLowerCase() === 'host') continue;
+      lines.push(`${k}: ${Array.isArray(v) ? v.join(', ') : v}`);
+    }
+    upstream.write(lines.join('\r\n') + '\r\n\r\n');
+    if (head?.length) upstream.write(head);
+    upstream.pipe(socket);
+    socket.pipe(upstream);
+  });
+  const bail = () => { upstream.destroy(); socket.destroy(); };
+  upstream.on('error', bail);
+  socket.on('error', bail);
+});
+
+cdpProxy.listen(CDP_PROXY_PORT, '0.0.0.0', () =>
+  log(`CDP proxy on :${CDP_PROXY_PORT} -> ${INTERNAL_HOST}`),
+);

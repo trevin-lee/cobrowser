@@ -1,0 +1,74 @@
+name: Build browser container
+
+# Publishes ghcr.io/trevin-lee/cobrowser, which the extension pulls on first use
+# (the VSIX stays small — same contract as the Chrome-for-Testing download).
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'container/**'
+      - '.github/workflows/container.yml'
+    tags: ['v*']
+  workflow_dispatch:
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/cobrowser
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write   # required to push to GHCR
+    steps:
+      - uses: actions/checkout@v4
+
+      # The extension runs this on Apple Silicon and on Intel/Linux machines, so build
+      # both architectures. arm64 is emulated here, which is why the build is slow.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=tag
+            type=sha,format=short
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./container
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # A broken image is worse than no image: prove Chromium comes up and the frame
+      # server answers before this tag is considered good.
+      - name: Smoke test the pushed image
+        run: |
+          docker run -d --rm --name smoke \
+            -p 9222:9222 -p 9223:9223 \
+            -e COBROWSER_CDP_PORT=9222 \
+            -e COBROWSER_WIDTH=1280 -e COBROWSER_HEIGHT=800 \
+            ${{ env.IMAGE }}:latest
+          for i in $(seq 1 60); do
+            curl -sf --max-time 2 http://127.0.0.1:9222/json/version >/dev/null && break
+            sleep 1
+          done
+          curl -sf --max-time 5 http://127.0.0.1:9222/json/version | head -c 120
+          curl -sf --max-time 5 http://127.0.0.1:9223/health
+          docker rm -f smoke

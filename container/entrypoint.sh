@@ -27,8 +27,7 @@ chromium \
   --disable-frame-rate-limit --disable-gpu-vsync \
   --disable-features=CalculateNativeWinOcclusion \
   --user-data-dir=/profile \
-  --remote-debugging-address=0.0.0.0 \
-  --remote-debugging-port="${COBROWSER_CDP_PORT:-9222}" \
+  --remote-debugging-port="${COBROWSER_CDP_INTERNAL:-9222}" \
   --window-position=0,0 \
   --window-size="${WIDTH},${HEIGHT}" \
   --kiosk \

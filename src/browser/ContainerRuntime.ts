@@ -5,7 +5,7 @@ import * as vscode from 'vscode';
 const exec = promisify(execFile);
 const delay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-export const CONTAINER_IMAGE = 'ghcr.io/trevin-lee/cobrowser:dev';
+export const CONTAINER_IMAGE = 'ghcr.io/trevin-lee/cobrowser:latest';
 
 type Log = (m: string) => void;
 
@@ -29,9 +29,9 @@ export class ContainerRuntime {
     private readonly log: Log,
   ) {}
 
-  /** CDP endpoint. NOTE: the port is identical inside and outside the container by
-   *  necessity — Chromium validates the Host header on its DevTools endpoint and resets
-   *  every request if the published port differs from the one it bound. */
+  /** CDP endpoint. Chromium binds DevTools to loopback INSIDE the container (it ignores
+   *  --remote-debugging-address), so an in-container proxy republishes it on 0.0.0.0 and
+   *  fixes up Host headers and advertised URLs. That is what makes this reachable. */
   cdpUrl(port: number): string {
     return `http://127.0.0.1:${port}`;
   }
@@ -75,7 +75,32 @@ export class ContainerRuntime {
     );
   }
 
-  /** Start (or reuse) the container. Returns once CDP answers. */
+  /** Is a container with our name already up AND serving CDP? */
+  private async healthy(cdpPort: number): Promise<boolean> {
+    try {
+      const { stdout } = await exec('docker', [
+        'ps', '-q', '--filter', `name=^${this.name}$`, '--filter', 'status=running',
+      ]);
+      if (!stdout.trim()) return false;
+      const res = await fetch(`http://127.0.0.1:${cdpPort}/json/version`, {
+        signal: AbortSignal.timeout(2000),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Start the container, or adopt one that is already running and healthy.
+   *
+   * Serialized through `starting` and keyed by a fixed container NAME so that concurrent
+   * callers (a tool call and a panel opening at the same moment, or a reload racing the
+   * previous host's teardown) can never bring up two browsers for one workspace — which
+   * would fight over the published ports and silently strand one of them.
+   */
+  private starting: Promise<void> | undefined;
+
   async start(opts: {
     cdpPort: number;
     framePort: number;
@@ -83,16 +108,33 @@ export class ContainerRuntime {
     height: number;
     startUrl?: string;
   }): Promise<void> {
-    await this.stop(); // never leave a previous one holding the ports
+    this.starting ??= this.doStart(opts).finally(() => {
+      this.starting = undefined;
+    });
+    return this.starting;
+  }
+
+  private async doStart(opts: {
+    cdpPort: number;
+    framePort: number;
+    width: number;
+    height: number;
+    startUrl?: string;
+  }): Promise<void> {
+    if (await this.healthy(opts.cdpPort)) {
+      this.log('Reusing the running cobrowser container.');
+      return;
+    }
+    await this.stop(); // a dead/mismatched one would still hold the ports
     await this.ensureImage();
     const args = [
       'run', '-d', '--rm',
       '--name', this.name,
       '--shm-size=2g',
-      // Same-port publishing is mandatory (see cdpUrl).
-      '-p', `127.0.0.1:${opts.cdpPort}:${opts.cdpPort}`,
+      // Ports may be remapped freely: the in-container CDP proxy rewrites the Host
+      // header inbound and the advertised host:port in /json/* outbound.
+      '-p', `127.0.0.1:${opts.cdpPort}:9221`,
       '-p', `127.0.0.1:${opts.framePort}:9223`,
-      '-e', `COBROWSER_CDP_PORT=${opts.cdpPort}`,
       '-e', `COBROWSER_WIDTH=${opts.width}`,
       '-e', `COBROWSER_HEIGHT=${opts.height}`,
       '-e', `COBROWSER_START_URL=${opts.startUrl ?? 'about:blank'}`,

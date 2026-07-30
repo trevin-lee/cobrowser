@@ -207,17 +207,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           const h = cfg.get<number>('containerHeight', 1400);
           const cdpPort = (mcp?.port ?? 39273) + 1;
           const framePort = (mcp?.port ?? 39273) + 2;
+          // MUST be its own profile dir. Mounting the local one made container Chromium
+          // refuse to start outright — the macOS Chrome's SingletonLock is in there
+          // ("profile appears to be in use ... on another computer"), so it exits before
+          // ever binding the debugging port.
+          const containerProfile = path.join(profileBase.fsPath, 'container-profile');
+          await vscode.workspace.fs.createDirectory(vscode.Uri.file(containerProfile));
           container ??= new ContainerRuntime(
             `cobrowser-${vscode.workspace.name ?? 'default'}`.replace(/[^a-zA-Z0-9_.-]/g, '-'),
-            profileDir,
+            containerProfile,
             log,
           );
           await container.start({ cdpPort, framePort, width: w, height: h });
           const wsEndpoint = await container.wsEndpoint(cdpPort);
           const s = await BrowserSession.connect(wsEndpoint, true, autoFallbackPasskeys);
+          // Container frames are always H.264: at these rates PNG would push >100MB/s
+          // through the socket, and fragmented MP4 renders in a <video> element that the
+          // editor composites natively (no per-frame JavaScript).
           BrowserPanel.containerFrameUrl = container.frameUrl(
             framePort,
-            cfg.get<'png' | 'h264'>('imageFormat', 'png') === 'h264' ? 'h264' : 'png',
+            'h264',
             cfg.get<number>('containerFps', 120),
           );
           log(`Container backend ready: CDP ${cdpPort}, frames ${framePort} (${w}x${h}).`);
