@@ -383,18 +383,32 @@ export class BrowserPanel {
    *  frame is a FULL-size JPEG — at q90/5Mpx that caps out around 20-25fps and reads as
    *  sluggish. Detail is imperceptible mid-scroll anyway, so trade it for frame rate and
    *  restore crispness the moment things settle. */
-  /** Always full fidelity. The adaptive "drop quality while moving" scheme that used to
-   *  live here was solving a bottleneck that measurement showed does not exist: with the
-   *  frame path instrumented end to end, frames DRAWN always equalled frames RECEIVED —
-   *  nothing was being dropped in transport or decode. The real limit is Chrome
-   *  rendering and JPEG-encoding the page (~32-42fps on a real page at these sizes), and
-   *  lowering quality did not raise it. So the softening during scroll was pure loss. */
+  /** Frame format for the screencast, from `cobrowser.imageFormat`. */
+  static imageFormat: 'jpeg' | 'png' = 'jpeg';
+
+  /**
+   * Always full fidelity. The adaptive "drop quality while moving" scheme that used to
+   * live here was solving a bottleneck that measurement showed does not exist: with the
+   * frame path instrumented end to end, frames DRAWN always equalled frames RECEIVED.
+   * The real limit is Chrome rendering + encoding the page, which varies hugely by site
+   * (measured ~40fps on a dense article, ~90fps on Hacker News), and lowering quality
+   * did not raise it — so softening during scroll was pure loss.
+   *
+   * Format is a genuine either/or rather than a quality dial (measured, 3.1Mpx,
+   * scrolling): on text-heavy pages PNG is both LOSSLESS and slightly smaller than
+   * JPEG q90 (457KB vs 478KB) at 41 vs 46fps, because JPEG spends bits encoding the
+   * ringing it creates around glyphs. On photo-heavy pages PNG doubles the bytes
+   * (780KB vs 375KB) at comparable frame rate. Bandwidth is not the bottleneck here,
+   * so this is really "perfect text" vs "lighter frames".
+   */
   private async startScreencast(): Promise<void> {
     try {
       const cdp = await this.ensureCdp();
+      const png = BrowserPanel.imageFormat === 'png';
       await cdp.send('Page.startScreencast', {
-        format: 'jpeg',
-        quality: 90, // q70 ringing on text reads as "grainy"
+        format: png ? 'png' : 'jpeg',
+        // PNG is lossless — `quality` is meaningless and must not be sent.
+        ...(png ? {} : { quality: 90 }), // q70 ringing on text reads as "grainy"
         // Caps must exceed the largest device-pixel viewport or frames get downscaled
         // back to blurry — 8192 clears even a 6K display's full width.
         maxWidth: 8192,

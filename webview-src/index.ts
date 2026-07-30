@@ -129,7 +129,14 @@ function onFrame(frame: BinaryFrame): void {
 async function renderFrame(frame: BinaryFrame): Promise<void> {
   try {
     lastMeta = frame.metadata || {};
-    const bmp = await createImageBitmap(new Blob([frame.bytes as BlobPart], { type: 'image/jpeg' }));
+    // Frames may be JPEG or PNG (cobrowser.imageFormat) — sniff the magic bytes rather
+    // than trust a hard-coded MIME type. PNG starts with 0x89 'P' 'N' 'G'.
+    const u8 =
+      frame.bytes instanceof Uint8Array ? frame.bytes : new Uint8Array(frame.bytes as ArrayBuffer);
+    const isPng = u8[0] === 0x89 && u8[1] === 0x50 && u8[2] === 0x4e && u8[3] === 0x47;
+    const bmp = await createImageBitmap(
+      new Blob([u8 as BlobPart], { type: isPng ? 'image/png' : 'image/jpeg' }),
+    );
     if (canvas.width !== bmp.width || canvas.height !== bmp.height) {
       canvas.width = bmp.width;
       canvas.height = bmp.height;

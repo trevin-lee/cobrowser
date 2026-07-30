@@ -2,7 +2,7 @@
   "name": "cobrowser",
   "displayName": "Cobrowser",
   "description": "An embedded, agent-controllable browser inside your editor — co-driven by you (webview) and your AI agent (MCP).",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "publisher": "trevin-lee",
   "private": true,
   "license": "MIT",
@@ -108,6 +108,19 @@
           "type": "number",
           "default": 0,
           "description": "Localhost port for the in-process MCP server. 0 (default) = pick a free port automatically and remember it per-workspace, so every window/repo gets its own stable endpoint and two windows never collide (which would make agents drive each other's browsers). Set a specific number only to pin a port for one workspace."
+        },
+        "cobrowser.imageFormat": {
+          "type": "string",
+          "default": "jpeg",
+          "enum": [
+            "jpeg",
+            "png"
+          ],
+          "enumDescriptions": [
+            "Lossy, lighter frames. Slight ringing around text on close inspection.",
+            "Lossless — pixel-perfect text, no compression artifacts ever."
+          ],
+          "description": "Frame format for the browser stream. Measured while scrolling at 3.1Mpx: on text-heavy pages PNG is lossless AND slightly smaller than JPEG q90 (457KB vs 478KB per frame) at 41 vs 46fps; on photo-heavy pages PNG doubles the bytes (780KB vs 375KB) at similar frame rate. Bandwidth is not the bottleneck, so this is mostly 'perfect text' vs 'lighter frames'. Applies immediately."
         },
         "cobrowser.videoPipeline": {
           "type": "boolean",
