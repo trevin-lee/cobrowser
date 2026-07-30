@@ -180,9 +180,12 @@ function startRtc(cfg: { url: string }): void {
       void videoEl.play().catch(() => undefined);
       // Only swap away from the canvas once real frames are flowing, so a failed
       // negotiation never leaves a blank panel.
+      // Swap surfaces only once frames are genuinely decoding, and tell the host so it
+      // can retire the screencast that has been covering the ~1.7s negotiation.
       videoEl.onloadeddata = () => {
         videoEl.hidden = false;
         canvas.hidden = true;
+        fire('extension.videolive');
       };
     };
     conn.onicecandidate = (e) => {

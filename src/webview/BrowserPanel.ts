@@ -226,8 +226,11 @@ export class BrowserPanel {
   private origin = '';
   private appliedKey = '';
   private streaming = false;
-  /** True while this panel renders via the H.264 pipeline instead of the screencast. */
+  /** True while this panel renders via the WebRTC pipeline instead of the screencast. */
   private videoMode = false;
+  /** True from the moment WebRTC negotiation starts until frames actually arrive (or it
+   *  fails). The screencast keeps painting throughout, so the swap is invisible. */
+  private videoPending = false;
   /** Adaptive-quality state: reduced fidelity while the page is in motion. */
   private motionMode = false;
   private lastFrameAt = 0;
@@ -306,6 +309,15 @@ export class BrowserPanel {
       // Prefer the WebRTC pipeline when enabled; any failure (controller, capture,
       // negotiation, decode) falls straight back to the JPEG screencast.
       if (BrowserPanel.videoEnabled && BrowserPanel.videoHub) {
+        // WebRTC needs ~1.7s to first frame (capture + offer/answer + ICE + keyframe),
+        // where the screencast delivers in ~10ms. So paint with JPEG straight away and
+        // hand over only once video is actually playing — the panel is never blank.
+        // Mark the handover as pending FIRST so the viewport is laid out in the size
+        // video will want, avoiding a reflow at the swap.
+        this.videoPending = true;
+        this.appliedKey = '';
+        void this.panel.webview.postMessage({ type: 'extension.remeasure' });
+        await this.startScreencast();
         // Tell the webview to join as the receiver BEFORE the offer is created, so the
         // controller's offer has somewhere to land.
         void this.panel.webview.postMessage({
@@ -313,21 +325,25 @@ export class BrowserPanel {
           url: BrowserPanel.videoHub.viewerUrl(this.id),
         });
         const ok = await BrowserPanel.videoHub.start(this.id, this.page);
-        if (ok && this.streaming) {
-          this.videoMode = true;
-          // Re-apply the viewport now that the strategy changed (CSS-size + matching
-          // window instead of a device-pixel override); dropping the key forces it.
-          this.appliedKey = '';
+        // Success only means negotiation began; the webview reports 'extension.videolive'
+        // when frames actually arrive, and that is what stops the screencast.
+        if (!ok || !this.streaming) {
+          this.videoPending = false;
+          void this.panel.webview.postMessage({ method: 'cobrowser.rtcstop' });
+          this.appliedKey = ''; // back to the device-pixel viewport JPEG wants
           void this.panel.webview.postMessage({ type: 'extension.remeasure' });
-          return;
         }
-        void this.panel.webview.postMessage({ method: 'cobrowser.rtcstop' });
+        return;
       }
       await this.startScreencast();
-    } else if (this.videoMode) {
+    } else if (this.videoMode || this.videoPending) {
+      // Hidden while on (or mid-handover to) video: tear both down. Clearing
+      // videoPending matters — it selects the viewport strategy.
       this.videoMode = false;
+      this.videoPending = false;
       BrowserPanel.videoHub?.stop(this.id);
       void this.panel.webview.postMessage({ method: 'cobrowser.rtcstop' });
+      await this.stopScreencast(); // may still be covering the negotiation
     } else {
       await this.stopScreencast();
     }
@@ -336,10 +352,12 @@ export class BrowserPanel {
   /** Capture-side status. Media itself never reaches this process — it flows
    *  peer-to-peer from the browser into the webview — so only failures matter here. */
   private postVideo(header: VideoHeader): void {
-    if (!this.videoMode) return;
+    // Also while pending: capture can fail during negotiation, before video is live.
+    if (!this.videoMode && !this.videoPending) return;
     if (header.kind === 'error') {
       // Capture died mid-stream (track ended, negotiation failed) — fall back live.
       this.videoMode = false;
+      this.videoPending = false;
       void this.panel.webview.postMessage({ method: 'cobrowser.rtcstop' });
       // Back to the device-pixel viewport the screencast path expects.
       this.appliedKey = '';
@@ -439,7 +457,7 @@ export class BrowserPanel {
     //    capture — tab capture already delivers 2x, so crispness is free. Inflating here
     //    too would lay the page out at 2x inside a 1x window (squashed, unreadable) and
     //    put page coordinates 2x out of step with the video.
-    const renderScale = this.videoMode ? 1 : dpr;
+    const renderScale = this.videoMode || this.videoPending ? 1 : dpr;
     let width = Math.max(1, Math.round((cssW * renderScale) / zoom));
     let height = Math.max(1, Math.round((cssH * renderScale) / zoom));
     // Cap the rendered area. Rendering at full device pixels keeps text crisp, but the
@@ -511,10 +529,19 @@ export class BrowserPanel {
             await this.syncRender();
             void this.panel.webview.postMessage({ type: 'extension.url', url: this.page.url() });
             break;
+          case 'extension.videolive':
+            // Frames are on screen — retire the screencast now, not before.
+            if (this.videoPending) {
+              this.videoPending = false;
+              this.videoMode = true;
+              await this.stopScreencast();
+            }
+            break;
           case 'extension.videoerror':
             // Receiver-side failure (negotiation, connection state) — abandon video for
             // this panel and restore the screencast's device-pixel viewport.
             this.videoMode = false;
+            this.videoPending = false;
             BrowserPanel.videoHub?.stop(this.id);
             this.appliedKey = '';
             void this.panel.webview.postMessage({ type: 'extension.remeasure' });
