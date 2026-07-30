@@ -65,18 +65,22 @@ async function start(pageId) {
     state.pc = pc;
     pc.addTrack(track, stream);
 
-    // Tuned by measurement while scrolling a text-heavy page (capture 2400x1626):
-    //   maintain-resolution -> 49fps   maintain-framerate -> 13fps   balanced -> 83fps
-    // all at full resolution with zero dropped frames. 'balanced' wins outright; the
-    // 'detail' content hint tells the encoder this is screen content (text), so it
-    // spends bits on sharpness rather than smoothing. No downscaling: full res is free
-    // at these rates on loopback.
-    track.contentHint = 'detail';
+    // Sharpness-first, because blur while scrolling is the thing you notice in a browser.
+    // Measured across configs at a fixed 2400x1626 capture: resolution never dropped in
+    // ANY of them, so scroll blur is quantisation (bits per frame), not downscaling.
+    // Bitrate spent varied 10x — 'balanced' settles around 6Mbps while
+    // 'maintain-resolution' + the 'text' hint drives ~66Mbps, i.e. far less quantisation
+    // on exactly the high-motion frames that looked soft. 'text' also switches Chrome to
+    // its screen-content coding tools, which are built for sharp edges on flat fields.
+    //
+    // The cost is frame rate: 'balanced' reached ~83fps where 'maintain-resolution' holds
+    // ~49fps. 49fps is still smooth, and never trades pixels away.
+    track.contentHint = 'text';
     const sender = pc.getSenders().find((s) => s.track === track);
     if (sender) {
       const p = sender.getParameters();
-      p.degradationPreference = 'balanced';
-      p.encodings = [{ maxBitrate: 60_000_000, maxFramerate: 60, scaleResolutionDownBy: 1 }];
+      p.degradationPreference = 'maintain-resolution';
+      p.encodings = [{ maxBitrate: 80_000_000, maxFramerate: 60, scaleResolutionDownBy: 1 }];
       await sender.setParameters(p).catch(() => {});
     }
 
