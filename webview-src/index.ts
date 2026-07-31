@@ -162,8 +162,10 @@ async function renderFrame(frame: BinaryFrame): Promise<void> {
 // arrive here directly over a WebSocket — the extension host is not in the pixel path —
 // framed as [u32le length][payload] and decoded by the same off-thread path as before.
 let frameWs: WebSocket | null = null;
+let frameHealthTimer: ReturnType<typeof setInterval> | null = null;
 
 function stopFrameSocket(): void {
+  if (frameHealthTimer) { clearInterval(frameHealthTimer); frameHealthTimer = null; }
   try {
     frameWs?.close();
   } catch {
@@ -229,6 +231,9 @@ function startFrameSocket(cfg: { url: string }): void {
     ws.binaryType = 'arraybuffer';
     frameWs = ws;
     ws.onopen = () => dbg('ws open');
+    frameHealthTimer = setInterval(() => {
+      dbg(`health ct=${videoEl.currentTime.toFixed(2)} buf=${videoEl.buffered.length?videoEl.buffered.end(videoEl.buffered.length-1).toFixed(2):0} paused=${videoEl.paused} rs=${videoEl.readyState} vw=${videoEl.videoWidth}`);
+    }, 2000);
     let firstBinary = true;
     ws.onmessage = (ev: MessageEvent) => {
       if (typeof ev.data === 'string') {

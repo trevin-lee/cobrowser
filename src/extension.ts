@@ -203,8 +203,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             );
             throw new Error('docker unavailable');
           }
-          const w = cfg.get<number>('containerWidth', 2200);
-          const h = cfg.get<number>('containerHeight', 1400);
+          const w = cfg.get<number>('containerWidth', 1440);
+          const h = cfg.get<number>('containerHeight', 900);
           const cdpPort = (mcp?.port ?? 39273) + 1;
           const framePort = (mcp?.port ?? 39273) + 2;
           // MUST be its own profile dir. Mounting the local one made container Chromium

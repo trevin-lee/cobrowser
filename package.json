@@ -2,7 +2,7 @@
   "name": "cobrowser",
   "displayName": "Cobrowser",
   "description": "An embedded, agent-controllable browser inside your editor — co-driven by you (webview) and your AI agent (MCP).",
-  "version": "0.5.6",
+  "version": "0.5.7",
   "publisher": "trevin-lee",
   "private": true,
   "license": "MIT",
@@ -140,12 +140,12 @@
         },
         "cobrowser.containerWidth": {
           "type": "number",
-          "default": 2200,
+          "default": 1440,
           "description": "Container display width in pixels. The page fills this exactly (the panel letterboxes to fit), so pick something near your panel's aspect ratio. Applied on browser restart."
         },
         "cobrowser.containerHeight": {
           "type": "number",
-          "default": 1400,
+          "default": 900,
           "description": "Container display height in pixels. Applied on browser restart."
         },
         "cobrowser.containerFps": {
