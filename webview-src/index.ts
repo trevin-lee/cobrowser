@@ -263,10 +263,19 @@ function startFrameSocket(cfg: { url: string }): void {
           fire('extension.videoerror');
           return;
         }
+        // Reveal the <video> BEFORE attaching MediaSource. Chromium defers loading the
+        // source of a display:none media element, so 'sourceopen' never fires — and since
+        // we used to reveal the video only inside that handler, it deadlocked (invisible
+        // in the panel, exactly the symptom). A visible <video> loads immediately.
+        videoEl.hidden = false;
+        canvas.hidden = true;
         mediaSource = new MediaSource();
         videoEl.src = URL.createObjectURL(mediaSource);
-        void videoEl.play().catch(() => undefined);
+        videoEl.onplaying = () => dbg(`video playing ${videoEl.videoWidth}x${videoEl.videoHeight}`);
+        videoEl.onerror = () => dbg(`video error ${videoEl.error?.code} ${videoEl.error?.message}`);
+        void videoEl.play().catch((e) => dbg('play() rejected: ' + e.message));
         mediaSource.addEventListener('sourceopen', () => {
+          dbg('sourceopen fired');
           try {
             sourceBuffer = mediaSource!.addSourceBuffer(mime);
             sourceBuffer.mode = 'sequence';
