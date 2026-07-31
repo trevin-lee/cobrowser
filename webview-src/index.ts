@@ -214,14 +214,31 @@ function pumpSegments(): void {
   }
 }
 
+// Report a webview-side event to the host, which logs it to the Cobrowser output channel.
+// The webview console is unreachable from a terminal, so this is how container-mode
+// diagnostics surface where they can be read.
+function dbg(msg: string): void {
+  fire('extension.debug', { msg });
+}
+
 function startFrameSocket(cfg: { url: string }): void {
   stopFrameSocket();
+  dbg(`wsstart ${cfg.url}`);
   try {
     const ws = new WebSocket(cfg.url);
     ws.binaryType = 'arraybuffer';
     frameWs = ws;
+    ws.onopen = () => dbg('ws open');
+    let firstBinary = true;
     ws.onmessage = (ev: MessageEvent) => {
-      if (typeof ev.data === 'string') return; // JSON hello: {format,width,height,fps}
+      if (typeof ev.data === 'string') {
+        dbg(`ws hello ${ev.data}`);
+        return; // JSON hello: {format,width,height,fps}
+      }
+      if (firstBinary) {
+        firstBinary = false;
+        dbg(`first binary frame ${(ev.data as ArrayBuffer).byteLength}B`);
+      }
       const buf = ev.data as ArrayBuffer;
       if (buf.byteLength < 4) return;
       const len = new DataView(buf).getUint32(0, true);
@@ -239,7 +256,9 @@ function startFrameSocket(cfg: { url: string }): void {
         const codec = codecFromAvcC(bytes);
         if (!codec) return; // wait for the init segment
         const mime = `video/mp4; codecs="${codec}"`;
-        if (!('MediaSource' in window) || !MediaSource.isTypeSupported(mime)) {
+        const supported = 'MediaSource' in window && MediaSource.isTypeSupported(mime);
+        dbg(`codec ${codec} MediaSource=${'MediaSource' in window} supported=${supported}`);
+        if (!supported) {
           stopFrameSocket();
           fire('extension.videoerror');
           return;
@@ -280,6 +299,7 @@ function startFrameSocket(cfg: { url: string }): void {
       pumpSegments();
     };
     ws.onerror = () => {
+      dbg('ws error');
       stopFrameSocket();
       fire('extension.videoerror'); // host falls back to the local screencast
     };

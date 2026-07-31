@@ -403,6 +403,9 @@ export class BrowserPanel {
    *  not in the pixel path at all. Undefined means the normal local screencast. */
   static containerFrameUrl: string | undefined;
 
+  /** Sink for webview-side debug lines (container video path). Wired to the log. */
+  static onDebug: ((line: string) => void) | undefined;
+
   /**
    * Always full fidelity. The adaptive "drop quality while moving" scheme that used to
    * live here was solving a bottleneck that measurement showed does not exist: with the
@@ -531,6 +534,11 @@ export class BrowserPanel {
             this.ready = true;
             await this.syncRender();
             void this.panel.webview.postMessage({ type: 'extension.url', url: this.page.url() });
+            break;
+          case 'extension.debug':
+            // Webview-side diagnostics (container video path) routed to the output
+            // channel, since the webview console is unreachable from a terminal.
+            BrowserPanel.onDebug?.(`[webview ${this.id}] ${(m.params as { msg?: string })?.msg ?? ''}`);
             break;
           case 'extension.videolive':
             // Frames are on screen — retire the screencast now, not before.
