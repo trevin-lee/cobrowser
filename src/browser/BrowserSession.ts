@@ -115,8 +115,16 @@ export class BrowserSession {
     wsEndpoint: string,
     headless: boolean,
     autoFallbackPasskeys = true,
+    /** Container backend: the page must fill the browser WINDOW, because that window is
+     *  what X11 capture records. Puppeteer otherwise forces an 800x600 device-metrics
+     *  override on every page it adopts, which rendered the page small in the corner of a
+     *  2200x1400 framebuffer — the "bare white screen". `null` disables that override. */
+    ownViewport = false,
   ): Promise<BrowserSession> {
-    const browser = await puppeteer.connect({ browserWSEndpoint: wsEndpoint });
+    const browser = await puppeteer.connect({
+      browserWSEndpoint: wsEndpoint,
+      ...(ownViewport ? { defaultViewport: null } : {}),
+    });
     return BrowserSession.wrap(browser, headless, autoFallbackPasskeys);
   }
 
@@ -554,6 +562,22 @@ export class BrowserSession {
 
   private windowChromeH = 0;
   private windowChromeMeasured = false;
+
+  /** Drop any device-metrics override so pages render at their window's true size.
+   *  Container backend only: the window is what X11 capture records, so an override
+   *  (puppeteer installs 800x600 by default) leaves the page small on a blank desktop. */
+  async clearViewportOverrides(): Promise<void> {
+    for (const page of await this.browser.pages().catch(() => [])) {
+      try {
+        const cdp = await withTimeout(page.createCDPSession(), 2000);
+        if (!cdp) continue;
+        await withTimeout(cdp.send('Emulation.clearDeviceMetricsOverride'), 2000);
+        await cdp.detach().catch(() => undefined);
+      } catch {
+        /* page gone or domain unsupported — harmless */
+      }
+    }
+  }
 
   /** Open an infrastructure page (own window) that is invisible to the agent's tab
    *  list, panels, persistence, and last-tab-quit — used by the video-capture hub. */

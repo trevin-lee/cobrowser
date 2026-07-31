@@ -220,7 +220,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           );
           await container.start({ cdpPort, framePort, width: w, height: h });
           const wsEndpoint = await container.wsEndpoint(cdpPort);
-          const s = await BrowserSession.connect(wsEndpoint, true, autoFallbackPasskeys);
+          // ownViewport: let the page fill the container's window (that window is what
+          // gets captured); puppeteer's default 800x600 override left it tiny on a blank
+          // 2200x1400 desktop.
+          const s = await BrowserSession.connect(wsEndpoint, true, autoFallbackPasskeys, true);
+          // Belt and braces for the container-REUSE case: defaultViewport:null stops us
+          // adding an override, but it cannot undo one a previous connection left behind,
+          // and a stale 800x600 renders the page tiny on a blank framebuffer.
+          await s.clearViewportOverrides();
           // Container frames are always H.264: at these rates PNG would push >100MB/s
           // through the socket, and fragmented MP4 renders in a <video> element that the
           // editor composites natively (no per-frame JavaScript).
