@@ -1,5 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import * as vscode from 'vscode';
 
 const exec = promisify(execFile);
@@ -126,6 +128,13 @@ export class ContainerRuntime {
       return;
     }
     await this.stop(); // a dead/mismatched one would still hold the ports
+    // Killing a container never lets Chromium clean up its profile lock, and the profile
+    // is bind-mounted so the lock outlives the container. The next start then sees a lock
+    // naming a hostname that no longer exists ("in use ... on another computer") and
+    // Chromium exits WITHOUT binding its debugging port — which surfaced only as
+    // "container CDP never became reachable". The local backend already does this before
+    // every launch; the container needs it too, and needs it every time.
+    this.clearProfileLocks();
     await this.ensureImage();
     const args = [
       'run', '-d', '--rm',
@@ -148,8 +157,19 @@ export class ContainerRuntime {
     await this.waitForCdp(opts.cdpPort);
   }
 
+  /** Remove Chromium's singleton files from the (host-side) container profile. */
+  private clearProfileLocks(): void {
+    for (const f of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
+      try {
+        fs.rmSync(path.join(this.profileDir, f), { force: true });
+      } catch {
+        /* not present */
+      }
+    }
+  }
+
   private async waitForCdp(port: number): Promise<void> {
-    for (let i = 0; i < 120; i++) {
+    for (let i = 0; i < 60; i++) {
       try {
         const res = await fetch(`http://127.0.0.1:${port}/json/version`, {
           signal: AbortSignal.timeout(1500),
@@ -163,7 +183,20 @@ export class ContainerRuntime {
       }
       await delay(500);
     }
-    throw new Error('container CDP never became reachable');
+    // "never became reachable" on its own is useless — the reason is always in the
+    // container's log (a profile lock, a crash), so surface it with the failure.
+    let why = '';
+    try {
+      const { stdout, stderr } = await exec('docker', ['logs', '--tail', '15', this.name]);
+      why = (stdout + stderr)
+        .split('\n')
+        .filter((l) => /ERROR|FATAL|error/.test(l) && !/dbus|gcm|QUOTA/i.test(l))
+        .slice(-2)
+        .join(' | ');
+    } catch {
+      /* container already gone */
+    }
+    throw new Error(`container CDP never became reachable${why ? ` — ${why}` : ''}`);
   }
 
   /** The browser-level DevTools WebSocket, for BrowserSession.connect(). */
