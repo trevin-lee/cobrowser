@@ -9,8 +9,8 @@
 // preceded by a single TEXT message of JSON metadata: {format,width,height,fps}.
 // Framing is done here so the client never parses a container format:
 //   png  - ffmpeg image2pipe emits whole PNGs; split on the IEND terminator.
-//   h264 - x264 with aud=1 prefixes every access unit with an AUD NAL; split on those,
-//          so each message is exactly one decodable frame for WebCodecs.
+//   h264 - fragmented MP4, passed through as ffmpeg produces it; MediaSource accepts
+//          arbitrary byte ranges, so no access-unit framing is needed at all.
 //
 // No npm dependencies: the WebSocket server surface we need is small (handshake plus
 // unmasked server->client binary frames), and keeping the image slim matters when it is
@@ -64,6 +64,10 @@ function ffmpegArgs(format, fps) {
     // ranges is exactly what MSE expects, which removed a whole class of parsing bugs.
     return [
       ...input,
+      // passthrough timestamps: x11grab is variable-rate, and letting the muxer force a
+      // constant rate made ffmpeg try to duplicate tens of millions of frames to fill
+      // gaps ("frame duplication too large"), corrupting the stream MSE has to play.
+      '-fps_mode', 'passthrough',
       '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency',
       '-x264-params', 'keyint=120:min-keyint=120:scenecut=0',
       '-pix_fmt', 'yuv420p', '-threads', '0',
@@ -82,6 +86,7 @@ function ffmpegArgs(format, fps) {
   return [
     ...input,
     '-vf', 'mpdecimate=hi=64:lo=32:frac=0.001',
+    '-fps_mode', 'passthrough', // mpdecimate drops frames; do not re-duplicate them
     '-c:v', 'png', '-compression_level', '1', '-threads', '0',
     '-f', 'image2pipe', 'pipe:1',
   ];
