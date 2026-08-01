@@ -22,12 +22,25 @@ import { spawn } from 'node:child_process';
 
 const PORT = Number(process.env.COBROWSER_FRAME_PORT || 9223);
 const DISPLAY = process.env.DISPLAY || ':99';
-const WIDTH = Number(process.env.COBROWSER_WIDTH || 1600);
-const HEIGHT = Number(process.env.COBROWSER_HEIGHT || 1000);
+// The capture size is driven per-connection by the panel: the extension sizes the browser
+// window (over CDP) to the panel's exact device-pixel size at 0,0, and we capture that
+// rect. These are only fallbacks for a client that doesn't ask; MAX bounds the framebuffer.
+const DEFAULT_WIDTH = Number(process.env.COBROWSER_WIDTH || 1600);
+const DEFAULT_HEIGHT = Number(process.env.COBROWSER_HEIGHT || 1000);
+const MAXW = Number(process.env.COBROWSER_MAXW || 5120);
+const MAXH = Number(process.env.COBROWSER_MAXH || 2880);
 const TOKEN = process.env.COBROWSER_TOKEN || '';
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
 const log = (m) => process.stdout.write(`[frameserver] ${m}\n`);
+
+/** Clamp a requested capture size to the framebuffer and to even dimensions (H.264
+ *  yuv420p requires them; it also keeps x11grab aligned). */
+function captureSize(w, h) {
+  const width = Math.max(2, Math.min(MAXW, (w || DEFAULT_WIDTH) - ((w || DEFAULT_WIDTH) % 2)));
+  const height = Math.max(2, Math.min(MAXH, (h || DEFAULT_HEIGHT) - ((h || DEFAULT_HEIGHT) % 2)));
+  return { width, height };
+}
 
 /** Encode one server->client WebSocket frame (never masked). */
 function wsFrame(payload, opcode) {
@@ -49,11 +62,11 @@ function wsFrame(payload, opcode) {
   return Buffer.concat([header, payload]);
 }
 
-function ffmpegArgs(format, fps) {
+function ffmpegArgs(format, fps, width, height) {
   const input = [
     '-hide_banner', '-loglevel', 'error',
     '-f', 'x11grab', '-framerate', String(fps),
-    '-video_size', `${WIDTH}x${HEIGHT}`,
+    '-video_size', `${width}x${height}`,
     '-draw_mouse', '0',
     '-i', DISPLAY,
   ];
@@ -138,10 +151,17 @@ server.on('upgrade', (req, socket) => {
 
   const format = url.searchParams.get('format') === 'h264' ? 'h264' : 'png';
   const fps = Math.min(240, Math.max(1, Number(url.searchParams.get('fps')) || 120));
-  log(`client connected: format=${format} fps=${fps} ${WIDTH}x${HEIGHT}`);
-  socket.write(wsFrame(Buffer.from(JSON.stringify({ format, width: WIDTH, height: HEIGHT, fps })), 0x1));
+  // The panel's device-pixel size: the extension has already sized the browser window to
+  // exactly this at 0,0 (over CDP), so capturing this rect from the top-left records the
+  // page 1:1 — no upscale blur, no letterbox, and input maps directly.
+  const { width, height } = captureSize(
+    Number(url.searchParams.get('w')),
+    Number(url.searchParams.get('h')),
+  );
+  log(`client connected: format=${format} fps=${fps} ${width}x${height}`);
+  socket.write(wsFrame(Buffer.from(JSON.stringify({ format, width, height, fps })), 0x1));
 
-  const ff = spawn('ffmpeg', ffmpegArgs(format, fps), { stdio: ['ignore', 'pipe', 'pipe'] });
+  const ff = spawn('ffmpeg', ffmpegArgs(format, fps, width, height), { stdio: ['ignore', 'pipe', 'pipe'] });
   let sent = 0;
   const split = makeSplitter(format, (frame) => {
     // Drop rather than queue if the socket is congested: a stale frame is worthless.

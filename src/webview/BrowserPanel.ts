@@ -14,6 +14,9 @@ interface FrameEvent {
  *  retina laptop panel (~3.6Mpx, measured 60fps) and below the point where JPEG
  *  encode falls apart (~10.7Mpx → 46fps, 1.26MB frames) and H.264 levels run out. */
 const MAX_RENDER_PX = 5_000_000;
+// Container framebuffer ceiling — must match COBROWSER_MAXW/MAXH in the container image.
+const CONTAINER_MAX_W = 5120;
+const CONTAINER_MAX_H = 2880;
 
 // Every page lives in its own headless window (see BrowserSession.createPageInNewWindow),
 // so every visible panel screencasts at full compositor rate simultaneously — no
@@ -302,10 +305,8 @@ export class BrowserPanel {
       // server (X11 capture, ~248fps of changed frames vs Chromium's ~45fps ceiling).
       // Nothing to screencast here — this process is not in the pixel path.
       if (BrowserPanel.containerFrameUrl) {
-        void this.panel.webview.postMessage({
-          method: 'cobrowser.wsstart',
-          url: BrowserPanel.containerFrameUrl,
-        });
+        this.appliedKey = ''; // resize/reconnect at the current panel size
+        this.startContainerStream();
         return;
       }
       // Prefer the WebRTC pipeline when enabled; any failure (controller, capture,
@@ -448,15 +449,69 @@ export class BrowserPanel {
     }
   }
 
+  /** Container backend: (re)connect the frame socket at the panel's device-pixel size.
+   *  The frame server resizes the container screen (RandR) to match, so the kiosk page
+   *  reflows to exactly these dimensions — captured 1:1, no upscale, no letterbox, and the
+   *  webview's video element maps input directly onto the page. Reconnecting is how a resize
+   *  propagates: the new size rides in the URL and drives a fresh xrandr + ffmpeg. */
+  private startContainerStream(): void {
+    const base = BrowserPanel.containerFrameUrl;
+    if (!base || !this.streaming) return;
+    const { cssW, cssH, dpr } = this.metrics;
+    if (cssW < 50 || cssH < 50) return;
+    let w = Math.round(cssW * dpr);
+    let h = Math.round(cssH * dpr);
+    // Same encode-cost ceiling as the local path: past ~5Mpx the encoder can't keep up, so
+    // back off toward 1x. Below it (the common case) the page renders at true device pixels.
+    const area = w * h;
+    if (area > MAX_RENDER_PX) {
+      const s = Math.sqrt(MAX_RENDER_PX / area);
+      w = Math.round(w * s);
+      h = Math.round(h * s);
+    }
+    // The window can't exceed the container's framebuffer (see COBROWSER_MAXW/H).
+    w = Math.min(w, CONTAINER_MAX_W);
+    h = Math.min(h, CONTAINER_MAX_H);
+    w -= w % 2; // h264 yuv420p needs even dimensions; the server enforces it too
+    h -= h % 2;
+    const key = `c:${w}x${h}`;
+    if (key === this.appliedKey) return;
+    this.appliedKey = key;
+    // Debounce: a split-drag emits a burst of sizes, and each reconnect rebuilds the
+    // MediaSource (a brief blank). Collapse the burst so only the settled size reconnects.
+    if (this.containerResizeTimer) clearTimeout(this.containerResizeTimer);
+    this.containerResizeTimer = setTimeout(() => void this.applyContainerSize(w, h), 120);
+  }
+  private containerResizeTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /** Apply a container size in order: size the browser window to w x h at 0,0 (chrome-less,
+   *  over CDP), THEN (re)open the frame socket to capture that exact rect. Sizing before the
+   *  socket opens avoids a race where capture starts before the page has reflowed. */
+  private async applyContainerSize(w: number, h: number): Promise<void> {
+    const base = BrowserPanel.containerFrameUrl;
+    if (!base || !this.streaming) return;
+    await this.session
+      .run(() => this.session.setContainerWindow(this.page, w, h))
+      .catch(() => undefined);
+    if (!this.streaming) return;
+    void this.panel.webview.postMessage({
+      method: 'cobrowser.wsstart',
+      url: `${base}&w=${w}&h=${h}`,
+    });
+  }
+
   /** Size the page viewport to the panel in device pixels (screencast ignores
    *  deviceScaleFactor), divided by the per-site zoom (persisted per origin). */
   private async applyViewport(): Promise<void> {
     const { cssW, cssH, dpr } = this.metrics;
     if (cssW < 50 || cssH < 50) return;
-    // Container backend: the page fills the container's Xvfb screen, and X11 capture
-    // records that screen. Overriding the viewport here would desync layout from what is
-    // actually captured (and from the input coordinate space), so leave it alone.
-    if (BrowserPanel.containerFrameUrl) return;
+    // Container backend: don't override the viewport here — instead resize the container's
+    // screen to the panel's device-pixel size (via the frame server) so the page renders
+    // 1:1. That is what keeps text crisp, the aspect ratio correct, and input aligned.
+    if (BrowserPanel.containerFrameUrl) {
+      this.startContainerStream();
+      return;
+    }
     const zoom = this.getZoom();
     // Two viewport strategies, one per render path:
     //  - JPEG: inflate the CSS viewport to DEVICE pixels, because the screencast captures

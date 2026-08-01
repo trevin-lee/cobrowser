@@ -563,6 +563,47 @@ export class BrowserSession {
   private windowChromeH = 0;
   private windowChromeMeasured = false;
 
+  /** Container backend: size this page's window to exactly cssWidth x cssHeight at the
+   *  screen's top-left, chrome-less, so X11 capture of that rect records the page 1:1.
+   *  Sequence matters: set 'normal' with explicit bounds (fullscreen keeps the window's
+   *  current width/height, it does NOT resize to the screen), then 'fullscreen' to drop the
+   *  tab strip / toolbar without changing the size. The container has no window manager, so
+   *  these CDP bounds are authoritative. */
+  async setContainerWindow(page: Page, cssWidth: number, cssHeight: number): Promise<void> {
+    if (cssWidth < 50 || cssHeight < 50) return;
+    try {
+      const cdp = await withTimeout(this.browser.target().createCDPSession(), 2000);
+      if (!cdp) return;
+      try {
+        const targetId = (page.target() as unknown as { _targetId?: string })._targetId;
+        if (!targetId) return;
+        const { windowId } = (await withTimeout(
+          cdp.send('Browser.getWindowForTarget', { targetId }),
+          2000,
+        )) as { windowId: number };
+        await withTimeout(
+          cdp.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'normal' } }),
+          2000,
+        ).catch(() => undefined);
+        await withTimeout(
+          cdp.send('Browser.setWindowBounds', {
+            windowId,
+            bounds: { left: 0, top: 0, width: cssWidth, height: cssHeight },
+          }),
+          2000,
+        );
+        await withTimeout(
+          cdp.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'fullscreen' } }),
+          2000,
+        );
+      } finally {
+        await cdp.detach().catch(() => undefined);
+      }
+    } catch {
+      /* window control unsupported — capture keeps its previous shape */
+    }
+  }
+
   /** Drop any device-metrics override so pages render at their window's true size.
    *  Container backend only: the window is what X11 capture records, so an override
    *  (puppeteer installs 800x600 by default) leaves the page small on a blank desktop. */
