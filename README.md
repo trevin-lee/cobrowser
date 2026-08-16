@@ -2,7 +2,22 @@
 
 An embedded, agent-controllable browser inside your editor — **co-driven** by you and your AI agent. One persistent, isolated Chromium lives in a webview panel in VS Code / Cursor. You drive it (screencast + input); your agent drives the *same* browser over MCP (Claude Code, Cursor, or VS Code's agent). Log into a site once — the session persists and the agent acts as you, sandboxed from your daily-driver browser.
 
-> **Status: spike.** This is a first proof-of-concept that proves the core loop (persistent profile → screencast → agent-over-MCP → same browser). It is not hardened. See [Simplifications](#spike-simplifications) and [Next steps](#next-steps).
+> **Status: early.** The core loop (persistent profile → screencast → agent-over-MCP → same browser) works and is what you get by default. The container backend and the H.264 video pipeline are opt-in and still settling. See [Simplifications](#simplifications) and [Next steps](#next-steps).
+
+## Install
+
+Not on the marketplaces yet — install the VSIX from [Releases](https://github.com/trevin-lee/cobrowser/releases):
+
+```bash
+# Cursor
+cursor --install-extension cobrowser-0.5.10.vsix
+# VS Code
+code --install-extension cobrowser-0.5.10.vsix
+```
+
+Or use the editor's **Extensions: Install from VSIX…** command. Then reload the window and run **Cobrowser: Open Browser Panel** from the Command Palette.
+
+No Chrome setup required — a dedicated Chrome-for-Testing downloads on first run (see [Requirements](#requirements)).
 
 ## Why
 
@@ -53,7 +68,7 @@ Both written files carry the **literal** live port + token and are added to `.gi
 
 `take_snapshot` returns an interactive-element text tree; each node has a `[uid]` for `click`/`fill`. **uids expire on any DOM change** — re-snapshot before reusing them.
 
-## Run it
+## Develop it
 
 ```bash
 npm install
@@ -70,29 +85,27 @@ By default the browser runs **headless** — it lives entirely in the Cursor pan
 
 Scripts: `npm run watch` (rebuild on change), `npm run typecheck`.
 
-## What the spike got right (design-review blockers, pre-fixed)
+## Design decisions worth knowing
 
 - **Per-request MCP transport.** Stateless Streamable HTTP creates a fresh `McpServer` + transport per POST (a single shared instance would misroute concurrent clients).
 - **Cursor-safe activation.** The VS Code-only MCP API is feature-detected.
 - **Orphan cleanup.** The Chromium PID is persisted; a stale one is killed and `SingletonLock`/`SingletonSocket`/`SingletonCookie` cleared on activate, so the reload loop can't brick the persistent profile.
 - **Screencast re-attach.** The pump tears down + re-establishes (and re-acks) on every active-page change.
 
-## Spike simplifications
+## Simplifications
 
 - Stateless MCP (no resumable sessions); single active page tracked; screencast follows the active target only.
-- JPEG screencast at `quality:70` — no adaptive bitrate.
-- **The browser dies with the extension host on reload** and relaunches against the persistent profile (logins survive on disk).
-- Uses your installed **Google Chrome** as the executable (not a bundled Chrome-for-Testing).
+- JPEG screencast — no adaptive bitrate. The opt-in H.264 pipeline (`cobrowser.videoPipeline`) is experimental.
 - `uid` model is DOM-attribute tagging, not a full accessibility tree.
 - `evaluate_script` runs arbitrary JS in the page (escape hatch).
+- Container backend (`cobrowser.backend: "container"`) needs Docker and pulls a GHCR image; it keeps its own profile, separate from the local one.
 
 ## Next steps
 
-- Browser-survives-reload (`connect()` + fixed debug port).
-- Bundle Chrome-for-Testing for full isolation; cross-platform launch paths (Windows/Linux).
+- Publish to Open VSX so Cursor can install it directly.
+- Cross-platform launch paths (Windows/Linux) — developed against macOS.
 - Richer/accessibility-tree `take_snapshot`; multi-tab mirroring UI.
 - Input-owner hard lock (currently a FIFO queue + advisory flag).
-- Package as a real VSIX (keep `puppeteer-core` shipped, since it's esbuild-`external`).
 
 ## Security notes
 
@@ -100,7 +113,10 @@ The profile holds live session cookies — treat it as credentials. It lives in 
 
 ## Requirements
 
-- **Google Chrome installed** (v0.0.1 uses your system Chrome via `puppeteer-core`; a `cobrowser.chromePath` setting overrides the path). Auto-downloading Chrome-for-Testing into `globalStorage` is the planned next step so the extension is fully self-contained.
+- **VS Code or Cursor**, and an agent that speaks MCP over HTTP (Claude Code, Cursor, or VS Code's agent).
+- **No Chrome setup.** On first run the extension resolves an executable in this order: `cobrowser.chromePath` if you set it → a dedicated **Chrome-for-Testing** downloaded into `globalStorage` and pinned by buildId → your system Chrome as a last-resort fallback. Only the third depends on what you have installed.
+- **Docker** — *only* if you opt into `cobrowser.backend: "container"`.
+- Developed and tested on **macOS**; Windows/Linux launch paths aren't done yet.
 
 ## Publishing (Open VSX)
 
