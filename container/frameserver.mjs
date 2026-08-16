@@ -176,6 +176,17 @@ server.on('upgrade', (req, socket) => {
 
   const stats = setInterval(() => { log(`sent ${sent} frames`); sent = 0; }, 5000);
   const shutdown = () => { clearInterval(stats); ff.kill('SIGKILL'); socket.destroy(); };
+  // Reading the socket is load-bearing: without a 'data' listener the stream stays paused,
+  // so a client-initiated close (CLOSE frame, then FIN) is never surfaced and the encoder
+  // leaks until the browser resets the connection. The client sends nothing but control
+  // frames, so any CLOSE opcode ends the session.
+  socket.on('data', (d) => {
+    if ((d[0] & 0x0f) === 0x8) {
+      try { socket.write(wsFrame(Buffer.alloc(0), 0x8)); } catch { /* peer gone */ }
+      shutdown();
+    }
+  });
+  socket.on('end', shutdown);
   socket.on('close', shutdown);
   socket.on('error', shutdown);
   ff.on('exit', (code) => { log(`ffmpeg exited ${code}`); shutdown(); });

@@ -1,6 +1,8 @@
 import * as puppeteer from 'puppeteer-core';
 import type { Browser, Page, ElementHandle, CDPSession } from 'puppeteer-core';
 import { resolveLaunchOptions } from './launchFlags';
+import { browserIdentity, chromeVersionOf, identityMetadata } from './identity';
+import type { BrowserIdentity } from './identity';
 import { snapshotScript } from './snapshot';
 
 export interface PageInfo {
@@ -57,10 +59,12 @@ export class BrowserSession {
   private internalPages = new Set<Page>();
   private idSeq = 0;
 
-  /** Per-page CDP session holding a virtual WebAuthn authenticator, so passkey
-   *  prompts fail fast to a password fallback instead of hanging on an OS
-   *  prompt that headless Chromium can never show. Kept alive for the page's
-   *  lifetime (detaching would drop the authenticator). */
+  /** Per-page CDP session holding this page's session-scoped overrides: the UA +
+   *  client-hint identity, and a virtual WebAuthn authenticator so passkey prompts fail
+   *  fast to a password fallback instead of hanging on an OS prompt that headless
+   *  Chromium can never show. Kept alive for the page's lifetime — BOTH overrides are
+   *  bound to the session and revert the moment it detaches (measured: detaching after
+   *  setUserAgentOverride put the headless client hints straight back). */
   private authSessions = new Map<Page, CDPSession>();
 
   /** Soft advisory flag; the FIFO queue is the real serialization mechanism. */
@@ -82,6 +86,8 @@ export class BrowserSession {
   private pageClosedCb?: PageClosedListener;
   private pageRevealCb?: (id: string) => void;
   private pagesChangedCb?: () => void;
+  /** How this browser presents itself to sites (UA + client hints). */
+  private identity?: BrowserIdentity;
   private highlightCb?: (id: string, box: ElementBox) => void;
 
   private constructor(
@@ -99,15 +105,18 @@ export class BrowserSession {
     autoFallbackPasskeys = true,
     uncapFrameRate = false,
   ): Promise<BrowserSession> {
+    // Read the build's version before launching so --user-agent can carry the correct
+    // Chrome version from the first request onward (see resolveLaunchOptions).
+    const identity = await browserIdentity(await chromeVersionOf(chromePath));
     const browser = await puppeteer.launch({
-      ...resolveLaunchOptions(profileDir, chromePath, headless, uncapFrameRate),
+      ...resolveLaunchOptions(profileDir, chromePath, headless, uncapFrameRate, identity.ua),
       // Don't let puppeteer kill Chrome when the extension host dies/reloads — we detach
       // (disconnect) on reload and reconnect to the same browser, so tabs are never lost.
       handleSIGINT: false,
       handleSIGTERM: false,
       handleSIGHUP: false,
     });
-    return BrowserSession.wrap(browser, headless, autoFallbackPasskeys);
+    return BrowserSession.wrap(browser, headless, autoFallbackPasskeys, identity);
   }
 
   /** Reconnect to a Chrome kept alive across a reload — its tabs are intact, no gap. */
@@ -132,8 +141,13 @@ export class BrowserSession {
     browser: Browser,
     headless: boolean,
     autoFallbackPasskeys: boolean,
+    /** Known when we launched the binary ourselves; on a reconnect it is derived from
+     *  the running browser instead. */
+    identity?: BrowserIdentity,
   ): Promise<BrowserSession> {
     const session = new BrowserSession(browser, headless, autoFallbackPasskeys);
+    session.identity =
+      identity ?? (await browserIdentity(await withTimeout(browser.version(), 2000)));
 
     const pages = await browser.pages();
     // Prefer a real restored tab over puppeteer's stray about:blank.
@@ -267,45 +281,44 @@ export class BrowserSession {
    * Chrome equivalent of the SAME build (version taken from the real UA, never invented),
    * so the only thing that changes is the false "I am headless" claim.
    */
-  private async fixUserAgent(page: Page): Promise<void> {
+  private async fixUserAgent(cdp: CDPSession): Promise<void> {
+    const id = this.identity;
+    if (!id) return;
     try {
-      const real = await withTimeout(this.browser.version(), 2000); // "HeadlessChrome/151.0.7922.47"
-      const full = /[\d.]+/.exec(real ?? '')?.[0] ?? '';
-      const major = full.split('.')[0] || '151';
-      const ua =
-        `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ` +
-        `(KHTML, like Gecko) Chrome/${full || major + '.0.0.0'} Safari/537.36`;
+      // ONE call carrying all three. Sending them separately does not merge — a second
+      // setUserAgentOverride without userAgentMetadata WIPES the brands (measured:
+      // navigator.userAgentData.brands came back empty), which is far more anomalous
+      // than the headless brands it replaced.
       await withTimeout(
-        page.setUserAgent(ua, {
-          // Client hints must agree with the UA string; a mismatch is itself a signal.
-          brands: [
-            { brand: 'Chromium', version: major },
-            { brand: 'Google Chrome', version: major },
-            { brand: 'Not=A?Brand', version: '99' },
-          ],
-          fullVersion: full,
-          platform: 'macOS',
-          platformVersion: '15.0.0',
-          architecture: 'arm',
-          model: '',
-          mobile: false,
+        cdp.send('Network.setUserAgentOverride', {
+          userAgent: id.ua,
+          // Headless derives navigator.languages from --lang and yields just ["en-US"];
+          // real Chrome sends ["en-US","en"]. No launch flag fixes this (--accept-lang
+          // changes only the header), so it rides along here.
+          acceptLanguage: 'en-US,en',
+          userAgentMetadata: identityMetadata(id),
         }),
         3000,
       );
     } catch {
-      /* UA override unsupported — cosmetic only, keep going */
+      /* override unsupported — the --user-agent launch flag still covers the UA string */
     }
   }
 
   private async prepPage(page: Page): Promise<void> {
-    void this.fixUserAgent(page); // independent of the passkey work below
-    if (!this.autoFallbackPasskeys || this.authSessions.has(page)) return;
+    if (this.authSessions.has(page)) return;
+    // Every await is timeout-bounded: a hung/unresponsive page must never block session
+    // startup or tab adoption on this best-effort setup.
+    const cdp = await withTimeout(page.createCDPSession(), 3000).catch(() => undefined);
+    if (!cdp) return;
+    // Held for the page's lifetime: the identity override lives on this session.
+    this.authSessions.set(page, cdp);
+    // AWAITED, not fire-and-forget: newPage() calls prepPage before goto() precisely so
+    // the identity is in place for the first request. Voiding it let the navigation win
+    // the race and ship the headless client hints.
+    await this.fixUserAgent(cdp);
+    if (!this.autoFallbackPasskeys) return;
     try {
-      // Every await is timeout-bounded: a hung/unresponsive page must never
-      // block session startup or tab adoption on best-effort passkey setup.
-      const cdp = await withTimeout(page.createCDPSession(), 3000);
-      if (!cdp) return;
-      this.authSessions.set(page, cdp);
       await withTimeout(cdp.send('WebAuthn.enable'), 3000);
       await withTimeout(
         cdp.send('WebAuthn.addVirtualAuthenticator', {
@@ -323,7 +336,8 @@ export class BrowserSession {
         3000,
       );
     } catch {
-      this.authSessions.delete(page);
+      // Keep the session in the map even so: passkeys are best-effort, but the identity
+      // override on this same session is not, and it dies if the session is dropped.
       /* WebAuthn domain unsupported or page already gone — leave passkeys as-is */
     }
   }

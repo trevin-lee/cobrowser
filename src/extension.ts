@@ -33,6 +33,11 @@ const WAS_RUNNING_KEY = 'cobrowser.wasRunning';
 // The kept-alive Chrome's DevTools ws endpoint, so a reload can reconnect to it (tabs
 // intact) instead of relaunching + restoring.
 const WS_KEY = 'cobrowser.wsEndpoint';
+// The container's host port mappings, so a reload can find (and adopt) the still-running
+// container. Ports are otherwise derived from the MCP port, which changes every session —
+// probing the wrong port made every reload look like a dead container, so start() would
+// force-remove it and the open tabs died with it.
+const CONTAINER_PORTS_KEY = 'cobrowser.containerPorts';
 // Our own copy of the open tabs (URL + editor column), updated on every pages-change and
 // panel-layout change. Reconnect and --restore-last-session both fail when Chrome dies
 // WITH the extension host (a normal window reload kills the whole tree, and an unclean
@@ -205,8 +210,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           }
           const w = cfg.get<number>('containerWidth', 1440);
           const h = cfg.get<number>('containerHeight', 900);
-          const cdpPort = (mcp?.port ?? 39273) + 1;
-          const framePort = (mcp?.port ?? 39273) + 2;
+          // Prefer the ports of the previous session's container: if it is still running
+          // (a window reload leaves it alive), start() adopts it and the tabs survive.
+          const savedPorts = context.workspaceState.get<{ cdp: number; frame: number }>(
+            CONTAINER_PORTS_KEY,
+          );
+          let cdpPort = savedPorts?.cdp ?? (mcp?.port ?? 39273) + 1;
+          let framePort = savedPorts?.frame ?? (mcp?.port ?? 39273) + 2;
           // MUST be its own profile dir. Mounting the local one made container Chromium
           // refuse to start outright — the macOS Chrome's SingletonLock is in there
           // ("profile appears to be in use ... on another computer"), so it exits before
@@ -218,7 +228,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             containerProfile,
             log,
           );
-          await container.start({ cdpPort, framePort, width: w, height: h });
+          try {
+            await container.start({ cdpPort, framePort, width: w, height: h });
+          } catch (e) {
+            // Saved ports can go stale (host reboot + another process took them). Retry
+            // once on freshly derived ports before giving up.
+            if (!savedPorts) throw e;
+            cdpPort = (mcp?.port ?? 39273) + 1;
+            framePort = (mcp?.port ?? 39273) + 2;
+            await container.start({ cdpPort, framePort, width: w, height: h });
+          }
+          await context.workspaceState.update(CONTAINER_PORTS_KEY, {
+            cdp: cdpPort,
+            frame: framePort,
+          });
           const wsEndpoint = await container.wsEndpoint(cdpPort);
           // ownViewport: let the page fill the container's window (that window is what
           // gets captured); puppeteer's default 800x600 override left it tiny on a blank
