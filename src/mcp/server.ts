@@ -2,8 +2,11 @@ import * as http from 'node:http';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { registerTools } from './tools';
+import { registerZenTools } from './zenTools';
 import type { BrowserSession } from '../browser/BrowserSession';
+import type { ZenBridge } from '../zen/ZenBridge';
 import { bindPort } from '../util/ports';
+import { isLoopbackHost } from '../util/localhost';
 
 export interface McpHttp {
   port: number;
@@ -14,18 +17,9 @@ export interface McpHttp {
 }
 
 type GetSession = () => Promise<BrowserSession>;
+/** Read lazily: the bridge needs this server's port, so it is built after we start. */
+type GetZen = () => ZenBridge | undefined;
 type Log = (message: string) => void;
-
-const ALLOWED_HOSTNAMES = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
-
-function parseHostname(host: string | undefined): string | undefined {
-  if (!host) return undefined;
-  try {
-    return new URL(`http://${host}`).hostname;
-  } catch {
-    return undefined;
-  }
-}
 
 /**
  * In-process, localhost-only MCP server over Streamable HTTP.
@@ -42,6 +36,7 @@ export async function startMcpHttpServer(
   preferredPort: number,
   predecessorPid: number | undefined,
   getSession: GetSession,
+  getZen: GetZen,
   log: Log,
 ): Promise<McpHttp> {
   const httpServer = http.createServer((req, res) => {
@@ -68,17 +63,19 @@ export async function startMcpHttpServer(
       res.writeHead(401).end('Unauthorized');
       return;
     }
+    // Liveness probe for the daemon's registry: it prunes a workspace whose window has
+    // gone away, and this is how "gone away" is confirmed cheaply.
+    if (req.method === 'GET' && req.url?.startsWith('/health')) {
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ ok: true, pid: process.pid }));
+      return;
+    }
     if (req.method !== 'POST' || !req.url || !req.url.startsWith('/mcp')) {
       // Stateless mode: the GET SSE stream and DELETE are not supported.
       res.writeHead(405).end('Method Not Allowed');
       return;
     }
 
-    // DNS-rebinding guard, done manually: the SDK's `allowedHosts` check exact-string
-    // matches the RAW Host header (which includes the port, e.g. "127.0.0.1:39273"), so
-    // its built-in protection would 403 every request. Parse and compare the hostname.
-    const hostname = parseHostname(req.headers.host);
-    if (!hostname || !ALLOWED_HOSTNAMES.has(hostname)) {
+    if (!isLoopbackHost(req.headers.host)) {
       res.writeHead(403).end('Forbidden host');
       return;
     }
@@ -86,8 +83,15 @@ export async function startMcpHttpServer(
     const body = await readJsonBody(req);
     const server = new McpServer({ name: 'cobrowser', version: '0.0.1' });
     registerTools(server, getSession);
+    // The zen_* tools only exist once a bridge is configured, so an agent in a workspace
+    // with no Zen binding never sees tools it cannot use.
+    const zen = getZen();
+    if (zen) registerZenTools(server, zen);
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
+      // Only the daemon talks to this server now, and a plain JSON reply is far simpler to
+      // proxy than an SSE stream.
+      enableJsonResponse: true,
     });
 
     res.on('close', () => {

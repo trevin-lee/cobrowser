@@ -2,7 +2,7 @@
   "name": "cobrowser",
   "displayName": "Cobrowser",
   "description": "An embedded, agent-controllable browser inside your editor — co-driven by you (webview) and your AI agent (MCP).",
-  "version": "0.4.5",
+  "version": "0.5.17",
   "publisher": "trevin-lee",
   "private": true,
   "license": "MIT",
@@ -51,6 +51,10 @@
       {
         "command": "cobrowser.restartBrowser",
         "title": "Cobrowser: Restart Browser"
+      },
+      {
+        "command": "cobrowser.copyZenBridgeUrl",
+        "title": "Cobrowser: Copy Zen Bridge URL"
       }
     ],
     "menus": {
@@ -99,15 +103,29 @@
           "default": "",
           "description": "Path to the Chrome/Chromium executable. Leave empty to auto-detect."
         },
+        "cobrowser.display": {
+          "type": "string",
+          "default": "panel",
+          "enum": [
+            "panel",
+            "window"
+          ],
+          "enumDescriptions": [
+            "Headless Chrome, streamed as images into a webview panel. The browser lives inside the editor; no OS window appears.",
+            "Real Chrome in its own window on your desktop, with no panel. Use this when you want to drive Chrome directly — for OS password prompts, extension toolbars (e.g. pairing iCloud Passwords) or anything a chrome-less panel cannot show."
+          ],
+          "description": "Where YOU watch the browser. The agent drives the same browser either way. Set this per workspace (Workspace settings) to use a real window for one project and panels for another; changing it takes effect on the next browser launch, so run \"Cobrowser: Restart Browser\" after."
+        },
         "cobrowser.headless": {
           "type": "boolean",
           "default": true,
-          "description": "Run the browser headless — embedded in the Cursor panel only, with no separate OS window. Set to false to also open a native Chrome window (needed for native dropdowns, file pickers, 2FA, and some sign-ins like Google that block headless)."
+          "description": "Run the browser headless — embedded in the Cursor panel only, with no separate OS window. Set to false to also open a native Chrome window (needed for native dropdowns, file pickers, 2FA, and some sign-ins like Google that block headless).",
+          "deprecationMessage": "Superseded by cobrowser.display. Still honoured when display is unset: false means \"window\"."
         },
         "cobrowser.port": {
           "type": "number",
           "default": 0,
-          "description": "Localhost port for the in-process MCP server. 0 (default) = pick a free port automatically and remember it per-workspace, so every window/repo gets its own stable endpoint and two windows never collide (which would make agents drive each other's browsers). Set a specific number only to pin a port for one workspace."
+          "description": "Localhost port for the shared cobrowser daemon — the single MCP endpoint every editor window and every agent client uses. 0 (default) means 39273. All windows must agree on this value; each window's own internal server takes an ephemeral port and is never contacted directly."
         },
         "cobrowser.imageFormat": {
           "type": "string",
@@ -142,6 +160,23 @@
           "type": "boolean",
           "default": true,
           "description": "Install a virtual WebAuthn authenticator so passkey/WebAuthn prompts fail fast and sites fall back to a password. Headless Chromium can't show the OS fingerprint prompt, so a passkey ceremony would otherwise hang forever. Turn OFF only when running headful (cobrowser.headless: false) to sign in with the real OS prompt."
+        },
+        "cobrowser.zenContainer": {
+          "type": "string",
+          "default": "",
+          "description": "Bind this workspace to ONE container in your own Zen browser, by name (e.g. \"School\"). Set it and the zen_* MCP tools appear, letting the agent see and drive the tabs you already have open in that container — and nothing outside it. Empty (default) = no Zen bridge, no zen_ tools. Requires the Cobrowser Bridge extension installed in Zen; run \"Cobrowser: Copy Zen Bridge URL\" and paste the result into its options page. NOTE: the scoping is enforced by the bridge, not by Firefox — the extension can technically reach every container, and chooses not to."
+        },
+        "cobrowser.applePasswords": {
+          "type": "boolean",
+          "default": true,
+          "description": "Load Apple's iCloud Passwords extension into every cobrowser browser, so iCloud Keychain logins autofill. Requires the extension to be installed in your normal Google Chrome (it is copied from there), plus a one-time admin step registering Apple's native helper for Chrome for Testing — the exact command is printed in the Cobrowser output channel."
+        },
+        "cobrowser.captureFps": {
+          "type": "number",
+          "default": 60,
+          "minimum": 1,
+          "maximum": 240,
+          "description": "Frames per second requested from the H.264 video pipeline (cobrowser.videoPipeline). This is a HINT, and three things bound it: headless self-paces its compositor at 60 unless cobrowser.uncapFrameRate is on, WebRTC adapts downward under CPU or bandwidth pressure, and your display's refresh rate caps what you can actually see. For 120 you need this AND uncapFrameRate AND a 120Hz display."
         }
       }
     }

@@ -1,0 +1,34 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Cobrowser Bridge</title>
+<link rel="stylesheet" href="options.css" />
+<body>
+  <h1>Cobrowser Bridge</h1>
+
+  <section>
+    <h2>Endpoints</h2>
+    <p class="hint">
+      One per line. Get each URL from your editor: run
+      <code>Cobrowser: Copy Zen Bridge URL</code> in the workspace you want to connect.
+      The workspace decides which container it is allowed to touch.
+    </p>
+    <textarea id="endpoints" spellcheck="false" rows="6"
+      placeholder="ws://127.0.0.1:39273/zen?token=…"></textarea>
+    <div class="row">
+      <button id="save">Save</button>
+      <span id="saved" class="saved" hidden>saved</span>
+    </div>
+  </section>
+
+  <section>
+    <h2>Status</h2>
+    <ul id="status" class="status"></ul>
+  </section>
+
+  <section>
+    <h2>Containers in this profile</h2>
+    <ul id="containers" class="containers"></ul>
+  </section>
+
+  <script src="options.js"></script>
+</body>

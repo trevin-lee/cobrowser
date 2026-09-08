@@ -6,5 +6,14 @@ tsconfig*.json
 .vscode/**
 .gitignore
 **/*.map
+# SECRETS — these are generated at activation and carry the live MCP port + Bearer
+# token. They are git-excluded but vsce does not read .gitignore, so without these
+# lines a packaged VSIX ships a real session token to everyone who installs it.
+.cursor/**
+.mcp.json
+# Dev-only: CI config, release tooling, and the transient handoff note.
+.github/**
+scripts/**
+HANDOFF.md
 # NOTE: node_modules is intentionally NOT ignored — puppeteer-core is marked
 # `external` in the esbuild config, so it must ship in the VSIX to be require-able.

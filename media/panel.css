@@ -190,7 +190,7 @@ button.icon svg {
   width: 100%;
   height: 100%;
   background: #fff;
-  object-fit: fill; /* the stream is already the panel's aspect (window-sized capture) */
+  object-fit: contain; /* preserve aspect; the container screen is a fixed size, not the panel's */
 }
 #video[hidden] { display: none; }
 #screen[hidden] { display: none; }

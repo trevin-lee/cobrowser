@@ -5,11 +5,20 @@ import * as crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { BrowserSession } from './browser/BrowserSession';
 import { ensureChromeExecutable } from './browser/ensureChrome';
+import {
+  ensureApplePasswords,
+  nativeHostInstalled,
+  NATIVE_HOST_INSTALL_COMMAND,
+} from './browser/applePasswords';
 import { startMcpHttpServer, type McpHttp } from './mcp/server';
 import { BrowserPanel } from './webview/BrowserPanel';
 import { SessionTreeProvider } from './webview/SessionTreeProvider';
 import { writeClientConfigs } from './clients/writeClientConfigs';
+import { daemonToken, deregister, ensureDaemon, register } from './daemon/client';
+import { DEFAULT_DAEMON_PORT } from './daemon/protocol';
 import { CaptureHub } from './video/CaptureHub';
+import { ZenBridge } from './zen/ZenBridge';
+import { registerEndpoint } from './zen/managedManifest';
 
 const PID_KEY = 'cobrowser.browserPid';
 const BUILD_ID_KEY = 'cobrowser.chromeBuildId';
@@ -19,9 +28,6 @@ const BUILD_ID_KEY = 'cobrowser.chromeBuildId';
 // or makes both agents authenticate to the same server); persisted so the agent's connection
 // survives reloads. Paired with a per-workspace port below → a stable, unique endpoint URL.
 const TOKEN_KEY = 'cobrowser.mcpToken';
-// The MCP port this workspace bound last time — reused on reload so the URL stays stable,
-// while a different workspace picks a different free port (no cross-window collision).
-const PORT_KEY = 'cobrowser.mcpPort';
 // This workspace's previous extension-host pid. Lets bindPort reclaim the port from OUR OWN
 // crashed predecessor without ever killing another window's LIVE host (that mutual kill is
 // what crashed the extension host and made two repos drive each other's browsers).
@@ -46,8 +52,38 @@ interface SavedTab {
 let session: BrowserSession | undefined;
 let sessionPromise: Promise<BrowserSession> | undefined;
 let mcp: McpHttp | undefined;
+let zenBridge: ZenBridge | undefined;
 let output: vscode.OutputChannel;
 let extensionContext: vscode.ExtensionContext | undefined;
+/** Set once this window has registered with the daemon, so deactivate() can withdraw it. */
+let registeredWith: { port: number; globalStorage: string; id: string } | undefined;
+
+/**
+ * Where the human watches the browser.
+ *
+ *  - 'panel'  : headless Chrome, screencast as images into a webview panel. No OS window.
+ *  - 'window' : real Chrome on the desktop, with NO panel. The panel is a mirror of the same
+ *               tab, so showing both was the confusing part: one page visible twice, with the
+ *               viewport forced to the panel's size and the real window laid out wrong.
+ *
+ * The agent drives the same browser either way — only the human's view changes.
+ */
+type DisplayMode = 'panel' | 'window';
+
+function displayMode(cfg: vscode.WorkspaceConfiguration): DisplayMode {
+  const explicit = cfg.get<string>('display');
+  if (explicit === 'window' || explicit === 'panel') return explicit;
+  // Back-compat: `cobrowser.headless: false` used to be the only way to ask for a real
+  // window, so honour it when display hasn't been set.
+  const legacy = cfg.inspect<boolean>('headless');
+  const set = legacy?.workspaceFolderValue ?? legacy?.workspaceValue ?? legacy?.globalValue;
+  return set === false ? 'window' : 'panel';
+}
+
+/** The running build's version, so the daemon can be restarted when it is stale. */
+function extensionVersion(context: vscode.ExtensionContext): string {
+  return (context.extension?.packageJSON as { version?: string } | undefined)?.version ?? '0.0.0';
+}
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   extensionContext = context;
@@ -66,10 +102,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     await context.workspaceState.update(TOKEN_KEY, token);
   }
   const cfg = vscode.workspace.getConfiguration('cobrowser');
-  // A user-pinned `cobrowser.port` wins; otherwise reuse this workspace's persisted port so
-  // the URL is stable across reloads, falling back to 0 (OS picks a free port) the first time.
-  const pinnedPort = cfg.get<number>('port', 0);
-  const preferredPort = pinnedPort > 0 ? pinnedPort : context.workspaceState.get<number>(PORT_KEY) ?? 0;
+  // `cobrowser.port` is the DAEMON's port — the one stable URL every client is configured
+  // with. This window's own server is an internal detail the daemon proxies to, so it takes
+  // any free port (0) and never needs to be stable.
+  const daemonPort = cfg.get<number>('port', 0) || DEFAULT_DAEMON_PORT;
+  const preferredPort = 0;
   // Hand bindPort our previous host's pid so it can reclaim the port from our OWN stale
   // predecessor only — never from another live window. Then record ours for next time.
   const predecessorPid = context.workspaceState.get<number>(EH_PID_KEY);
@@ -116,11 +153,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       tree.refresh(); // profile → "stopped", tabs cleared
     });
 
-    // One VS Code editor tab per browser page — VS Code's tab bar is the tab bar.
-    s.onPageOpened((page, id, reveal) => BrowserPanel.openForPage(context, s, page, id, reveal));
-    s.onPageClosed((id) => BrowserPanel.closeForId(id));
-    s.onPageReveal((id) => BrowserPanel.reveal(id));
-    s.onAgentHighlight((id, box) => BrowserPanel.get(id)?.postHighlight(box));
+    // Ordinary tabs in one real window when the human is watching Chrome itself; a window
+    // per page only helps the screencast, which window mode does not use.
+    s.separateWindows = displayMode(cfg) === 'panel';
+    // One VS Code editor tab per browser page — VS Code's tab bar is the tab bar. Skipped in
+    // window mode: a panel would mirror a page the human can already see, and its viewport
+    // override would relayout the real window to the panel's dimensions.
+    if (displayMode(cfg) === 'panel') {
+      s.onPageOpened((page, id, reveal) => BrowserPanel.openForPage(context, s, page, id, reveal));
+      s.onPageClosed((id) => BrowserPanel.closeForId(id));
+      s.onPageReveal((id) => BrowserPanel.reveal(id));
+      s.onAgentHighlight((id, box) => BrowserPanel.get(id)?.postHighlight(box));
+    }
     // Keep the Activity Bar sidebar live: re-render its tab list whenever pages open,
     // close, navigate, or the active tab changes. (These fire sites existed but were
     // never connected to the tree, so the sidebar showed a stale first snapshot.)
@@ -188,8 +232,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     if (session) return session;
     if (!sessionPromise) {
       sessionPromise = (async () => {
-        const headless = cfg.get<boolean>('headless', true);
+        const display = displayMode(cfg);
+        const headless = display === 'panel';
         const autoFallbackPasskeys = cfg.get<boolean>('autoFallbackPasskeys', true);
+
         // Reconnect to a Chrome kept alive across a reload (tabs intact) before launching.
         const savedWs = context.workspaceState.get<string>(WS_KEY);
         if (savedWs) {
@@ -220,6 +266,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           headless,
           autoFallbackPasskeys,
           cfg.get<boolean>('uncapFrameRate', false),
+          applePasswordsExtensions(context, cfg, log),
         );
         log(`Chromium launched (pid ${s.pid() ?? '?'}), profile ${profileDir}`);
         const wired = await wire(s);
@@ -248,7 +295,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   // In-process MCP server (per-request stateless transport).
-  mcp = await startMcpHttpServer(token, preferredPort, predecessorPid, getSession, log);
+  mcp = await startMcpHttpServer(token, preferredPort, predecessorPid, getSession, () => zenBridge, log);
+
+  // Zen bridge: the human's OWN browser, reached through the Cobrowser Bridge extension,
+  // scoped to the single container this workspace is bound to. Only stood up when a
+  // container is configured — otherwise the zen_* tools stay hidden entirely.
+  const zenContainer = cfg.get<string>('zenContainer', '').trim();
+  if (zenContainer) {
+    const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? profileDir;
+    zenBridge = new ZenBridge(token, zenContainer, workspacePath, log);
+    zenBridge.attach(mcp.httpServer, mcp.port);
+    log(`Zen bridge listening at ${zenBridge.url().replace(/token=.*/, 'token=…')} (container "${zenContainer}").`);
+    // Hand the endpoint to the browser extension through Firefox's managed-storage
+    // manifest, so installing the extension is the only manual step.
+    registerEndpoint(workspacePath, zenBridge.url(), log);
+  }
 
   // Hardware-video pipeline (experimental, cobrowser.videoPipeline): a hidden in-browser
   // controller captures tabs and streams WebCodecs H.264 over a WebSocket on the SAME
@@ -268,6 +329,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // pipelines doesn't need a window reload (the setting is read at activation only).
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration('cobrowser.zenContainer')) {
+        const next = vscode.workspace.getConfiguration('cobrowser').get<string>('zenContainer', '').trim();
+        if (zenBridge && next) zenBridge.setContainer(next);
+        else
+          void vscode.window.showInformationMessage(
+            'Cobrowser: reload the window to finish changing the Zen container binding.',
+          );
+      }
       const video = e.affectsConfiguration('cobrowser.videoPipeline');
       const format = e.affectsConfiguration('cobrowser.imageFormat');
       if (!video && !format) return;
@@ -282,9 +351,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
   const hubRef = captureHub;
   context.subscriptions.push({ dispose: () => hubRef.dispose() });
-  // Remember the port we actually bound so the next reload of THIS workspace reuses it
-  // (stable URL). Skip when the user pinned a port — that's already fixed by config.
-  if (pinnedPort <= 0) await context.workspaceState.update(PORT_KEY, mcp.port);
+  context.subscriptions.push({ dispose: () => zenBridge?.dispose() });
 
   // B2: VS Code's MCP provider API does not exist in Cursor — feature-detect so
   // activate() doesn't throw there; the file-based writers below cover Cursor/Claude Code.
@@ -299,17 +366,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       didChange,
       lm.registerMcpServerDefinitionProvider('cobrowser.mcp', {
         onDidChangeMcpServerDefinitions: didChange.event,
-        provideMcpServerDefinitions: () =>
-          mcp
-            ? [
-                new McpHttpDef(
-                  'Cobrowser',
-                  vscode.Uri.parse(`http://127.0.0.1:${mcp.port}/mcp`),
-                  { Authorization: `Bearer ${token}` },
-                  context.extension.packageJSON.version,
-                ),
-              ]
-            : [],
+        // The DAEMON's endpoint, not this window's: VS Code's agent gets the same shared,
+        // workspace-routed surface every other client sees.
+        provideMcpServerDefinitions: () => [
+          new McpHttpDef(
+            'Cobrowser',
+            vscode.Uri.parse(`http://127.0.0.1:${daemonPort}/mcp`),
+            { Authorization: `Bearer ${daemonToken(context.globalStorageUri.fsPath)}` },
+            context.extension.packageJSON.version,
+          ),
+        ],
         resolveMcpServerDefinition: (s: unknown) => s,
       }),
     );
@@ -319,12 +385,38 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     log('VS Code MCP provider API unavailable (e.g. Cursor) — using file-based registration.');
   }
 
-  // Cursor + Claude Code: write literal port/token into workspace config files.
-  await writeClientConfigs(mcp.port, token, log);
+  // One daemon, shared by every window: it owns the fixed port and the single config entry,
+  // and proxies each call to whichever window owns the named workspace.
+  const globalStorage = context.globalStorageUri.fsPath;
+  const daemonScript = path.join(context.extensionUri.fsPath, 'dist', 'daemon.js');
+  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+  if (await ensureDaemon({ port: daemonPort, version: extensionVersion(context), globalStorage, daemonScript, log })) {
+    if (workspaceFolder) {
+      const id = workspaceFolder.uri.fsPath;
+      await register(
+        daemonPort,
+        globalStorage,
+        { id, name: path.basename(id), url: `http://127.0.0.1:${mcp.port}/mcp`, token, pid: process.pid },
+        log,
+      );
+      // Hand the port + id to deactivate(), which must unregister before the window goes.
+      registeredWith = { port: daemonPort, globalStorage, id };
+      context.subscriptions.push({ dispose: () => void deregister(daemonPort, globalStorage, id) });
+    } else {
+      log('No workspace folder open — this window has no browser to offer the daemon.');
+    }
+    // Cursor + Claude Code: ONE entry, pointing at the daemon.
+    await writeClientConfigs(daemonPort, globalStorage, token, log);
+  }
 
   context.subscriptions.push(
     vscode.commands.registerCommand('cobrowser.open', async () => {
       const s = await getSession();
+      if (displayMode(cfg) === 'window') {
+        // There are no panels to open — put the real Chrome window in front instead.
+        await s.run(() => s.bringToFront()).catch(() => undefined);
+        return;
+      }
       // Open a panel for each existing page (reveals the active one). Future
       // pages open their panels via onPageOpened.
       s.emitExisting();
@@ -332,6 +424,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('cobrowser.newTab', async () => {
       const s = await getSession();
       await s.newPage('about:blank');
+    }),
+    vscode.commands.registerCommand('cobrowser.copyZenBridgeUrl', async () => {
+      if (!zenBridge) {
+        const pick = await vscode.window.showWarningMessage(
+          'Cobrowser: set "cobrowser.zenContainer" for this workspace first — it names the one Zen container this workspace may drive.',
+          'Open Settings',
+        );
+        if (pick) {
+          await vscode.commands.executeCommand('workbench.action.openSettings', 'cobrowser.zenContainer');
+        }
+        return;
+      }
+      await vscode.env.clipboard.writeText(zenBridge.url());
+      void vscode.window.showInformationMessage(
+        'Cobrowser: bridge URL copied. This workspace is normally registered with the Zen extension ' +
+          'automatically — only paste it into the extension (toolbar button → Endpoints) if that did not work.',
+      );
     }),
     vscode.commands.registerCommand('cobrowser.restartBrowser', async () => {
       await disposeSession(context);
@@ -354,8 +463,37 @@ export async function deactivate(): Promise<void> {
   // Reload/window-close: DETACH but keep Chrome + its tabs alive, so reactivating
   // reconnects to exactly the same state. Only an explicit restart actually quits it.
   await disposeSession(extensionContext, { keepAlive: true });
+  // Withdraw from the daemon BEFORE the server closes, so no agent can be routed at a
+  // window that is already tearing down.
+  if (registeredWith) {
+    await deregister(registeredWith.port, registeredWith.globalStorage, registeredWith.id);
+    registeredWith = undefined;
+  }
   await mcp?.close();
   mcp = undefined;
+}
+
+/** iCloud Passwords, when the user has it in Chrome and hasn't turned it off. Autofill also
+ *  needs Apple's native helper, which only an admin can put where Chrome for Testing looks —
+ *  so say exactly what to run rather than failing silently at autofill time. */
+function applePasswordsExtensions(
+  context: vscode.ExtensionContext,
+  cfg: vscode.WorkspaceConfiguration,
+  log: (m: string) => void,
+): string[] {
+  if (!cfg.get<boolean>('applePasswords', true)) return [];
+  const dir = ensureApplePasswords(context.globalStorageUri.fsPath, log);
+  if (!dir) {
+    log('iCloud Passwords is not installed in Google Chrome — skipping (nothing to copy from).');
+    return [];
+  }
+  if (!nativeHostInstalled()) {
+    log(
+      'iCloud Passwords will load, but autofill needs Apple\'s helper registered for Chrome ' +
+        `for Testing. Run once:\n  ${NATIVE_HOST_INSTALL_COMMAND}`,
+    );
+  }
+  return [dir];
 }
 
 async function disposeSession(

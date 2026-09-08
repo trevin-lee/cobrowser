@@ -1,5 +1,7 @@
+import * as vscode from 'vscode';
 import type * as http from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
+import { claimUpgradePath } from '../util/upgradeRouter';
 import type { Page } from 'puppeteer-core';
 import type { BrowserSession } from '../browser/BrowserSession';
 
@@ -70,9 +72,8 @@ export class CaptureHub {
   attach(httpServer: http.Server, port: number): void {
     this.port = port;
     this.wss = new WebSocketServer({ noServer: true });
-    httpServer.on('upgrade', (req, socket, head) => {
-      const url = new URL(req.url ?? '/', 'http://127.0.0.1');
-      if (url.pathname !== '/capture' || url.searchParams.get('token') !== this.token) {
+    claimUpgradePath(httpServer, '/capture', (req, socket, head, url) => {
+      if (url.searchParams.get('token') !== this.token) {
         socket.destroy();
         return;
       }
@@ -155,7 +156,8 @@ export class CaptureHub {
       if (!session) return false;
       try {
         if (!this.controllerPage || this.controllerPage.isClosed()) {
-          const url = `file://${this.capturePagePath}?port=${this.port}&token=${encodeURIComponent(this.token)}`;
+          const fps = vscode.workspace.getConfiguration('cobrowser').get<number>('captureFps', 60);
+          const url = `file://${this.capturePagePath}?port=${this.port}&token=${encodeURIComponent(this.token)}&fps=${fps}`;
           this.controllerPage = await session.createInternalPage(url);
         }
         // Wait for the controller's socket (it connects right after load).

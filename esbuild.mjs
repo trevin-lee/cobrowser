@@ -24,6 +24,17 @@ const targets = [
     external: ['vscode', 'puppeteer-core', '@puppeteer/browsers'],
   },
   {
+    // Daemon: a standalone Node process (spawned detached), so it must be its own bundle
+    // rather than part of the extension host's.
+    ...common,
+    entryPoints: ['src/daemon/main.ts'],
+    outfile: 'dist/daemon.js',
+    platform: 'node',
+    format: 'cjs',
+    target: 'node20',
+    external: [],
+  },
+  {
     // Webview: browser/IIFE.
     ...common,
     entryPoints: ['webview-src/index.ts'],

@@ -1,0 +1,31 @@
+{
+  "manifest_version": 2,
+  "name": "Cobrowser Bridge",
+  "version": "0.1.0",
+  "description": "Lets Cobrowser (in your editor) see and drive the tabs of ONE Zen container.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "cobrowser-bridge@trevinlee.com",
+      "strict_min_version": "115.0"
+    }
+  },
+  "permissions": [
+    "tabs",
+    "contextualIdentities",
+    "cookies",
+    "storage",
+    "<all_urls>"
+  ],
+  "background": {
+    "scripts": ["background.js"],
+    "persistent": true
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "browser_action": {
+    "default_title": "Cobrowser Bridge",
+    "default_popup": "options.html"
+  }
+}
