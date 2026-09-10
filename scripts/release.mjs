@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * One clean iteration of the installed extension: bump → typecheck → package →
- * install into Cursor → prune stale installs.
+ * install into every editor present → prune stale installs.
  *
  * Iterating on an *installed* VS Code/Cursor extension is the whole reason
  * cobrowser kept looking "broken" after edits: editing src + `npm run build`
@@ -24,7 +24,25 @@ import * as path from 'node:path';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const pkgPath = path.join(root, 'package.json');
-const extDir = path.join(homedir(), '.cursor', 'extensions');
+/** Editors we know how to install into: CLI name + where it keeps extensions. Whichever are
+ *  actually present get the build, so switching editors does not silently leave one behind
+ *  running a stale VSIX. */
+const EDITORS = [
+  { cli: 'cursor', dir: path.join(homedir(), '.cursor', 'extensions') },
+  { cli: 'code', dir: path.join(homedir(), '.vscode', 'extensions') },
+];
+
+function which(cli) {
+  try {
+    execFileSync('command', ['-v', cli], { stdio: 'ignore', shell: '/bin/zsh' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const editors = EDITORS.filter((e) => which(e.cli));
+if (editors.length === 0) throw new Error('No supported editor CLI found (tried: cursor, code)');
 
 const args = process.argv.slice(2);
 const dry = args.includes('--dry-run');
@@ -64,26 +82,32 @@ run('npm', ['run', 'typecheck']);
 run('npm', ['run', 'package']);
 
 // 4) Install into Cursor (replaces the active version).
-run('cursor', ['--install-extension', vsix, '--force']);
+for (const e of editors) run(e.cli, ['--install-extension', vsix, '--force']);
 
 // 5) Prune: every cobrowser install dir except the one we just made active is an
 //    orphan on disk (only the newest is registered in extensions.json). Also drop
 //    old .vsix artifacts in the repo. Never touches the new version.
 const prefix = `${id}-`;
-const staleDirs = existsSync(extDir)
-  ? readdirSync(extDir).filter((d) => d.startsWith(prefix) && d !== `${prefix}${to}`)
-  : [];
-for (const d of staleDirs) {
-  log(`prune install ${d}`);
-  if (!dry) rmSync(path.join(extDir, d), { recursive: true, force: true });
+let pruned = 0;
+for (const e of editors) {
+  const stale = existsSync(e.dir)
+    ? readdirSync(e.dir).filter((d) => d.startsWith(prefix) && d !== `${prefix}${to}`)
+    : [];
+  for (const d of stale) {
+    log(`prune ${e.cli} install ${d}`);
+    if (!dry) rmSync(path.join(e.dir, d), { recursive: true, force: true });
+    pruned++;
+  }
 }
+
+// Old VSIX artifacts pile up in the repo root; keep only the one just built.
 const staleVsix = readdirSync(root).filter(
-  (f) => f.startsWith(`${pkg.name}-`) && f.endsWith('.vsix') && f !== `${pkg.name}-${to}.vsix`,
+  (f) => f.startsWith(`${pkg.name}-`) && f.endsWith('.vsix') && f !== path.basename(vsix),
 );
 for (const f of staleVsix) {
   log(`prune vsix ${f}`);
   if (!dry) rmSync(path.join(root, f), { force: true });
 }
 
-log(`done. pruned ${staleDirs.length} install dir(s), ${staleVsix.length} vsix.`);
-log('→ Reload the Cursor window to load the new build (Developer: Reload Window).');
+log(`done. installed into ${editors.map((e) => e.cli).join(' + ')}; pruned ${pruned} install dir(s), ${staleVsix.length} vsix.`);
+log('→ Reload your editor window to load the new build (Developer: Reload Window).');

@@ -56,7 +56,7 @@ let zenBridge: ZenBridge | undefined;
 let output: vscode.OutputChannel;
 let extensionContext: vscode.ExtensionContext | undefined;
 /** Set once this window has registered with the daemon, so deactivate() can withdraw it. */
-let registeredWith: { port: number; globalStorage: string; id: string } | undefined;
+let registeredWith: { port: number; id: string } | undefined;
 
 /**
  * Where the human watches the browser.
@@ -372,7 +372,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           new McpHttpDef(
             'Cobrowser',
             vscode.Uri.parse(`http://127.0.0.1:${daemonPort}/mcp`),
-            { Authorization: `Bearer ${daemonToken(context.globalStorageUri.fsPath)}` },
+            { Authorization: `Bearer ${daemonToken()}` },
             context.extension.packageJSON.version,
           ),
         ],
@@ -387,26 +387,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // One daemon, shared by every window: it owns the fixed port and the single config entry,
   // and proxies each call to whichever window owns the named workspace.
-  const globalStorage = context.globalStorageUri.fsPath;
   const daemonScript = path.join(context.extensionUri.fsPath, 'dist', 'daemon.js');
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-  if (await ensureDaemon({ port: daemonPort, version: extensionVersion(context), globalStorage, daemonScript, log })) {
+  if (await ensureDaemon({ port: daemonPort, version: extensionVersion(context), daemonScript, log })) {
     if (workspaceFolder) {
       const id = workspaceFolder.uri.fsPath;
       await register(
         daemonPort,
-        globalStorage,
         { id, name: path.basename(id), url: `http://127.0.0.1:${mcp.port}/mcp`, token, pid: process.pid },
         log,
       );
       // Hand the port + id to deactivate(), which must unregister before the window goes.
-      registeredWith = { port: daemonPort, globalStorage, id };
-      context.subscriptions.push({ dispose: () => void deregister(daemonPort, globalStorage, id) });
+      registeredWith = { port: daemonPort, id };
+      context.subscriptions.push({ dispose: () => void deregister(daemonPort, id) });
     } else {
       log('No workspace folder open — this window has no browser to offer the daemon.');
     }
     // Cursor + Claude Code: ONE entry, pointing at the daemon.
-    await writeClientConfigs(daemonPort, globalStorage, token, log);
+    await writeClientConfigs(daemonPort, token, log);
   }
 
   context.subscriptions.push(
@@ -466,7 +464,7 @@ export async function deactivate(): Promise<void> {
   // Withdraw from the daemon BEFORE the server closes, so no agent can be routed at a
   // window that is already tearing down.
   if (registeredWith) {
-    await deregister(registeredWith.port, registeredWith.globalStorage, registeredWith.id);
+    await deregister(registeredWith.port, registeredWith.id);
     registeredWith = undefined;
   }
   await mcp?.close();

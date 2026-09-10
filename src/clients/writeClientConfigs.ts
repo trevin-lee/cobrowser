@@ -34,7 +34,6 @@ const LEGACY_REPO_FILES = ['.mcp.json', path.join('.cursor', 'mcp.json')];
  */
 export async function writeClientConfigs(
   daemonPort: number,
-  globalStorage: string,
   /** This workspace's token — the credential that scopes a Claude session to this folder. */
   workspaceToken: string,
   log: Log,
@@ -74,7 +73,7 @@ export async function writeClientConfigs(
       servers.cobrowser = {
         type: 'http',
         url,
-        headers: { Authorization: `Bearer ${daemonToken(globalStorage)}` },
+        headers: { Authorization: `Bearer ${daemonToken()}` },
       };
       return json;
     },

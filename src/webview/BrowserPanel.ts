@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { pickColumn } from './columns';
 import * as fs from 'node:fs';
 import type { CDPSession, Page } from 'puppeteer-core';
 import type { BrowserSession, ElementBox } from '../browser/BrowserSession';
@@ -40,6 +41,29 @@ export class BrowserPanel {
    *  each recreated panel lands in the editor group it occupied before the reload
    *  (otherwise the stacking logic below collapses a split into one group). */
   private static plannedColumns: (number | undefined)[] = [];
+
+  /**
+   * The editor group cobrowser has claimed — its dedicated pane.
+   *
+   * VS Code reports `panel.viewColumn` as undefined whenever a panel is not the visible tab
+   * in its group, so deriving the target column from live panels returned nothing the moment
+   * you switched to a code file, and every new browser tab opened a FRESH SPLIT. Remembering
+   * the column keeps all browser tabs stacked in one pane, the way browser tabs should be.
+   */
+  private static dedicatedColumn: vscode.ViewColumn | undefined;
+
+  /** Remember wherever a panel actually lives, so later tabs join it. */
+  private static claimColumn(col: vscode.ViewColumn | undefined): void {
+    if (col != null) BrowserPanel.dedicatedColumn = col;
+  }
+
+  /** The pane new browser tabs should open in. */
+  static targetColumn(): vscode.ViewColumn | undefined {
+    return pickColumn({
+      dedicated: BrowserPanel.dedicatedColumn,
+      liveColumns: [...BrowserPanel.panels.values()].map((p) => p.panel.viewColumn),
+    });
+  }
 
   static planColumns(cols: (number | undefined)[]): void {
     BrowserPanel.plannedColumns = [...cols];
@@ -182,15 +206,17 @@ export class BrowserPanel {
     if (adopted) {
       const bp = new BrowserPanel(context, session, adopted, page, id);
       BrowserPanel.panels.set(id, bp);
+      BrowserPanel.claimColumn(adopted.viewColumn);
       return bp;
     }
     // A planned column (tab restore) wins — it recreates the pre-reload split. Otherwise
     // stack new tabs in the column an existing cobrowser panel already occupies, so they
     // group like browser tabs instead of spreading across splits.
-    const planned = BrowserPanel.plannedColumns.shift();
-    const groupColumn =
-      planned ??
-      [...BrowserPanel.panels.values()].map((p) => p.panel.viewColumn).find((c) => c != null);
+    const groupColumn = pickColumn({
+      planned: BrowserPanel.plannedColumns.shift(),
+      dedicated: BrowserPanel.dedicatedColumn,
+      liveColumns: [...BrowserPanel.panels.values()].map((p) => p.panel.viewColumn),
+    });
     const panel = vscode.window.createWebviewPanel(
       'cobrowser',
       'Cobrowser',
@@ -203,11 +229,14 @@ export class BrowserPanel {
     panel.iconPath = vscode.Uri.joinPath(context.extensionUri, 'media', 'icon.png');
     const bp = new BrowserPanel(context, session, panel, page, id);
     BrowserPanel.panels.set(id, bp);
+    BrowserPanel.claimColumn(panel.viewColumn);
     return bp;
   }
 
+  /** Focus a page's panel IN PLACE. Revealing it "Beside" used to relocate the panel into a
+   *  new split every time the agent switched tabs — a steady supply of new panes. */
   static reveal(id: string): void {
-    BrowserPanel.panels.get(id)?.panel.reveal(vscode.ViewColumn.Beside);
+    BrowserPanel.panels.get(id)?.panel.reveal(undefined, false);
   }
 
   static closeForId(id: string): void {
@@ -251,6 +280,9 @@ export class BrowserPanel {
     this.panel.onDidChangeViewState(
       () => {
         void this.syncRender();
+        // Follow the user: if they move a browser tab to another group, that group becomes
+        // the dedicated pane and later tabs open there too.
+        BrowserPanel.claimColumn(this.panel.viewColumn);
         BrowserPanel.onLayoutChanged?.(); // panel may have moved groups — persist layout
       },
       null,

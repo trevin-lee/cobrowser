@@ -2,7 +2,7 @@
   "name": "cobrowser",
   "displayName": "Cobrowser",
   "description": "An embedded, agent-controllable browser inside your editor — co-driven by you (webview) and your AI agent (MCP).",
-  "version": "0.5.17",
+  "version": "0.5.20",
   "publisher": "trevin-lee",
   "private": true,
   "license": "MIT",
@@ -143,7 +143,7 @@
         "cobrowser.videoPipeline": {
           "type": "boolean",
           "default": false,
-          "description": "EXPERIMENTAL: render panels via hardware H.264 video (WebCodecs tab-capture) instead of per-frame JPEG — ~100x less bandwidth and near-zero CPU, smoother under motion. Panels fall back to the JPEG screencast automatically if capture fails. Takes effect when a panel next starts streaming (hide/show it, or reload).",
+          "description": "EXPERIMENTAL, off by default. Render panels via hardware H.264 video (getDisplayMedia tab capture -> WebRTC) instead of per-frame images. Known broken: pointer coordinates frequently miss their target, and a panel resize takes seconds at very low framerate. Use the image screencast until those are fixed. Panels fall back to the screencast automatically if capture fails.",
           "tags": [
             "experimental"
           ]
@@ -151,7 +151,7 @@
         "cobrowser.uncapFrameRate": {
           "type": "boolean",
           "default": false,
-          "description": "Remove headless Chrome's 60fps compositor cap so panels stream at up to ~90-100fps (the JPEG-encode ceiling). COSTLY: pages that animate via requestAnimationFrame will render thousands of frames per second internally (measured ~6800), pegging CPU and draining battery — leave off unless plugged in and chasing maximum smoothness. Takes effect after 'Cobrowser: Restart Browser'.",
+          "description": "Remove Chromium's 60fps compositor pacing. NOT recommended with the video pipeline: measured, it does not raise delivered framerate (getDisplayMedia still samples at ~60) and makes rAF-driven pages render thousands of frames per second, burning CPU and battery. Only useful for the legacy image screencast.",
           "tags": [
             "experimental"
           ]
@@ -175,8 +175,8 @@
           "type": "number",
           "default": 60,
           "minimum": 1,
-          "maximum": 240,
-          "description": "Frames per second requested from the H.264 video pipeline (cobrowser.videoPipeline). This is a HINT, and three things bound it: headless self-paces its compositor at 60 unless cobrowser.uncapFrameRate is on, WebRTC adapts downward under CPU or bandwidth pressure, and your display's refresh rate caps what you can actually see. For 120 you need this AND uncapFrameRate AND a 120Hz display."
+          "maximum": 60,
+          "description": "Frames per second requested from the H.264 video pipeline. 60 is the practical ceiling: getDisplayMedia samples the compositor, which paces at ~60 in headless AND headful (measured on a 120Hz display). Lower it (e.g. 30) to halve encode work on battery. Raising it does nothing -- and neither does cobrowser.uncapFrameRate, which only makes pages render frames nobody consumes."
         }
       }
     }
@@ -185,6 +185,7 @@
     "build": "node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.webview.json",
+    "test": "node esbuild.test.mjs && node --test \"dist-test/*.test.js\"",
     "package": "vsce package",
     "publish:ovsx": "ovsx publish",
     "vscode:prepublish": "node esbuild.mjs --production",

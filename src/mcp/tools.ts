@@ -1,6 +1,8 @@
+import * as vscode from 'vscode';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { BrowserSession } from '../browser/BrowserSession';
+import { BrowserPanel } from '../webview/BrowserPanel';
 
 type GetSession = () => Promise<BrowserSession>;
 
@@ -38,7 +40,8 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
   server.registerTool(
     'new_page',
     {
-      description: 'Open a new tab, optionally navigating to a URL. Becomes active unless background.',
+      description:
+        "Open a new tab, optionally navigating to a URL. Becomes active unless background. Prefer navigate_page on the current tab when you are simply following a link — every new tab becomes a tab in the human's editor. Close tabs you are done with (close_page); call get_editor_layout if you are unsure how crowded their editor already is.",
       inputSchema: { url: z.string().optional(), background: z.boolean().optional() },
     },
     async ({ url, background }) => {
@@ -212,6 +215,45 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
       const s = await getSession();
       const result = await s.run(() => s.evaluateScript(fn, args ?? []));
       return asText(typeof result === 'string' ? result : JSON.stringify(result));
+    },
+  );
+
+  server.registerTool(
+    'get_editor_layout',
+    {
+      description:
+        "The human's editor layout: every editor group (pane), the tabs in each, and which tabs are cobrowser browser tabs. Call this BEFORE opening tabs if you are about to open several, and whenever the human mentions their layout being crowded. Browser tabs all share ONE dedicated pane; keep it that way — prefer navigating the current page or reusing an existing browser tab over opening new ones, and close browser tabs you no longer need (close_page) rather than leaving them stacked up.",
+      inputSchema: {},
+    },
+    async () => {
+      const panes = vscode.window.tabGroups.all.map((g) => ({
+        pane: g.viewColumn,
+        active: g.isActive,
+        tabs: g.tabs.map((t) => ({
+          label: t.label,
+          active: t.isActive,
+          kind: t.input instanceof vscode.TabInputWebview ? 'webview' : 'editor',
+        })),
+      }));
+      const s = await getSession();
+      const browserTabs = s.pageEntries().map((e) => ({
+        pageId: e.id,
+        url: e.url,
+        pane: BrowserPanel.columnOf(e.id) ?? null, // null = not the visible tab in its pane
+      }));
+      return asText(
+        JSON.stringify(
+          {
+            panes,
+            browserTabs,
+            cobrowserPane: BrowserPanel.targetColumn() ?? null,
+            note:
+              'New browser tabs open in cobrowserPane. A `pane` of null means that tab exists but is not currently the visible tab in its group.',
+          },
+          null,
+          2,
+        ),
+      );
     },
   );
 }

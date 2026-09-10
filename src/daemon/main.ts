@@ -17,14 +17,11 @@ import * as fs from 'node:fs';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { isLoopbackHost } from '../util/localhost';
+import { isLoopbackHost, isLoopbackUrl } from '../util/localhost';
 import { IDLE_EXIT_MS, type HealthResponse, type Registration } from './protocol';
-
-interface Tool {
-  name: string;
-  description?: string;
-  inputSchema: { type: 'object'; properties?: Record<string, unknown>; required?: string[] };
-}
+import { Registry, isSelf } from './registry';
+import { listWorkspacesTool, withWorkspaceArg, type Tool } from './toolSchema';
+import { callUpstream, isUnreachable } from './upstream';
 
 function arg(flag: string): string | undefined {
   const i = process.argv.indexOf(flag);
@@ -52,7 +49,9 @@ function currentToken(): string | undefined {
   }
 }
 
-const registry = new Map<string, Registration>();
+const registry = new Registry(undefined, () => {
+  toolCache = undefined; // membership changed: a new window may run a different build
+});
 /** Upstream tools are identical in every window, so fetch them once. Cleared whenever the
  *  registry changes, since a new window may be running a different build. Stored RAW: the
  *  `workspace` parameter is injected per caller, and a workspace-scoped caller never sees it. */
@@ -65,93 +64,26 @@ const log = (m: string): void => console.log(`[cobrowserd] ${m}`);
 // Registry
 // ---------------------------------------------------------------------------------------
 
-/** Drop windows whose extension host is gone. A crashed window never deregisters, and a
- *  phantom entry would otherwise sit in list_workspaces forever. */
-function prune(): void {
-  for (const [id, reg] of registry) {
-    try {
-      process.kill(reg.pid, 0); // signal 0 only tests for existence
-    } catch {
-      registry.delete(id);
-      toolCache = undefined;
-      log(`pruned dead workspace ${reg.name} (pid ${reg.pid})`);
-    }
-  }
-}
-
-/** Resolve a `workspace` argument: exact path first, then unique folder-name alias. */
-function resolve(want: string): Registration | { error: string } {
-  prune();
-  const byId = registry.get(want);
-  if (byId) return byId;
-  const matches = [...registry.values()].filter((r) => r.name.toLowerCase() === want.toLowerCase());
-  if (matches.length === 1) return matches[0];
-  const open = [...registry.values()].map((r) => `${r.name} (${r.id})`);
-  if (matches.length > 1) {
-    return { error: `"${want}" matches more than one open workspace. Use the full path: ${open.join(', ')}` };
-  }
-  return {
-    error: open.length
-      ? `Unknown workspace "${want}". Open workspaces: ${open.join(', ')}`
-      : 'No cobrowser workspaces are open. Open a folder in an editor window with the cobrowser extension active.',
-  };
-}
-
 // ---------------------------------------------------------------------------------------
 // Upstream (per-window) JSON-RPC
 // ---------------------------------------------------------------------------------------
 
-let rpcId = 0;
-
-/**
- * One JSON-RPC round trip to a window's MCP server.
- *
- * The window's transport runs with `enableJsonResponse`, so the reply is plain JSON rather
- * than an SSE stream. Stateless servers are built per POST, so a `tools/*` request can land
- * on an instance that never saw `initialize`; if the server says so, we shake hands and
- * retry once rather than failing the agent's call.
- */
-async function upstream(reg: Registration, method: string, params: unknown, retry = true): Promise<unknown> {
-  const send = async (m: string, p: unknown): Promise<Record<string, unknown>> => {
-    const res = await fetch(reg.url, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        accept: 'application/json, text/event-stream',
-        authorization: `Bearer ${reg.token}`,
-      },
-      body: JSON.stringify({ jsonrpc: '2.0', id: ++rpcId, method: m, params: p ?? {} }),
-    });
-    const text = await res.text();
-    // Tolerate an SSE-framed reply too, so this keeps working if the upstream transport is
-    // ever switched back to streaming.
-    const payload = text.startsWith('event:') || text.startsWith('data:')
-      ? (text.split('\n').filter((l) => l.startsWith('data:')).pop() ?? '').slice(5).trim()
-      : text;
-    return JSON.parse(payload) as Record<string, unknown>;
-  };
-
-  const body = await send(method, params);
-  const err = body.error as { message?: string } | undefined;
-  if (err && retry && /not initialized|initialization/i.test(err.message ?? '')) {
-    await send('initialize', {
-      protocolVersion: '2025-06-18',
-      capabilities: {},
-      clientInfo: { name: 'cobrowserd', version: VERSION },
-    });
-    return upstream(reg, method, params, false);
-  }
-  if (err) throw new Error(err.message ?? 'upstream error');
-  return body.result;
-}
 
 /** The tool surface exactly as a window publishes it. */
+let toolsInFlight: Promise<Tool[]> | undefined;
 async function rawTools(): Promise<Tool[]> {
   if (toolCache) return toolCache;
-  prune();
-  for (const reg of registry.values()) {
+  // Several clients can ask for tools/list at once; without this they each hit a window.
+  if (toolsInFlight) return toolsInFlight;
+  toolsInFlight = fetchRawTools().finally(() => (toolsInFlight = undefined));
+  return toolsInFlight;
+}
+
+async function fetchRawTools(): Promise<Tool[]> {
+  if (toolCache) return toolCache;
+  for (const reg of registry.list()) {
     try {
-      const result = (await upstream(reg, 'tools/list', {})) as { tools?: Tool[] };
+      const result = (await callUpstream(reg, 'tools/list', {}, { version: VERSION })) as { tools?: Tool[] };
       toolCache = result.tools ?? [];
       return toolCache;
     } catch (e) {
@@ -159,27 +91,6 @@ async function rawTools(): Promise<Tool[]> {
     }
   }
   return [];
-}
-
-/** Add the `workspace` selector — only for an unscoped caller, who has to name a target.
- *  A workspace-scoped session gets the plain surface, because its target is already fixed
- *  by the credential it presented. */
-function withWorkspaceArg(tools: Tool[]): Tool[] {
-  return tools.map((t) => ({
-    ...t,
-    inputSchema: {
-      ...t.inputSchema,
-      properties: {
-        workspace: {
-          type: 'string',
-          description:
-            'Which workspace to act on — its folder name, or full path when names collide. Call list_workspaces to see the options.',
-        },
-        ...(t.inputSchema?.properties ?? {}),
-      },
-      required: ['workspace', ...(t.inputSchema?.required ?? [])],
-    },
-  }));
 }
 
 /**
@@ -200,27 +111,9 @@ function authenticate(req: http.IncomingMessage): Caller | undefined {
   if (!presented) return undefined;
   const admin = currentToken();
   if (admin && presented === admin) return { kind: 'admin' };
-  prune();
-  for (const reg of registry.values()) {
-    if (reg.token === presented) return { kind: 'workspace', reg };
-  }
-  return undefined;
+  const scoped = registry.byToken(presented);
+  return scoped ? { kind: 'workspace', reg: scoped } : undefined;
 }
-
-/** Does `want` name this scoped caller's own workspace? */
-function isSelf(reg: Registration, want: string): boolean {
-  return want === reg.id || want.toLowerCase() === reg.name.toLowerCase();
-}
-
-/** The description differs by caller: a scoped session has no `workspace` argument to fill
- *  in, so telling it to pass one would just be wrong. */
-const listWorkspacesTool = (scoped: boolean): Tool => ({
-  name: 'list_workspaces',
-  description: scoped
-    ? 'Show the workspace this session is bound to. Its browser is the only one this session can drive.'
-    : 'List the open cobrowser workspaces. Every other tool needs one of these as its `workspace` argument.',
-  inputSchema: { type: 'object', properties: {} },
-});
 
 // ---------------------------------------------------------------------------------------
 // MCP endpoint
@@ -246,10 +139,9 @@ function buildServer(scope: Registration | undefined): Server {
     const args = { ...((req.params.arguments ?? {}) as Record<string, unknown>) };
 
     if (name === 'list_workspaces') {
-      prune();
-      // A scoped session is told about its own workspace only — it cannot reach any other,
+          // A scoped session is told about its own workspace only — it cannot reach any other,
       // so listing them would just be noise.
-      const list = (scope ? [scope] : [...registry.values()]).map((r) => ({ id: r.id, name: r.name }));
+      const list = (scope ? [scope] : registry.list()).map((r) => ({ id: r.id, name: r.name }));
       return { content: [{ type: 'text' as const, text: JSON.stringify(list, null, 2) }] };
     }
 
@@ -277,29 +169,28 @@ function buildServer(scope: Registration | undefined): Server {
           content: [
             {
               type: 'text' as const,
-              text: `This tool needs a "workspace" argument. ${resolveHint()}`,
+              text: `This tool needs a "workspace" argument. ${registry.hint()}`,
             },
           ],
           isError: true,
         };
       }
-      const resolved = resolve(want);
+      const resolved = registry.resolve(want);
       if ('error' in resolved) {
         return { content: [{ type: 'text' as const, text: resolved.error }], isError: true };
       }
-      target = resolved;
+      target = resolved.ok;
     }
     delete args.workspace; // the window's tools never saw this parameter
 
     try {
-      const result = await upstream(target, 'tools/call', { name, arguments: args });
+      const result = await callUpstream(target, 'tools/call', { name, arguments: args }, { version: VERSION });
       return result as { content: { type: 'text'; text: string }[] };
     } catch (e) {
       // A refused connection means the window is gone but its host pid lingers; drop it so
       // the next list_workspaces is honest.
-      if (/ECONNREFUSED|fetch failed/i.test(String(e))) {
-        registry.delete(target.id);
-        toolCache = undefined;
+      if (isUnreachable(e)) {
+        registry.remove(target.id);
       }
       return {
         content: [{ type: 'text' as const, text: `cobrowser (${target.name}): ${String(e)}` }],
@@ -309,12 +200,6 @@ function buildServer(scope: Registration | undefined): Server {
   });
 
   return server;
-}
-
-function resolveHint(): string {
-  prune();
-  const open = [...registry.values()].map((r) => r.name);
-  return open.length ? `Open workspaces: ${open.join(', ')}` : 'No cobrowser workspaces are open.';
 }
 
 // ---------------------------------------------------------------------------------------
@@ -367,7 +252,7 @@ const httpServer = http.createServer((req, res) => {
       const body: HealthResponse = {
         version: VERSION,
         pid: process.pid,
-        workspaces: (prune(), [...registry.values()].map((r) => ({ id: r.id, name: r.name }))),
+        workspaces: registry.list().map((r) => ({ id: r.id, name: r.name })),
       };
       json(res, 200, body);
       return;
@@ -375,12 +260,19 @@ const httpServer = http.createServer((req, res) => {
 
     if (req.method === 'POST' && url === '/register') {
       const reg = (await readBody(req)) as Registration;
-      if (!reg?.id || !reg.url || !reg.token) {
-        json(res, 400, { error: 'id, url and token are required' });
+      // pid is as required as the rest: without a live one, prune() cannot tell whether the
+      // window still exists and the entry would either linger forever or vanish at once.
+      if (!reg?.id || !reg.url || !reg.token || !Number.isInteger(reg.pid)) {
+        json(res, 400, { error: 'id, url, token and pid are required' });
         return;
       }
-      registry.set(reg.id, reg);
-      toolCache = undefined;
+      // Never proxy anywhere but this machine: a registration is a URL we will send a
+      // bearer token to, so it must not be able to point outward.
+      if (!isLoopbackUrl(reg.url)) {
+        json(res, 400, { error: 'url must be a loopback address' });
+        return;
+      }
+      registry.add(reg);
       lastOccupied = Date.now();
       log(`registered ${reg.name} (${reg.id}) -> ${reg.url}`);
       json(res, 200, { ok: true });
@@ -389,10 +281,7 @@ const httpServer = http.createServer((req, res) => {
 
     if (req.method === 'POST' && url === '/deregister') {
       const { id } = ((await readBody(req)) ?? {}) as { id?: string };
-      if (id && registry.delete(id)) {
-        toolCache = undefined;
-        log(`deregistered ${id}`);
-      }
+      if (id && registry.remove(id)) log(`deregistered ${id}`);
       json(res, 200, { ok: true });
       return;
     }
@@ -437,7 +326,6 @@ httpServer.on('error', (err: NodeJS.ErrnoException) => {
 httpServer.listen(PORT, '127.0.0.1', () => log(`listening on http://127.0.0.1:${PORT}/mcp (v${VERSION})`));
 
 setInterval(() => {
-  prune();
   if (registry.size > 0) lastOccupied = Date.now();
   else if (Date.now() - lastOccupied > IDLE_EXIT_MS) {
     log('no workspaces registered — exiting');
