@@ -2,9 +2,9 @@ import * as http from 'node:http';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { registerTools } from './tools';
-import { registerZenTools } from './zenTools';
+import { registerFirefoxTools } from './firefoxTools';
 import type { BrowserSession } from '../browser/BrowserSession';
-import type { ZenBridge } from '../zen/ZenBridge';
+import type { FirefoxBridge } from '../firefox/FirefoxBridge';
 import { bindPort } from '../util/ports';
 import { isLoopbackHost } from '../util/localhost';
 
@@ -18,7 +18,7 @@ export interface McpHttp {
 
 type GetSession = () => Promise<BrowserSession>;
 /** Read lazily: the bridge needs this server's port, so it is built after we start. */
-type GetZen = () => ZenBridge | undefined;
+type GetZen = () => FirefoxBridge | undefined;
 type Log = (message: string) => void;
 
 /**
@@ -83,10 +83,10 @@ export async function startMcpHttpServer(
     const body = await readJsonBody(req);
     const server = new McpServer({ name: 'cobrowser', version: '0.0.1' });
     registerTools(server, getSession);
-    // The zen_* tools only exist once a bridge is configured, so an agent in a workspace
+    // The firefox_* tools only exist once a bridge is configured, so an agent in a workspace
     // with no Zen binding never sees tools it cannot use.
     const zen = getZen();
-    if (zen) registerZenTools(server, zen);
+    if (zen) registerFirefoxTools(server, zen);
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       // Only the daemon talks to this server now, and a plain JSON reply is far simpler to

@@ -20,8 +20,8 @@ const delay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
  *
  * Mode 0600, and a file rather than argv so the token never shows up in `ps`.
  */
-export function daemonTokenPath(): string {
-  return path.join(os.homedir(), '.cobrowser', 'daemon-token');
+export function daemonTokenPath(dev = false): string {
+  return path.join(os.homedir(), '.cobrowser', dev ? 'dev-daemon-token' : 'daemon-token');
 }
 
 /** Editor-local tokens written by older builds, newest-first preference is irrelevant —
@@ -41,8 +41,8 @@ function readIfPresent(file: string): string | undefined {
   }
 }
 
-function writeToken(token: string): string {
-  const file = daemonTokenPath();
+function writeToken(token: string, dev = false): string {
+  const file = daemonTokenPath(dev);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, token, { encoding: 'utf8', mode: 0o600 });
   return token;
@@ -54,8 +54,10 @@ function writeToken(token: string): string {
  * `accepted` lets the caller say which candidate a already-running daemon authenticates, so
  * an upgrade adopts the live secret instead of inventing a new one the daemon would reject.
  */
-export function daemonToken(accepted?: (candidate: string) => boolean): string {
-  const existing = readIfPresent(daemonTokenPath());
+export function daemonToken(accepted?: (candidate: string) => boolean, dev = false): string {
+  const existing = readIfPresent(daemonTokenPath(dev));
+  // A dev daemon gets its own secret and never inherits the production one.
+  if (dev) return existing ?? writeToken(crypto.randomUUID(), true);
   if (existing && (!accepted || accepted(existing))) return existing;
 
   for (const legacy of legacyTokenPaths()) {
@@ -105,8 +107,10 @@ export async function ensureDaemon(opts: {
   version: string;
   daemonScript: string;
   log: Log;
+  /** Running from an Extension Development Host: isolate completely. */
+  dev?: boolean;
 }): Promise<boolean> {
-  const { port, version, daemonScript, log } = opts;
+  const { port, version, daemonScript, log, dev = false } = opts;
 
   // Probe with each candidate secret and keep whichever a running daemon accepts, so an
   // editor that has never met this daemon adopts its token instead of inventing one.
@@ -115,16 +119,24 @@ export async function ensureDaemon(opts: {
     if (accepted === undefined) return false; // resolved below; sync predicate can't await
     return candidate === accepted;
   };
-  for (const candidate of candidateTokens()) {
+  for (const candidate of candidateTokens(dev)) {
     if (await health(port, candidate)) {
       accepted = candidate;
       break;
     }
   }
-  const token = accepted ? daemonToken(probe) : daemonToken();
+  const token = accepted ? daemonToken(probe, dev) : daemonToken(undefined, dev);
 
   const running = await health(port, token);
   if (running?.version === version) return true;
+
+  // Never drag a shared daemon BACKWARDS. A window still running an older build would
+  // otherwise restart everyone's daemon into that older version on activation, and the two
+  // builds would take turns restarting it.
+  if (running && isOlder(version, running.version)) {
+    log(`Daemon is v${running.version}, newer than this build (v${version}) — leaving it alone.`);
+    return true;
+  }
 
   if (running) {
     log(`Daemon is v${running.version}, this build is v${version} — restarting it.`);
@@ -153,7 +165,7 @@ export async function ensureDaemon(opts: {
   // longevity is the whole reason the endpoint URL can stay fixed.
   const child = spawn(
     process.execPath,
-    [daemonScript, '--port', String(port), '--token-file', daemonTokenPath(), '--version', version],
+    [daemonScript, '--port', String(port), '--token-file', daemonTokenPath(dev), '--version', version],
     { detached: true, stdio: 'ignore', env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } },
   );
   child.unref();
@@ -173,9 +185,24 @@ export async function ensureDaemon(opts: {
 }
 
 /** Every secret we might legitimately hold: the machine-wide one plus older per-editor files. */
-function candidateTokens(): string[] {
+function candidateTokens(dev = false): string[] {
+  // A dev daemon has exactly one valid secret; it must never adopt the production token.
+  if (dev) return [readIfPresent(daemonTokenPath(true))].filter((t): t is string => !!t);
   const all = [readIfPresent(daemonTokenPath()), ...legacyTokenPaths().map(readIfPresent)];
   return [...new Set(all.filter((t): t is string => !!t))];
+}
+
+/** Is `a` an older release than `b`? Numeric, component-wise; unparseable means "not older". */
+export function isOlder(a: string, b: string): boolean {
+  const parse = (v: string) => v.split('.').map((n) => Number.parseInt(n, 10));
+  const [x, y] = [parse(a), parse(b)];
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    const l = x[i] ?? 0;
+    const r = y[i] ?? 0;
+    if (!Number.isInteger(l) || !Number.isInteger(r)) return false;
+    if (l !== r) return l < r;
+  }
+  return false;
 }
 
 async function portBusy(port: number): Promise<boolean> {
@@ -209,13 +236,13 @@ function daemonPidOnPort(port: number): number | undefined {
   }
 }
 
-export async function register(port: number, reg: Registration, log: Log): Promise<void> {
-  const ok = await post(port, daemonToken(), '/register', reg);
+export async function register(port: number, reg: Registration, log: Log, dev = false): Promise<void> {
+  const ok = await post(port, daemonToken(undefined, dev), '/register', reg);
   log(ok ? `Registered "${reg.name}" with the cobrowser daemon.` : 'Could not register with the cobrowser daemon.');
 }
 
-export async function deregister(port: number, id: string): Promise<void> {
-  await post(port, daemonToken(), '/deregister', { id });
+export async function deregister(port: number, id: string, dev = false): Promise<void> {
+  await post(port, daemonToken(undefined, dev), '/deregister', { id });
 }
 
 export { DEFAULT_DAEMON_PORT };

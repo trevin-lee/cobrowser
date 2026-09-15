@@ -92,6 +92,28 @@ It is a `window`-scoped setting, so set it per project in **Workspace settings**
 
 Use `window` when you need something a chrome-less panel cannot show: OS password prompts, or an extension's toolbar popup (pairing iCloud Passwords, for instance). Note the two modes are deliberately exclusive — the panel is a *mirror* of the same tab, so running both showed one page twice and forced the real window to the panel's viewport dimensions. In `window` mode pages also open as ordinary tabs in one window, rather than one window per page (that trick exists only to keep simultaneous screencasts alive).
 
+## Working on cobrowser while using it
+
+Press **F5** (*Run Cobrowser Extension*). That opens an Extension Development Host running
+the working tree, and it is fully isolated from your installed cobrowser:
+
+| | installed | dev host (F5) |
+|---|---|---|
+| daemon port | 39273 | **39274** |
+| daemon token | `~/.cobrowser/daemon-token` | `~/.cobrowser/dev-daemon-token` |
+| client entry | `cobrowser` | `cobrowser-dev` |
+
+So a rebuild never restarts the daemon your other windows are registered with, never rewrites
+their config entry, and never touches the repo files they use. Point an agent at
+`cobrowser-dev` to drive the build you are working on.
+
+`npm run release`, by contrast, is a *global* install: it replaces the extension in every
+window and restarts the shared daemon, which drops every other window's MCP auth until each
+reloads. Use it when you are done, not while iterating.
+
+A daemon is also never restarted into an older build, so a window still running a previous
+release cannot drag everyone backwards.
+
 ## MCP tools
 
 `list_pages`, `new_page`, `select_page`, `navigate_page`, `take_snapshot`, `take_screenshot`, `click`, `fill`, `fill_form`, `type_text`, `wait_for`, `evaluate_script`.

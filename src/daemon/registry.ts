@@ -1,3 +1,5 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type { Registration } from './protocol';
 
 /** Injectable so tests can simulate a window whose host died. */
@@ -24,12 +26,53 @@ export type Resolution = { ok: Registration } | { error: string };
  */
 export class Registry {
   private entries = new Map<string, Registration>();
+  /**
+   * Workspaces we have EVER seen, by token — survives a daemon restart.
+   *
+   * Authentication and liveness are different questions. A daemon restart empties the live
+   * registry, and if a token only authenticates against that, every client is met with a bare
+   * 401 until its window happens to reload. Clients read 401 as "this server wants OAuth" and
+   * fall into Dynamic Client Registration, so a routine upgrade looked like an auth system
+   * failure. Remembering the token lets us answer "who are you" even while the window is
+   * down, and say something useful instead.
+   */
+  private known = new Map<string, { id: string; name: string }>();
 
   constructor(
     private readonly isAlive: IsAlive = pidAlive,
     /** Called whenever membership changes, so cached tool schemas can be dropped. */
     private readonly onChange: () => void = () => undefined,
-  ) {}
+    /** Where to persist known workspaces. Omitted in tests. */
+    private readonly store?: string,
+  ) {
+    if (store) this.load();
+  }
+
+  private load(): void {
+    try {
+      const raw = JSON.parse(fs.readFileSync(this.store!, 'utf8')) as Record<string, { id: string; name: string }>;
+      for (const [token, who] of Object.entries(raw)) this.known.set(token, who);
+    } catch {
+      /* first run, or unreadable — we simply know nobody yet */
+    }
+  }
+
+  private persist(): void {
+    if (!this.store) return;
+    try {
+      fs.mkdirSync(path.dirname(this.store), { recursive: true });
+      const obj = Object.fromEntries(this.known);
+      // 0600: this file maps tokens to workspaces, same sensitivity as the token itself.
+      fs.writeFileSync(this.store, JSON.stringify(obj), { mode: 0o600 });
+    } catch {
+      /* best effort: losing persistence costs a 401 after restart, not correctness */
+    }
+  }
+
+  /** A workspace we have seen before, even if its window is not running right now. */
+  knownByToken(token: string): { id: string; name: string } | undefined {
+    return token ? this.known.get(token) : undefined;
+  }
 
   get size(): number {
     return this.entries.size;
@@ -37,6 +80,10 @@ export class Registry {
 
   add(reg: Registration): void {
     this.entries.set(reg.id, reg);
+    if (!this.known.has(reg.token)) {
+      this.known.set(reg.token, { id: reg.id, name: reg.name });
+      this.persist();
+    }
     this.onChange();
   }
 

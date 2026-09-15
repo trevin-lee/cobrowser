@@ -14,6 +14,7 @@
  */
 import * as http from 'node:http';
 import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
@@ -49,9 +50,14 @@ function currentToken(): string | undefined {
   }
 }
 
-const registry = new Registry(undefined, () => {
-  toolCache = undefined; // membership changed: a new window may run a different build
-});
+const registry = new Registry(
+  undefined,
+  () => {
+    toolCache = undefined; // membership changed: a new window may run a different build
+  },
+  // Beside the daemon token, so known workspaces survive a restart of this process.
+  path.join(path.dirname(TOKEN_FILE), 'known-workspaces.json'),
+);
 /** Upstream tools are identical in every window, so fetch them once. Cleared whenever the
  *  registry changes, since a new window may be running a different build. Stored RAW: the
  *  `workspace` parameter is injected per caller, and a workspace-scoped caller never sees it. */
@@ -102,7 +108,11 @@ async function fetchRawTools(): Promise<Tool[]> {
  * that folder's browser. The restriction is enforced by the credential, not by trusting what
  * the caller asks for.
  */
-type Caller = { kind: 'admin' } | { kind: 'workspace'; reg: Registration };
+type Caller =
+  | { kind: 'admin' }
+  | { kind: 'workspace'; reg: Registration }
+  /** Token we recognise, but its editor window is not running right now. */
+  | { kind: 'offline'; id: string; name: string };
 
 function authenticate(req: http.IncomingMessage): Caller | undefined {
   const header = req.headers['authorization'];
@@ -112,12 +122,33 @@ function authenticate(req: http.IncomingMessage): Caller | undefined {
   const admin = currentToken();
   if (admin && presented === admin) return { kind: 'admin' };
   const scoped = registry.byToken(presented);
-  return scoped ? { kind: 'workspace', reg: scoped } : undefined;
+  if (scoped) return { kind: 'workspace', reg: scoped };
+  // Recognised, but its window is down. Answering 401 here is what made a routine daemon
+  // restart look like an auth failure: clients treat 401 as "negotiate OAuth" and try
+  // Dynamic Client Registration. Let them connect and explain the real problem instead.
+  const known = registry.knownByToken(presented);
+  return known ? { kind: 'offline', id: known.id, name: known.name } : undefined;
 }
 
 // ---------------------------------------------------------------------------------------
 // MCP endpoint
 // ---------------------------------------------------------------------------------------
+
+/**
+ * A server for a workspace whose window is not running. It connects and lists tools so the
+ * client stays healthy, and every call explains what to do — far better than a 401, which
+ * clients misread as an OAuth challenge.
+ */
+function buildOfflineServer(name: string): Server {
+  const server = new Server({ name: 'cobrowser', version: VERSION }, { capabilities: { tools: {} } });
+  const explain = `The editor window for the "${name}" workspace is not running, so its browser cannot be reached. Open that folder in your editor (or reload its window) and try again.`;
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [listWorkspacesTool(true)] }));
+  server.setRequestHandler(CallToolRequestSchema, async () => ({
+    content: [{ type: 'text' as const, text: explain }],
+    isError: true,
+  }));
+  return server;
+}
 
 /** `scope` is set when the caller presented a workspace's own token: every call is then
  *  pinned to that workspace and no argument can widen it. */
@@ -298,7 +329,10 @@ const httpServer = http.createServer((req, res) => {
       // stateless mode the two are 1:1 and correlate replies by JSON-RPC id — one shared
       // instance would misroute concurrent requests from several clients.
       const body = await readBody(req);
-      const server = buildServer(caller.kind === 'workspace' ? caller.reg : undefined);
+      const server =
+        caller.kind === 'offline'
+          ? buildOfflineServer(caller.name)
+          : buildServer(caller.kind === 'workspace' ? caller.reg : undefined);
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
       res.on('close', () => {
         void transport.close();

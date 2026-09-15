@@ -727,13 +727,50 @@ export class BrowserSession {
     try {
       await el.scrollIntoView().catch(() => undefined);
       await this.emitHighlight(el); // measure after scroll, so the box is on-screen
-      // Trusted CDP input click (Input.dispatchMouseEvent) — frameworks like React treat
-      // it as real input, unlike element.click() called from evaluate_script.
-      await el.click(opts.dblClick ? { clickCount: 2 } : {});
+      // Trusted CDP input (Input.dispatchMouseEvent) — frameworks like React treat it as
+      // real input, unlike element.click() from evaluate_script. Approach along a path
+      // first: puppeteer's own click teleports to the centre and presses with no dwell,
+      // which skips every hover/mouseover the page expects (menus that open on hover, for
+      // one) and is a shape no hand produces.
+      await this.moveMouseTo(el).catch(() => undefined);
+      await el.click(opts.dblClick ? { clickCount: 2 } : { delay: 40 + Math.random() * 70 });
     } finally {
       await el.dispose();
     }
   }
+
+  /**
+   * Walk the cursor to an element instead of teleporting onto it.
+   *
+   * Two things this buys. Pages that reveal UI on hover (dropdowns, toolbars, drag handles)
+   * get the mouseover/mousemove stream they are waiting for, so targets that simply did not
+   * respond to a teleported click now work. And the motion looks like a hand rather than an
+   * instantaneous jump, which is the shape behavioural checks actually look for.
+   *
+   * Eased and slightly jittered: a perfectly straight constant-velocity line is its own tell.
+   */
+  private async moveMouseTo(el: ElementHandle<Element>, steps = 14): Promise<void> {
+    const box = await el.boundingBox();
+    if (!box) return;
+    // Aim off-centre: every click landing on the exact centroid is not human either.
+    const target = {
+      x: box.x + box.width * (0.35 + Math.random() * 0.3),
+      y: box.y + box.height * (0.35 + Math.random() * 0.3),
+    };
+    const from = this.cursor ?? { x: target.x - 220, y: target.y - 160 };
+    const mouse = this.active.mouse;
+    for (let i = 1; i <= steps; i++) {
+      const t = i / steps;
+      // ease-in-out: slow to start, quick through the middle, settling at the end.
+      const e = t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2;
+      const drift = i === steps ? 0 : (Math.random() - 0.5) * 3; // never miss the target
+      await mouse.move(from.x + (target.x - from.x) * e + drift, from.y + (target.y - from.y) * e + drift);
+    }
+    this.cursor = target;
+  }
+
+  /** Where the cursor was left, so the next move starts from there rather than nowhere. */
+  private cursor: { x: number; y: number } | undefined;
 
   async fill(opts: { uid?: string; selector?: string; value: string }): Promise<void> {
     const el = await this.resolveTarget(opts.uid, opts.selector);

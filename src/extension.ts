@@ -15,10 +15,11 @@ import { BrowserPanel } from './webview/BrowserPanel';
 import { SessionTreeProvider } from './webview/SessionTreeProvider';
 import { writeClientConfigs } from './clients/writeClientConfigs';
 import { daemonToken, deregister, ensureDaemon, register } from './daemon/client';
-import { DEFAULT_DAEMON_PORT } from './daemon/protocol';
+import { DEFAULT_DAEMON_PORT, DEV_DAEMON_PORT } from './daemon/protocol';
 import { CaptureHub } from './video/CaptureHub';
-import { ZenBridge } from './zen/ZenBridge';
-import { registerEndpoint } from './zen/managedManifest';
+import { FirefoxBridge } from './firefox/FirefoxBridge';
+import { registerEndpoint } from './firefox/managedManifest';
+import { listFirefoxContainers } from './firefox/containers';
 
 const PID_KEY = 'cobrowser.browserPid';
 const BUILD_ID_KEY = 'cobrowser.chromeBuildId';
@@ -44,6 +45,13 @@ const WS_KEY = 'cobrowser.wsEndpoint';
 // exit disables Chrome's restore) — this is the fallback that actually brings the tabs
 // back, in the split layout they were arranged in.
 const TABS_KEY = 'cobrowser.openTabs';
+// Which Firefox container THIS workspace may drive. Kept in workspaceState rather than the
+// setting so the binding is per-workspace WITHOUT a .vscode/settings.json in the repo; the
+// setting still works and acts as the fallback.
+const FIREFOX_CONTAINER_KEY = 'cobrowser.firefoxContainerBinding';
+/** Pre-rename key. Read (and migrated forward) so a binding made before the Zen->Firefox
+ *  rename is not silently lost, which would present as "I bound it and nothing happened". */
+const LEGACY_CONTAINER_KEY = 'cobrowser.zenContainerBinding';
 interface SavedTab {
   url: string;
   col?: number;
@@ -52,11 +60,11 @@ interface SavedTab {
 let session: BrowserSession | undefined;
 let sessionPromise: Promise<BrowserSession> | undefined;
 let mcp: McpHttp | undefined;
-let zenBridge: ZenBridge | undefined;
+let firefoxBridge: FirefoxBridge | undefined;
 let output: vscode.OutputChannel;
 let extensionContext: vscode.ExtensionContext | undefined;
 /** Set once this window has registered with the daemon, so deactivate() can withdraw it. */
-let registeredWith: { port: number; id: string } | undefined;
+let registeredWith: { port: number; id: string; dev: boolean } | undefined;
 
 /**
  * Where the human watches the browser.
@@ -78,6 +86,28 @@ function displayMode(cfg: vscode.WorkspaceConfiguration): DisplayMode {
   const legacy = cfg.inspect<boolean>('headless');
   const set = legacy?.workspaceFolderValue ?? legacy?.workspaceValue ?? legacy?.globalValue;
   return set === false ? 'window' : 'panel';
+}
+
+/** The container this workspace may drive: the command-set binding first, then the setting,
+ *  then the pre-rename setting. Three sources so the binding can be per-workspace without
+ *  writing a file into the repo, and so an existing zenContainer keeps working. */
+function firefoxContainerFor(
+  context: vscode.ExtensionContext,
+  cfg: vscode.WorkspaceConfiguration,
+): string {
+  const bound = context.workspaceState.get<string>(FIREFOX_CONTAINER_KEY)?.trim();
+  if (bound) return bound;
+  // Carry a pre-rename binding forward once, so it survives this upgrade rather than
+  // requiring the user to re-run the bind command for no visible reason.
+  const legacy = context.workspaceState.get<string>(LEGACY_CONTAINER_KEY)?.trim();
+  if (legacy) {
+    void context.workspaceState.update(FIREFOX_CONTAINER_KEY, legacy);
+    void context.workspaceState.update(LEGACY_CONTAINER_KEY, undefined);
+    return legacy;
+  }
+  return (
+    cfg.get<string>('firefoxContainer', '').trim() || cfg.get<string>('zenContainer', '').trim()
+  );
 }
 
 /** The running build's version, so the daemon can be restarted when it is stale. */
@@ -105,7 +135,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // `cobrowser.port` is the DAEMON's port — the one stable URL every client is configured
   // with. This window's own server is an internal detail the daemon proxies to, so it takes
   // any free port (0) and never needs to be stable.
-  const daemonPort = cfg.get<number>('port', 0) || DEFAULT_DAEMON_PORT;
+  // An Extension Development Host (F5) is a DIFFERENT cobrowser: its own daemon, port,
+  // token and client-config entry. Sharing any of those means every rebuild restarts the
+  // daemon the user's real windows are registered with, which knocks their agents offline
+  // mid-task — the whole reason iterating on this was disruptive.
+  const dev = context.extensionMode === vscode.ExtensionMode.Development;
+  const daemonPort = dev ? DEV_DAEMON_PORT : cfg.get<number>('port', 0) || DEFAULT_DAEMON_PORT;
+  if (dev) log(`Development host: using the dev daemon on port ${daemonPort}, isolated from your installed cobrowser.`);
   const preferredPort = 0;
   // Hand bindPort our previous host's pid so it can reclaim the port from our OWN stale
   // predecessor only — never from another live window. Then record ours for next time.
@@ -295,20 +331,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   // In-process MCP server (per-request stateless transport).
-  mcp = await startMcpHttpServer(token, preferredPort, predecessorPid, getSession, () => zenBridge, log);
+  mcp = await startMcpHttpServer(token, preferredPort, predecessorPid, getSession, () => firefoxBridge, log);
 
   // Zen bridge: the human's OWN browser, reached through the Cobrowser Bridge extension,
   // scoped to the single container this workspace is bound to. Only stood up when a
-  // container is configured — otherwise the zen_* tools stay hidden entirely.
-  const zenContainer = cfg.get<string>('zenContainer', '').trim();
+  // container is configured — otherwise the firefox_* tools stay hidden entirely.
+  const zenContainer = firefoxContainerFor(context, cfg);
   if (zenContainer) {
     const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? profileDir;
-    zenBridge = new ZenBridge(token, zenContainer, workspacePath, log);
-    zenBridge.attach(mcp.httpServer, mcp.port);
-    log(`Zen bridge listening at ${zenBridge.url().replace(/token=.*/, 'token=…')} (container "${zenContainer}").`);
+    firefoxBridge = new FirefoxBridge(token, zenContainer, workspacePath, log);
+    firefoxBridge.attach(mcp.httpServer, mcp.port);
+    log(`Zen bridge listening at ${firefoxBridge.url().replace(/token=.*/, 'token=…')} (container "${zenContainer}").`);
     // Hand the endpoint to the browser extension through Firefox's managed-storage
     // manifest, so installing the extension is the only manual step.
-    registerEndpoint(workspacePath, zenBridge.url(), log);
+    registerEndpoint(workspacePath, firefoxBridge.url(), log);
   }
 
   // Hardware-video pipeline (experimental, cobrowser.videoPipeline): a hidden in-browser
@@ -329,9 +365,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // pipelines doesn't need a window reload (the setting is read at activation only).
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration('cobrowser.zenContainer')) {
-        const next = vscode.workspace.getConfiguration('cobrowser').get<string>('zenContainer', '').trim();
-        if (zenBridge && next) zenBridge.setContainer(next);
+      if (e.affectsConfiguration('cobrowser.firefoxContainer') || e.affectsConfiguration('cobrowser.zenContainer')) {
+        const next = firefoxContainerFor(context, vscode.workspace.getConfiguration('cobrowser'));
+        if (firefoxBridge && next) firefoxBridge.setContainer(next);
         else
           void vscode.window.showInformationMessage(
             'Cobrowser: reload the window to finish changing the Zen container binding.',
@@ -351,7 +387,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
   const hubRef = captureHub;
   context.subscriptions.push({ dispose: () => hubRef.dispose() });
-  context.subscriptions.push({ dispose: () => zenBridge?.dispose() });
+  context.subscriptions.push({ dispose: () => firefoxBridge?.dispose() });
 
   // B2: VS Code's MCP provider API does not exist in Cursor — feature-detect so
   // activate() doesn't throw there; the file-based writers below cover Cursor/Claude Code.
@@ -389,22 +425,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // and proxies each call to whichever window owns the named workspace.
   const daemonScript = path.join(context.extensionUri.fsPath, 'dist', 'daemon.js');
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-  if (await ensureDaemon({ port: daemonPort, version: extensionVersion(context), daemonScript, log })) {
+  if (await ensureDaemon({ port: daemonPort, version: extensionVersion(context), daemonScript, log, dev })) {
     if (workspaceFolder) {
       const id = workspaceFolder.uri.fsPath;
       await register(
         daemonPort,
         { id, name: path.basename(id), url: `http://127.0.0.1:${mcp.port}/mcp`, token, pid: process.pid },
         log,
+        dev,
       );
       // Hand the port + id to deactivate(), which must unregister before the window goes.
-      registeredWith = { port: daemonPort, id };
-      context.subscriptions.push({ dispose: () => void deregister(daemonPort, id) });
+      registeredWith = { port: daemonPort, id, dev };
+      context.subscriptions.push({ dispose: () => void deregister(daemonPort, id, dev) });
     } else {
       log('No workspace folder open — this window has no browser to offer the daemon.');
     }
     // Cursor + Claude Code: ONE entry, pointing at the daemon.
-    await writeClientConfigs(daemonPort, token, log);
+    await writeClientConfigs(daemonPort, token, log, dev);
   }
 
   context.subscriptions.push(
@@ -423,8 +460,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const s = await getSession();
       await s.newPage('about:blank');
     }),
-    vscode.commands.registerCommand('cobrowser.copyZenBridgeUrl', async () => {
-      if (!zenBridge) {
+    vscode.commands.registerCommand('cobrowser.copyFirefoxBridgeUrl', async () => {
+      if (!firefoxBridge) {
         const pick = await vscode.window.showWarningMessage(
           'Cobrowser: set "cobrowser.zenContainer" for this workspace first — it names the one Zen container this workspace may drive.',
           'Open Settings',
@@ -434,11 +471,38 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }
         return;
       }
-      await vscode.env.clipboard.writeText(zenBridge.url());
+      await vscode.env.clipboard.writeText(firefoxBridge.url());
       void vscode.window.showInformationMessage(
         'Cobrowser: bridge URL copied. This workspace is normally registered with the Zen extension ' +
           'automatically — only paste it into the extension (toolbar button → Endpoints) if that did not work.',
       );
+    }),
+    vscode.commands.registerCommand('cobrowser.bindFirefoxContainer', async () => {
+      // Per-workspace, stored in workspaceState: the binding decides what an agent may touch
+      // in the human's real browser, and it should not require a file in their repo.
+      const containers = listFirefoxContainers();
+      const current = context.workspaceState.get<string>(FIREFOX_CONTAINER_KEY)?.trim() ?? '';
+      const items: vscode.QuickPickItem[] = containers.map((c) => ({
+        label: c.name,
+        description: c.name === current ? 'currently bound' : undefined,
+        detail: `container ${c.userContextId} in profile ${c.profile}`,
+      }));
+      items.push({ label: '$(circle-slash) Unbind', detail: 'Hide the firefox_* tools in this workspace' });
+      const picked = await vscode.window.showQuickPick(items, {
+        title: 'Bind this workspace to one Zen container',
+        placeHolder: containers.length
+          ? 'The agent will be able to drive ONLY this container'
+          : 'No containers found — create one in Zen first, then run this again',
+      });
+      if (!picked) return;
+      const next = picked.label.includes('Unbind') ? '' : picked.label;
+      await context.workspaceState.update(FIREFOX_CONTAINER_KEY, next);
+      await vscode.window.showInformationMessage(
+        next
+          ? `Cobrowser: this workspace is bound to the "${next}" Zen container. Reload the window to connect the bridge.`
+          : 'Cobrowser: Zen container unbound for this workspace.',
+      );
+      log(next ? `Zen bridge: bound to container "${next}".` : 'Zen bridge: unbound.');
     }),
     vscode.commands.registerCommand('cobrowser.restartBrowser', async () => {
       await disposeSession(context);
@@ -464,7 +528,7 @@ export async function deactivate(): Promise<void> {
   // Withdraw from the daemon BEFORE the server closes, so no agent can be routed at a
   // window that is already tearing down.
   if (registeredWith) {
-    await deregister(registeredWith.port, registeredWith.id);
+    await deregister(registeredWith.port, registeredWith.id, registeredWith.dev);
     registeredWith = undefined;
   }
   await mcp?.close();

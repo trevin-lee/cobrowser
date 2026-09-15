@@ -2,7 +2,7 @@ import type * as http from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { claimUpgradePath } from '../util/upgradeRouter';
 
-export interface ZenContainer {
+export interface FirefoxContainer {
   name: string;
   cookieStoreId: string;
   color: string | null;
@@ -27,10 +27,10 @@ const CALL_TIMEOUT_MS = 35000;
  * Only one browser connection is held at a time: a second one replaces the first, which is
  * what you want when Zen restarts and the old socket hasn't timed out yet.
  */
-export class ZenBridge {
+export class FirefoxBridge {
   private wss: WebSocketServer | undefined;
   private ws: WebSocket | undefined;
-  private container: ZenContainer | undefined;
+  private container: FirefoxContainer | undefined;
   private lastError: string | undefined;
   private port = 0;
   private nextId = 1;
@@ -65,7 +65,7 @@ export class ZenBridge {
     return this.ws?.readyState === WebSocket.OPEN && this.container !== undefined;
   }
 
-  get boundContainer(): ZenContainer | undefined {
+  get boundContainer(): FirefoxContainer | undefined {
     return this.container;
   }
 
@@ -90,8 +90,8 @@ export class ZenBridge {
   async call<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
     if (this.ws?.readyState !== WebSocket.OPEN) {
       throw new Error(
-        'No Zen browser connected. Install the Cobrowser Bridge extension in Zen and add this ' +
-          "workspace's endpoint (command: Cobrowser: Copy Zen Bridge URL).",
+        'No Firefox browser connected. Install the Cobrowser Bridge extension and add this ' +
+          "workspace's endpoint (command: Cobrowser: Copy Firefox Bridge URL).",
       );
     }
     if (!this.container && method !== 'listContainers') {
@@ -175,7 +175,7 @@ export class ZenBridge {
 
   private handle(msg: Record<string, unknown>): void {
     if (msg.type === 'ready') {
-      this.container = msg.container as ZenContainer;
+      this.container = msg.container as FirefoxContainer;
       this.lastError = undefined;
       this.log(`Zen bridge: bound to container "${this.container.name}" (${this.container.cookieStoreId}).`);
       this.notify();

@@ -121,3 +121,34 @@ test('hint names open workspaces, or says none are open', () => {
   r.add(reg('alpha'));
   assert.match(r.hint(), /alpha/);
 });
+
+test('a token stays recognised after the window goes away — no bare 401 on restart', () => {
+  // The regression: workspace tokens authenticated only against LIVE registrations, so a
+  // daemon restart met every client with 401. Clients read that as an OAuth challenge and
+  // attempted Dynamic Client Registration, making an upgrade look like an auth outage.
+  const r = new Registry(alive());
+  r.add(reg('alpha'));
+  assert.equal(r.byToken('tok-alpha')?.name, 'alpha');
+
+  r.remove('/Users/dev/alpha'); // window closed / daemon restarted
+  assert.equal(r.byToken('tok-alpha'), undefined, 'no longer LIVE');
+  assert.deepEqual(r.knownByToken('tok-alpha'), { id: '/Users/dev/alpha', name: 'alpha' });
+});
+
+test('an unknown token is still rejected outright', () => {
+  const r = new Registry(alive());
+  r.add(reg('alpha'));
+  assert.equal(r.knownByToken('tok-nope'), undefined);
+  assert.equal(r.knownByToken(''), undefined);
+});
+
+test('known workspaces survive a new Registry over the same store', () => {
+  const store = `${process.env.TMPDIR ?? '/tmp'}/cobrowser-known-${process.pid}.json`;
+  const first = new Registry(alive(), () => undefined, store);
+  first.add(reg('alpha'));
+
+  const second = new Registry(alive(), () => undefined, store);
+  assert.deepEqual(second.knownByToken('tok-alpha'), { id: '/Users/dev/alpha', name: 'alpha' });
+  assert.equal(second.byToken('tok-alpha'), undefined, 'restored as KNOWN, not as live');
+  require('node:fs').rmSync(store, { force: true });
+});

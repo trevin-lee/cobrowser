@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import * as http from 'node:http';
 import { callUpstream, parseRpcBody, needsHandshake, isUnreachable } from '../src/daemon/upstream';
 import { isLoopbackUrl } from '../src/util/localhost';
+import { isOlder } from '../src/daemon/client';
 import type { Registration } from '../src/daemon/protocol';
 
 /** Spin up a throwaway MCP-ish server; returns its Registration and a stop(). */
@@ -129,4 +130,16 @@ test('registrations may only point at this machine', () => {
   assert.ok(!isLoopbackUrl('http://169.254.169.254/latest/meta-data'), 'cloud metadata must be refused');
   assert.ok(!isLoopbackUrl('file:///etc/passwd'));
   assert.ok(!isLoopbackUrl('not a url'));
+});
+
+test('a daemon is never restarted into an OLDER build', () => {
+  // A window still running an older release must not drag a shared daemon backwards:
+  // otherwise two builds take turns restarting it, and every restart knocks the other
+  // windows' agents offline.
+  assert.ok(isOlder('0.5.20', '0.5.23'), 'older build sees a newer daemon');
+  assert.ok(!isOlder('0.5.23', '0.5.20'), 'newer build may replace an older daemon');
+  assert.ok(!isOlder('0.5.23', '0.5.23'), 'same version is not older');
+  assert.ok(isOlder('0.9.0', '1.0.0'), 'major bumps compare numerically, not lexically');
+  assert.ok(!isOlder('0.10.0', '0.9.0'), '10 is newer than 9 — string compare would get this wrong');
+  assert.ok(!isOlder('weird', '0.5.0'), 'unparseable versions never count as older');
 });

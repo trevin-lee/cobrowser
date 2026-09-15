@@ -2,7 +2,7 @@
   "name": "cobrowser",
   "displayName": "Cobrowser",
   "description": "An embedded, agent-controllable browser inside your editor — co-driven by you (webview) and your AI agent (MCP).",
-  "version": "0.5.20",
+  "version": "0.5.25",
   "publisher": "trevin-lee",
   "private": true,
   "license": "MIT",
@@ -53,8 +53,13 @@
         "title": "Cobrowser: Restart Browser"
       },
       {
-        "command": "cobrowser.copyZenBridgeUrl",
-        "title": "Cobrowser: Copy Zen Bridge URL"
+        "command": "cobrowser.copyFirefoxBridgeUrl",
+        "title": "Cobrowser: Copy Firefox Bridge URL"
+      },
+      {
+        "command": "cobrowser.bindFirefoxContainer",
+        "title": "Bind Firefox Container to This Workspace",
+        "category": "Cobrowser"
       }
     ],
     "menus": {
@@ -161,10 +166,16 @@
           "default": true,
           "description": "Install a virtual WebAuthn authenticator so passkey/WebAuthn prompts fail fast and sites fall back to a password. Headless Chromium can't show the OS fingerprint prompt, so a passkey ceremony would otherwise hang forever. Turn OFF only when running headful (cobrowser.headless: false) to sign in with the real OS prompt."
         },
+        "cobrowser.firefoxContainer": {
+          "type": "string",
+          "default": "",
+          "description": "Fallback binding for the Firefox bridge. PREFER the command \"Cobrowser: Bind Firefox Container to This Workspace\", which stores the choice per workspace without writing a .vscode/settings.json into your repo. Works with Firefox and its forks (Zen, LibreWolf, Floorp) — anything with containers and managed storage."
+        },
         "cobrowser.zenContainer": {
           "type": "string",
           "default": "",
-          "description": "Bind this workspace to ONE container in your own Zen browser, by name (e.g. \"School\"). Set it and the zen_* MCP tools appear, letting the agent see and drive the tabs you already have open in that container — and nothing outside it. Empty (default) = no Zen bridge, no zen_ tools. Requires the Cobrowser Bridge extension installed in Zen; run \"Cobrowser: Copy Zen Bridge URL\" and paste the result into its options page. NOTE: the scoping is enforced by the bridge, not by Firefox — the extension can technically reach every container, and chooses not to."
+          "description": "Deprecated: renamed to cobrowser.firefoxContainer. Still honoured as a fallback so existing configurations keep working.",
+          "deprecationMessage": "Renamed to cobrowser.firefoxContainer — the bridge is a plain Firefox WebExtension, not Zen-specific. Still honoured as a fallback."
         },
         "cobrowser.applePasswords": {
           "type": "boolean",
@@ -187,6 +198,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.webview.json",
     "test": "node esbuild.test.mjs && node --test \"dist-test/*.test.js\"",
     "package": "vsce package",
+    "sign:firefox": "node scripts/sign-firefox-extension.mjs",
     "publish:ovsx": "ovsx publish",
     "vscode:prepublish": "node esbuild.mjs --production",
     "release": "node scripts/release.mjs"

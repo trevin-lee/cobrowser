@@ -2,8 +2,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-/** Must match browser_specific_settings.gecko.id in zen-extension/manifest.json. */
-export const BRIDGE_EXTENSION_ID = 'cobrowser-bridge@trevinlee.com';
+/** Must match browser_specific_settings.gecko.id in firefox-extension/manifest.json. */
+export const BRIDGE_EXTENSION_ID = 'cobrowser-bridge@trevin.dev';
 
 interface ManagedManifest {
   name: string;

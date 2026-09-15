@@ -1,11 +1,11 @@
 {
   "manifest_version": 2,
   "name": "Cobrowser Bridge",
-  "version": "0.1.0",
-  "description": "Lets Cobrowser (in your editor) see and drive the tabs of ONE Zen container.",
+  "version": "0.4.0",
+  "description": "Lets Cobrowser (in your editor) see and drive the tabs of ONE Firefox container.",
   "browser_specific_settings": {
     "gecko": {
-      "id": "cobrowser-bridge@trevinlee.com",
+      "id": "cobrowser-bridge@trevin.dev",
       "strict_min_version": "115.0"
     }
   },
@@ -17,7 +17,9 @@
     "<all_urls>"
   ],
   "background": {
-    "scripts": ["background.js"],
+    "scripts": [
+      "background.js"
+    ],
     "persistent": true
   },
   "options_ui": {

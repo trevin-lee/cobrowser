@@ -37,7 +37,11 @@ export async function writeClientConfigs(
   /** This workspace's token — the credential that scopes a Claude session to this folder. */
   workspaceToken: string,
   log: Log,
+  /** Development host: register under a separate name so it cannot shadow the installed
+   *  extension's entry, and the user can point an agent at either deliberately. */
+  dev = false,
 ): Promise<void> {
+  const entry = dev ? 'cobrowser-dev' : 'cobrowser';
   const url = `http://127.0.0.1:${daemonPort}/mcp`;
   const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 
@@ -49,11 +53,11 @@ export async function writeClientConfigs(
         const projects = (json.projects ??= {}) as Record<string, Record<string, unknown>>;
         const project = (projects[root] ??= {});
         const servers = (project.mcpServers ??= {}) as Record<string, unknown>;
-        servers.cobrowser = { type: 'http', url, headers: { Authorization: `Bearer ${workspaceToken}` } };
+        servers[entry] = { type: 'http', url, headers: { Authorization: `Bearer ${workspaceToken}` } };
         // A user-scope entry would ALSO apply here, giving the session a second, unscoped
         // cobrowser server that could reach every workspace. Remove it.
         const userScope = json.mcpServers as Record<string, unknown> | undefined;
-        if (userScope && 'cobrowser' in userScope) delete userScope.cobrowser;
+        if (!dev && userScope && 'cobrowser' in userScope) delete userScope.cobrowser;
         return json;
       },
       log,
@@ -67,10 +71,14 @@ export async function writeClientConfigs(
       const servers = (json.mcpServers ??= {}) as Record<string, unknown>;
       // Migration: `cobrowser-<folder>` entries each pointed at a window-lifetime port that
       // is now dead. The daemon replaces all of them.
-      for (const key of Object.keys(servers)) {
-        if (key.startsWith('cobrowser-')) delete servers[key];
+      // Only the production entry prunes the old per-workspace names; a dev run must not
+      // touch the installed extension's entry at all.
+      if (!dev) {
+        for (const key of Object.keys(servers)) {
+          if (key.startsWith('cobrowser-') && key !== 'cobrowser-dev') delete servers[key];
+        }
       }
-      servers.cobrowser = {
+      servers[entry] = {
         type: 'http',
         url,
         headers: { Authorization: `Bearer ${daemonToken()}` },
@@ -81,7 +89,7 @@ export async function writeClientConfigs(
   );
 
   // --- Clean up what older versions left in the repo ------------------------------------
-  await removeRepoConfigs(log);
+  if (!dev) await removeRepoConfigs(log);
 
   log(
     root
