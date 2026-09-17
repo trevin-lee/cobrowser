@@ -1,14 +1,9 @@
 import * as fs from 'node:fs';
-import {
-  install,
-  computeExecutablePath,
-  resolveBuildId,
-  detectBrowserPlatform,
-  Browser,
-} from '@puppeteer/browsers';
-import { findSystemChrome } from './launchFlags';
+import { computeExecutablePath, Browser } from '@puppeteer/browsers';
+import { findSystemChrome, INSTALL_CHROMIUM_HINT } from './launchFlags';
 
-/** Persists the resolved Chrome-for-Testing buildId (backed by VS Code globalState). */
+/** Persists a previously-downloaded Chrome-for-Testing buildId, so an existing install
+ *  stays usable as a fallback. Nothing writes it any more. */
 export interface ChromeBuildStore {
   get(): string | undefined;
   set(buildId: string): void | PromiseLike<void>;
@@ -25,63 +20,53 @@ export interface EnsureChromeOptions {
 }
 
 /**
- * Resolve a Chrome/Chromium executable, in precedence order:
- *   1. `override` (cobrowser.chromePath) — for offline / corp / custom binaries.
- *   2. a dedicated Chrome-for-Testing in `cacheDir` — downloaded once, then cached +
- *      pinned by buildId (deterministic; independent of the user's daily Chrome).
- *   3. the user's system Chrome — last-resort fallback if the download fails.
- * Throws only if all three are unavailable.
+ * Resolve a Chromium executable, in precedence order:
+ *   1. `override` (cobrowser.chromePath) — any build the user prefers.
+ *   2. an installed ungoogled Chromium.
+ *   3. a previously-downloaded Chrome for Testing, if one is still on disk.
+ *
+ * There is no automatic download. @puppeteer/browsers can fetch Browser.CHROMIUM, but that
+ * pulls Google's Chromium *snapshots*, which are built without proprietary codecs — H.264
+ * and AAC would silently stop working. Ungoogled's builds do carry them (measured), and they
+ * are distributed outside that tooling, so installing is left to the user with a one-line
+ * hint rather than fetching a binary that would quietly be worse.
  */
 export async function ensureChromeExecutable(opts: EnsureChromeOptions): Promise<string> {
-  const { cacheDir, override, store, onProgress, log } = opts;
+  const { cacheDir, override, store, log } = opts;
 
   // 1. explicit override
   if (override) {
     if (fs.existsSync(override)) {
-      log(`Using configured Chrome: ${override}`);
+      log(`Using configured Chromium: ${override}`);
       return override;
     }
     log(`Configured cobrowser.chromePath does not exist: ${override} — ignoring.`);
   }
 
-  // 2. dedicated Chrome-for-Testing (download-on-first-run, then cached)
-  try {
-    const platform = detectBrowserPlatform();
-    if (!platform) throw new Error('could not detect browser platform');
-
-    // Reuse a previously-installed build if its binary is still present.
-    const cachedBuildId = store.get();
-    if (cachedBuildId) {
-      const cachedPath = computeExecutablePath({ browser: Browser.CHROME, buildId: cachedBuildId, cacheDir });
-      if (fs.existsSync(cachedPath)) {
-        log(`Using cached Chrome for Testing ${cachedBuildId}`);
-        return cachedPath;
-      }
-    }
-
-    // Resolve current stable, install if the binary isn't already on disk, then pin it.
-    const buildId = await resolveBuildId(Browser.CHROME, platform, 'stable');
-    const execPath = computeExecutablePath({ browser: Browser.CHROME, buildId, cacheDir });
-    if (!fs.existsSync(execPath)) {
-      log(`Downloading Chrome for Testing ${buildId} → ${cacheDir}`);
-      await install({ browser: Browser.CHROME, buildId, cacheDir, downloadProgressCallback: onProgress });
-    }
-    await store.set(buildId);
-    log(`Chrome for Testing ${buildId} ready.`);
-    return execPath;
-  } catch (err) {
-    log(`Chrome for Testing unavailable (${String(err)}); trying system Chrome.`);
-  }
-
-  // 3. system Chrome fallback
+  // 2. installed ungoogled Chromium
   const system = findSystemChrome();
   if (system) {
-    log(`Using system Chrome: ${system}`);
+    log(`Using Chromium: ${system}`);
     return system;
   }
 
-  throw new Error(
-    'Cobrowser could not download Chrome for Testing and found no system Chrome. ' +
-      'Set "cobrowser.chromePath" to a Chrome/Chromium executable, or check your network.',
-  );
+  // 3. a Chrome for Testing left over from a previous version — usable, not downloaded anew.
+  try {
+    const cachedBuildId = store.get();
+    if (cachedBuildId) {
+      const cachedPath = computeExecutablePath({
+        browser: Browser.CHROME,
+        buildId: cachedBuildId,
+        cacheDir,
+      });
+      if (fs.existsSync(cachedPath)) {
+        log(`No Chromium found; falling back to the previously downloaded Chrome for Testing ${cachedBuildId}.`);
+        return cachedPath;
+      }
+    }
+  } catch {
+    /* cache unreadable — treated as absent */
+  }
+
+  throw new Error(`Cobrowser needs a Chromium build and found none.\n${INSTALL_CHROMIUM_HINT}`);
 }

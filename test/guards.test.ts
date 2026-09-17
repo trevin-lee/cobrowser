@@ -101,3 +101,23 @@ test('throttle and cap constants are present and sane', () => {
   assert.ok(max > min, 'jitter needs a range');
   assert.ok(cap > 0 && cap <= 500, 'a per-session cap must exist and be a real ceiling');
 });
+
+test('puppeteer default args that fight the product stay refused', () => {
+  // Each of these was shipped by puppeteer and measurably wrong for a browser a human
+  // looks at. They are easy to lose in a refactor and the failure is silent: extensions
+  // simply do not load, scrollbars simply are not there.
+  const lf = fs.readFileSync(path.join(__dirname, '..', 'src', 'browser', 'launchFlags.ts'), 'utf8');
+  const block = /ignoreDefaultArgs:\s*\[([\s\S]*?)\]/.exec(lf);
+  assert.ok(block, 'ignoreDefaultArgs must be set — puppeteer injects 33 args by default');
+  for (const flag of ['--disable-extensions', '--enable-automation', '--hide-scrollbars', '--mute-audio']) {
+    assert.ok(block![1].includes(flag), `${flag} must stay refused`);
+  }
+});
+
+test('args that keep background panels rendering are NOT refused', () => {
+  const lf = fs.readFileSync(path.join(__dirname, '..', 'src', 'browser', 'launchFlags.ts'), 'utf8');
+  const block = /ignoreDefaultArgs:\s*\[([\s\S]*?)\]/.exec(lf)![1];
+  for (const keep of ['--disable-renderer-backgrounding', '--disable-background-timer-throttling']) {
+    assert.ok(!block.includes(keep), `${keep} must stay — it is why hidden panels keep producing frames`);
+  }
+});

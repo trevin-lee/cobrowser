@@ -2,7 +2,7 @@
   "name": "cobrowser",
   "displayName": "Cobrowser",
   "description": "An embedded, agent-controllable browser inside your editor — co-driven by you (webview) and your AI agent (MCP).",
-  "version": "0.5.25",
+  "version": "0.5.26",
   "publisher": "trevin-lee",
   "private": true,
   "license": "MIT",
@@ -162,9 +162,12 @@
           ]
         },
         "cobrowser.autoFallbackPasskeys": {
-          "type": "boolean",
-          "default": true,
-          "description": "Install a virtual WebAuthn authenticator so passkey/WebAuthn prompts fail fast and sites fall back to a password. Headless Chromium can't show the OS fingerprint prompt, so a passkey ceremony would otherwise hang forever. Turn OFF only when running headful (cobrowser.headless: false) to sign in with the real OS prompt."
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Install a virtual WebAuthn authenticator so passkey prompts fail fast and sites fall back to a password. UNSET (default) follows cobrowser.display: ON in panel mode, where headless Chromium has no OS window and a passkey ceremony would hang forever; OFF in window mode, where real Chrome CAN show the Touch ID prompt and a virtual authenticator would replace a passkey you can actually use. Set true/false to override.",
+          "default": null
         },
         "cobrowser.firefoxContainer": {
           "type": "string",

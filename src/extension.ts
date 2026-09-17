@@ -5,11 +5,7 @@ import * as crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { BrowserSession } from './browser/BrowserSession';
 import { ensureChromeExecutable } from './browser/ensureChrome';
-import {
-  ensureApplePasswords,
-  nativeHostInstalled,
-  NATIVE_HOST_INSTALL_COMMAND,
-} from './browser/applePasswords';
+import { ensureApplePasswords, installNativeHost } from './browser/applePasswords';
 import { startMcpHttpServer, type McpHttp } from './mcp/server';
 import { BrowserPanel } from './webview/BrowserPanel';
 import { SessionTreeProvider } from './webview/SessionTreeProvider';
@@ -108,6 +104,26 @@ function firefoxContainerFor(
   return (
     cfg.get<string>('firefoxContainer', '').trim() || cfg.get<string>('zenContainer', '').trim()
   );
+}
+
+/**
+ * Whether to install the virtual WebAuthn authenticator, which makes passkey ceremonies fail
+ * fast so sites fall back to a password.
+ *
+ * It follows the display mode, because the two modes have opposite problems. Headless has no
+ * OS window, so the Touch ID prompt can never appear and a passkey ceremony just hangs —
+ * failing fast is the only way through. In window mode there IS a real Chrome window, the
+ * prompt appears normally, and installing a virtual authenticator would REPLACE a passkey the
+ * human can actually use with a forced password fallback. Defaulting it on everywhere quietly
+ * broke working passkeys in window mode.
+ *
+ * An explicit setting still wins, at any scope.
+ */
+function passkeyFallbackFor(cfg: vscode.WorkspaceConfiguration, headless: boolean): boolean {
+  const set = cfg.inspect<boolean>('autoFallbackPasskeys');
+  const explicit =
+    set?.workspaceFolderValue ?? set?.workspaceValue ?? set?.globalValue;
+  return typeof explicit === 'boolean' ? explicit : headless;
 }
 
 /** The running build's version, so the daemon can be restarted when it is stale. */
@@ -270,7 +286,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       sessionPromise = (async () => {
         const display = displayMode(cfg);
         const headless = display === 'panel';
-        const autoFallbackPasskeys = cfg.get<boolean>('autoFallbackPasskeys', true);
+        const autoFallbackPasskeys = passkeyFallbackFor(cfg, headless);
 
         // Reconnect to a Chrome kept alive across a reload (tabs intact) before launching.
         const savedWs = context.workspaceState.get<string>(WS_KEY);
@@ -302,7 +318,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           headless,
           autoFallbackPasskeys,
           cfg.get<boolean>('uncapFrameRate', false),
-          applePasswordsExtensions(context, cfg, log),
+          applePasswordsExtensions(context, cfg, profileDir, log),
         );
         log(`Chromium launched (pid ${s.pid() ?? '?'}), profile ${profileDir}`);
         const wired = await wire(s);
@@ -541,20 +557,19 @@ export async function deactivate(): Promise<void> {
 function applePasswordsExtensions(
   context: vscode.ExtensionContext,
   cfg: vscode.WorkspaceConfiguration,
+  profileDir: string,
   log: (m: string) => void,
 ): string[] {
   if (!cfg.get<boolean>('applePasswords', true)) return [];
   const dir = ensureApplePasswords(context.globalStorageUri.fsPath, log);
   if (!dir) {
-    log('iCloud Passwords is not installed in Google Chrome — skipping (nothing to copy from).');
+    log('iCloud Passwords is not installed in a Chrome profile — skipping (nothing to copy from).');
     return [];
   }
-  if (!nativeHostInstalled()) {
-    log(
-      'iCloud Passwords will load, but autofill needs Apple\'s helper registered for Chrome ' +
-        `for Testing. Run once:\n  ${NATIVE_HOST_INSTALL_COMMAND}`,
-    );
-  }
+  // Register Apple's helper INTO THIS PROFILE. Chromium resolves user-level native-messaging
+  // manifests relative to the user-data-dir, which cobrowser owns — so autofill needs no
+  // admin rights. Pair once per profile from the extension's popup page.
+  installNativeHost(profileDir, log);
   return [dir];
 }
 

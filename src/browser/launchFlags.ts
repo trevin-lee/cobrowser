@@ -1,12 +1,30 @@
 import * as fs from 'node:fs';
 import type { LaunchOptions } from 'puppeteer-core';
 
-// macOS-first candidates for the system-Chrome fallback. (Windows/Linux paths deferred.)
+/**
+ * Chromium builds we will drive, in preference order.
+ *
+ * Ungoogled Chromium first, and Google Chrome deliberately absent. Measured on macOS 152:
+ * ungoogled is codec-identical to Chrome for Testing — H.264 and AAC playback, hardware
+ * H.264 encode, H264/H265 offered in WebRTC — so the usual "Chromium lacks proprietary
+ * codecs" objection does not apply here. What it does NOT carry is Widevine, so streaming
+ * DRM will not play.
+ *
+ * Google's own Chromium *snapshots* (what @puppeteer/browsers would download as
+ * Browser.CHROMIUM) are a different build and are the codec-less ones. That is why there is
+ * no automatic download for this: fetching those would quietly undo the codec support that
+ * makes this choice safe.
+ */
 const CANDIDATES = [
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   '/Applications/Chromium.app/Contents/MacOS/Chromium',
-  '/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
+  '/Applications/Ungoogled Chromium.app/Contents/MacOS/Chromium',
+  `${process.env.HOME ?? ''}/Applications/Chromium.app/Contents/MacOS/Chromium`,
 ];
+
+/** Shown when nothing is installed — the one command that fixes it. */
+export const INSTALL_CHROMIUM_HINT =
+  'Install it with:  brew install --cask ungoogled-chromium\n' +
+  'Or set "cobrowser.chromePath" to any Chromium build you prefer.';
 
 /** Find an installed system Chrome/Chromium (or a valid override). undefined if none. */
 export function findSystemChrome(override?: string): string | undefined {
@@ -43,6 +61,37 @@ export function resolveLaunchOptions(
     executablePath: chromePath,
     headless,
     userDataDir: profileDir,
+    /**
+     * Puppeteer injects 33 default args tuned for headless automation. Most are fine or
+     * actively useful here, but cobrowser is not pure automation — a HUMAN looks at this
+     * browser — so four are refused. Audited individually rather than `ignoreDefaultArgs:
+     * true`, because the remainder includes things puppeteer needs to drive the browser.
+     *
+     *   --disable-extensions   silently cancelled our own --load-extension. Measured: the
+     *                          iCloud Passwords service worker never started, so autofill
+     *                          could not have worked however the native host was registered.
+     *   --enable-automation    the canonical automation flag, shipped by default while the
+     *                          rest of this file works to avoid advertising exactly that.
+     *   --hide-scrollbars      measured 0px scrollbars where real desktop Chrome reports 15.
+     *                          Visible in the panel, and a known headless signal.
+     *   --mute-audio           silences video the human is watching in their own browser.
+     *
+     * Deliberately KEPT, having considered them:
+     *   --use-mock-keychain / --password-store=basic — reclaiming these lets Chrome reach the
+     *     real macOS Keychain, which can raise an OS prompt that a headless browser cannot
+     *     answer. A hang is worse than a basic password store; our credentials come from the
+     *     iCloud Passwords extension anyway.
+     *   --disable-background-timer-throttling / --disable-backgrounding-occluded-windows /
+     *     --disable-renderer-backgrounding — these are why a panel that is not in front keeps
+     *     producing frames. Removing them would break multi-panel screencasting.
+     *   --disable-popup-blocking — measured no difference, so not worth the churn.
+     */
+    ignoreDefaultArgs: [
+      '--disable-extensions',
+      '--enable-automation',
+      '--hide-scrollbars',
+      '--mute-audio',
+    ],
     // Headless has no OS window to size the page from, so give it a fixed viewport;
     // headful lets the page fill the (user-resizable) window.
     defaultViewport: headless ? { width: 1280, height: 800 } : null,
