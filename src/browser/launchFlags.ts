@@ -103,7 +103,10 @@ export function resolveLaunchOptions(
       // sites read as "scripted client" and answer with CAPTCHA walls — even for a
       // human reading a page in the panel. (Client hints are corrected per-page in
       // prepPage; they can only be set over CDP.)
-      '--disable-blink-features=AutomationControlled',
+      // Headless only: in a real window Chromium puts an "unsupported command-line flag"
+      // warning bar across the top of every launch, and a browser the human is looking at
+      // directly should not carry one.
+      ...(headless ? ['--disable-blink-features=AutomationControlled'] : []),
       '--lang=en-US,en',
       // Set the UA for the WHOLE process, not just pages we prepare. The per-page
       // override (prepPage) still runs — it is the only way to set client hints — but it

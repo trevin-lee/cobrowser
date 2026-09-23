@@ -2,7 +2,7 @@
   "name": "cobrowser",
   "displayName": "Cobrowser",
   "description": "An embedded, agent-controllable browser inside your editor — co-driven by you (webview) and your AI agent (MCP).",
-  "version": "0.5.26",
+  "version": "0.5.30",
   "publisher": "trevin-lee",
   "private": true,
   "license": "MIT",
@@ -51,6 +51,14 @@
       {
         "command": "cobrowser.restartBrowser",
         "title": "Cobrowser: Restart Browser"
+      },
+      {
+        "command": "cobrowser.useWindowMode",
+        "title": "Cobrowser: Use Window Mode (Real Chromium Windows)"
+      },
+      {
+        "command": "cobrowser.usePanelMode",
+        "title": "Cobrowser: Use Panel Mode (Embedded in Editor)"
       },
       {
         "command": "cobrowser.copyFirefoxBridgeUrl",

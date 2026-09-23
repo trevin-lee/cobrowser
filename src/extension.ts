@@ -74,7 +74,14 @@ let registeredWith: { port: number; id: string; dev: boolean } | undefined;
  */
 type DisplayMode = 'panel' | 'window';
 
+// Set by the "Use Window Mode" / "Use Panel Mode" commands. Kept in workspaceState rather
+// than writing `cobrowser.display` so switching doesn't drop a .vscode/settings.json into
+// the repo — and it outranks the setting, since it is the more recent, explicit choice.
+const DISPLAY_OVERRIDE_KEY = 'cobrowser.displayOverride';
+let displayOverride: DisplayMode | undefined;
+
 function displayMode(cfg: vscode.WorkspaceConfiguration): DisplayMode {
+  if (displayOverride) return displayOverride;
   const explicit = cfg.get<string>('display');
   if (explicit === 'window' || explicit === 'panel') return explicit;
   // Back-compat: `cobrowser.headless: false` used to be the only way to ask for a real
@@ -148,6 +155,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     await context.workspaceState.update(TOKEN_KEY, token);
   }
   const cfg = vscode.workspace.getConfiguration('cobrowser');
+  const savedDisplay = context.workspaceState.get<string>(DISPLAY_OVERRIDE_KEY);
+  displayOverride = savedDisplay === 'window' || savedDisplay === 'panel' ? savedDisplay : undefined;
   // `cobrowser.port` is the DAEMON's port — the one stable URL every client is configured
   // with. This window's own server is an internal detail the daemon proxies to, so it takes
   // any free port (0) and never needs to be stable.
@@ -525,7 +534,40 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await getSession();
       void vscode.window.showInformationMessage('Cobrowser: browser restarted.');
     }),
+    vscode.commands.registerCommand('cobrowser.useWindowMode', () => switchDisplay('window')),
+    vscode.commands.registerCommand('cobrowser.usePanelMode', () => switchDisplay('panel')),
   );
+
+  /** Switch this workspace between panels and real windows. Headless vs headful is fixed at
+   *  launch, so this has to quit and relaunch the browser. */
+  async function switchDisplay(next: DisplayMode): Promise<void> {
+    const label = next === 'window' ? 'window mode (real Chromium windows)' : 'panel mode (embedded)';
+    if (displayMode(cfg) === next && session) {
+      if (next === 'window') await session.run(() => session!.bringToFront()).catch(() => undefined);
+      void vscode.window.showInformationMessage(`Cobrowser: this workspace is already in ${label}.`);
+      return;
+    }
+    // Quitting the browser can fire page-closed events that save an emptier tab list over
+    // the real one, so snapshot it and put it back before the relaunch reads it.
+    const tabs = context.workspaceState.get(TABS_KEY);
+    displayOverride = next;
+    await context.workspaceState.update(DISPLAY_OVERRIDE_KEY, next);
+    log(`Display switched to ${next} for this workspace — restarting the browser.`);
+    try {
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `Cobrowser: switching to ${label}…` },
+        async () => {
+          await disposeSession(context);
+          await context.workspaceState.update(TABS_KEY, tabs);
+          const s = await getSession();
+          if (next === 'window') await s.run(() => s.bringToFront()).catch(() => undefined);
+        },
+      );
+      void vscode.window.showInformationMessage(`Cobrowser: now in ${label}.`);
+    } catch {
+      /* getSession already reported the launch failure */
+    }
+  }
 
   // If a browser was running in this workspace before (e.g. a window reload), bring it
   // back now — getSession reconnects to the kept-alive Chrome (tabs intact, no gap), or
