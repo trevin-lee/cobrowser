@@ -712,6 +712,25 @@ export class BrowserSession {
     return Buffer.from(buf).toString('base64');
   }
 
+  /** Logins the vault holds for the agent to use: hosts and usernames only. */
+  listCredentials(): Promise<{ host: string; username: string }[]> {
+    return this.app.vaultList();
+  }
+
+  /** Fill a saved login into fields the agent chose; the app supplies the secret and checks
+   *  the page is on that login's site. The agent only learns what got filled. */
+  fillCredentials(opts: { usernameUid?: string; passwordUid?: string; username?: string }) {
+    this.markAgent();
+    const tabId = this.tabIds.get(this.active);
+    if (!tabId) throw new Error('active page has no app tab');
+    return this.app.vaultFill(tabId, opts);
+  }
+
+  /** Text bound for the agent, with any unlocked vault password removed. */
+  scrub(text: string): Promise<string> {
+    return this.app.scrub(text);
+  }
+
   async evaluateScript(fn: string, args: unknown[] = []): Promise<unknown> {
     return this.active.evaluate(
       (body: string, a: unknown[]) => {

@@ -214,7 +214,38 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     async ({ function: fn, args }) => {
       const s = await getSession();
       const result = await s.run(() => s.evaluateScript(fn, args ?? []));
-      return asText(typeof result === 'string' ? result : JSON.stringify(result));
+      // Never hand a filled password back: the vault scrubs its own values out of the text.
+      return asText(await s.scrub(typeof result === 'string' ? result : JSON.stringify(result)));
+    },
+  );
+
+  server.registerTool(
+    'list_credentials',
+    {
+      description:
+        "Logins saved in the human's cobrowser vault — sites and usernames only, never passwords. Use it to see whether a login exists for the site you are on before calling fill_credentials.",
+      inputSchema: {},
+    },
+    async () => {
+      const s = await getSession();
+      return asText(JSON.stringify(await s.listCredentials(), null, 2));
+    },
+  );
+
+  server.registerTool(
+    'fill_credentials',
+    {
+      description:
+        'Fill the saved login for the CURRENT site into fields you choose: pass the username and/or password field uids from take_snapshot. The password never enters your context — the app types it in directly and reports what it filled. Refused unless the page is on the login\'s site. Pass `username` when the site has more than one saved login. Do NOT submit payment or MFA steps for the human.',
+      inputSchema: {
+        usernameUid: z.string().optional(),
+        passwordUid: z.string().optional(),
+        username: z.string().optional(),
+      },
+    },
+    async (opts) => {
+      const s = await getSession();
+      return asText(JSON.stringify(await s.run(() => s.fillCredentials(opts))));
     },
   );
 

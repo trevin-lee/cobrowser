@@ -64,6 +64,18 @@
       {
         "command": "cobrowser.importProfiles",
         "title": "Cobrowser: Import Logins from Old Profiles"
+      },
+      {
+        "command": "cobrowser.addLogin",
+        "title": "Cobrowser: Add Login to Vault"
+      },
+      {
+        "command": "cobrowser.importLoginsCsv",
+        "title": "Cobrowser: Import Logins from CSV"
+      },
+      {
+        "command": "cobrowser.lockVault",
+        "title": "Cobrowser: Lock Vault"
       }
     ],
     "menus": {

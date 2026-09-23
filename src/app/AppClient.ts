@@ -86,13 +86,13 @@ export class AppConnection {
     if (this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(m));
   }
 
-  private request(m: Record<string, unknown>): Promise<Record<string, unknown>> {
+  private request(m: Record<string, unknown>, timeoutMs = 15000): Promise<Record<string, unknown>> {
     const requestId = this.nextRequest++;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(requestId);
         reject(new Error(`app did not answer ${String(m.type)}`));
-      }, 15000);
+      }, timeoutMs);
       this.pending.set(requestId, (r) => {
         clearTimeout(timer);
         resolve(r);
@@ -126,6 +126,34 @@ export class AppConnection {
   async importCookies(workspace: string, cookies: Record<string, unknown>[]): Promise<{ imported: number; failed: number }> {
     const r = await this.request({ type: 'importCookies', workspace, cookies });
     return { imported: Number(r.imported) || 0, failed: Number(r.failed) || 0 };
+  }
+
+  // --- vault: the agent can use logins without seeing them; passwords never cross this socket
+  //     outbound except INTO the app (add/import), and never come back.
+  async vaultAdd(host: string, username: string, password: string): Promise<void> {
+    const r = await this.request({ type: 'vault.add', host, username, password }, 120000);
+    if (r.error) throw new Error(String(r.error));
+  }
+  async vaultImport(csv: string): Promise<number> {
+    const r = await this.request({ type: 'vault.import', csv }, 120000);
+    if (r.error) throw new Error(String(r.error));
+    return Number(r.count) || 0;
+  }
+  async vaultList(): Promise<{ host: string; username: string }[]> {
+    const r = await this.request({ type: 'vault.list' }, 120000);
+    if (r.error) throw new Error(String(r.error));
+    return r.logins as { host: string; username: string }[];
+  }
+  async vaultLock(): Promise<void> {
+    await this.request({ type: 'vault.lock' });
+  }
+  async vaultFill(tabId: string, opts: { usernameUid?: string; passwordUid?: string; username?: string }): Promise<{ filled: string[]; username?: string; error?: string; candidates?: string[] }> {
+    return (await this.request({ type: 'vault.fill', tabId, ...opts }, 120000)) as unknown as { filled: string[]; username?: string; error?: string; candidates?: string[] };
+  }
+  /** Strip any unlocked password out of text bound for the agent. */
+  async scrub(text: string): Promise<string> {
+    const r = await this.request({ type: 'vault.scrub', text });
+    return typeof r.text === 'string' ? r.text : text;
   }
 
   closeAll(): void {

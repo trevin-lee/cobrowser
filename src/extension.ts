@@ -445,6 +445,30 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       log(`Profile import:\n  ${lines.join('\n  ')}`);
       void vscode.window.showInformationMessage(`Cobrowser: imported — ${lines.join('; ')}`);
     }),
+    vscode.commands.registerCommand('cobrowser.addLogin', async () => {
+      const site = await vscode.window.showInputBox({ prompt: 'Site (URL or host)', placeHolder: 'https://example.com' });
+      if (!site) return;
+      const username = await vscode.window.showInputBox({ prompt: `Username for ${site}` });
+      if (username === undefined) return;
+      const password = await vscode.window.showInputBox({ prompt: `Password for ${username || site}`, password: true });
+      if (!password) return;
+      await getSession();
+      await BrowserPanel.app!.vaultAdd(site, username, password);
+      void vscode.window.showInformationMessage(`Cobrowser: saved a login for ${site}.`);
+    }),
+    vscode.commands.registerCommand('cobrowser.importLoginsCsv', async () => {
+      const picked = await vscode.window.showOpenDialog({ canSelectMany: false, filters: { CSV: ['csv'] }, title: 'Import logins (Apple Passwords / Bitwarden / Chrome CSV export)' });
+      if (!picked?.[0]) return;
+      const csv = Buffer.from(await vscode.workspace.fs.readFile(picked[0])).toString('utf8');
+      await getSession();
+      const n = await BrowserPanel.app!.vaultImport(csv);
+      const del = await vscode.window.showInformationMessage(`Cobrowser: imported ${n} login(s). The CSV is plaintext — delete it?`, 'Delete the CSV', 'Keep');
+      if (del === 'Delete the CSV') await vscode.workspace.fs.delete(picked[0]);
+    }),
+    vscode.commands.registerCommand('cobrowser.lockVault', async () => {
+      await BrowserPanel.app?.vaultLock();
+      void vscode.window.showInformationMessage('Cobrowser: vault locked.');
+    }),
     vscode.commands.registerCommand('cobrowser.restartBrowser', async () => {
       await disposeSession(context);
       await getSession();
