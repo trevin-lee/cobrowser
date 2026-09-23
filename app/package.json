@@ -1,0 +1,14 @@
+{
+  "name": "cobrowser-app",
+  "version": "0.0.1",
+  "private": true,
+  "description": "cobrowser browser service: owns per-workspace offscreen browsers and streams them to the editor",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "dependencies": {
+    "electron": "^44.4.5",
+    "ws": "^8.21.3"
+  }
+}

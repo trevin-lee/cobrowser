@@ -1,7 +1,7 @@
 import * as puppeteer from 'puppeteer-core';
 import type { Browser, Page, ElementHandle, CDPSession } from 'puppeteer-core';
-import { resolveLaunchOptions } from './launchFlags';
-import { browserIdentity, chromeVersionOf, identityMetadata } from './identity';
+import { browserIdentity, identityMetadata } from './identity';
+import type { AppConnection } from '../app/AppClient';
 import type { BrowserIdentity } from './identity';
 import { snapshotScript } from './snapshot';
 
@@ -54,9 +54,6 @@ export class BrowserSession {
   /** Stable per-page id, so panels and the agent can refer to a tab across
    *  opens/closes (indices shift; these don't). */
   private ids = new Map<Page, string>();
-  /** Infrastructure pages (e.g. the video-capture controller) — excluded from the
-   *  agent's tab list, panels, persistence, and the last-tab-quit heuristic. */
-  private internalPages = new Set<Page>();
   private idSeq = 0;
 
   /** Per-page CDP session holding this page's session-scoped overrides: the UA +
@@ -88,75 +85,51 @@ export class BrowserSession {
   private pagesChangedCb?: () => void;
   /** How this browser presents itself to sites (UA + client hints). */
   private identity?: BrowserIdentity;
-  /**
-   * Give every page its own OS window (see createPageInNewWindow). That exists ONLY to keep
-   * simultaneous screencasts alive, so it is right for panel mode and wrong for window mode:
-   * when the human is looking at real Chrome, they want ordinary tabs in one window.
-   */
-  separateWindows = true;
   private highlightCb?: (id: string, box: ElementBox) => void;
+
+  /** The app's tab id for each page — what frames, resizes and closes are addressed by. */
+  private tabIds = new Map<Page, string>();
 
   private constructor(
     private browser: Browser,
-    readonly headless: boolean,
+    /** The cobrowser app that owns these tabs. */
+    private readonly app: AppConnection,
     /** Install a virtual WebAuthn authenticator so passkey prompts fail fast to
-     *  a password fallback (headless can't show the OS fingerprint prompt). */
+     *  a password fallback (an offscreen page can't show the OS fingerprint prompt). */
     private readonly autoFallbackPasskeys: boolean,
   ) {}
 
-  static async launch(
-    profileDir: string,
-    chromePath: string,
-    headless = true,
-    autoFallbackPasskeys = true,
-    uncapFrameRate = false,
-    extensions: string[] = [],
-  ): Promise<BrowserSession> {
-    // Read the build's version before launching so --user-agent can carry the correct
-    // Chrome version from the first request onward (see resolveLaunchOptions).
-    const identity = await browserIdentity(await chromeVersionOf(chromePath));
-    const browser = await puppeteer.launch({
-      ...resolveLaunchOptions(profileDir, chromePath, headless, uncapFrameRate, identity.ua, extensions),
-      // Don't let puppeteer kill Chrome when the extension host dies/reloads — we detach
-      // (disconnect) on reload and reconnect to the same browser, so tabs are never lost.
-      handleSIGINT: false,
-      handleSIGTERM: false,
-      handleSIGHUP: false,
-    });
-    return BrowserSession.wrap(browser, headless, autoFallbackPasskeys, identity);
-  }
+  /** Offscreen tabs behave as headless did: no OS window can host a prompt. */
+  readonly headless = true;
 
-  /** Reconnect to a Chrome kept alive across a reload — its tabs are intact, no gap. */
-  static async connect(
-    wsEndpoint: string,
-    headless: boolean,
-    autoFallbackPasskeys = true,
-  ): Promise<BrowserSession> {
+  /**
+   * Attach to the cobrowser app's browser. The app owns the tabs (offscreen webContents);
+   * puppeteer sees them as ordinary pages over the app's debugging port, so everything
+   * below drives them exactly as it drove a launched Chrome.
+   */
+  static async connectApp(app: AppConnection, autoFallbackPasskeys = true): Promise<BrowserSession> {
     const browser = await puppeteer.connect({
-      browserWSEndpoint: wsEndpoint,
+      browserWSEndpoint: app.debugWs,
+      defaultViewport: null,
     });
-    return BrowserSession.wrap(browser, headless, autoFallbackPasskeys);
+    return BrowserSession.wrap(browser, app, autoFallbackPasskeys);
   }
 
   private static async wrap(
     browser: Browser,
-    headless: boolean,
+    app: AppConnection,
     autoFallbackPasskeys: boolean,
-    /** Known when we launched the binary ourselves; on a reconnect it is derived from
-     *  the running browser instead. */
-    identity?: BrowserIdentity,
   ): Promise<BrowserSession> {
-    const session = new BrowserSession(browser, headless, autoFallbackPasskeys);
-    session.identity =
-      identity ?? (await browserIdentity(await withTimeout(browser.version(), 2000)));
+    const session = new BrowserSession(browser, app, autoFallbackPasskeys);
+    session.identity = await browserIdentity(await withTimeout(browser.version(), 2000));
 
-    const pages = await browser.pages();
-    // Prefer a real restored tab over puppeteer's stray about:blank.
-    const first = pages.find((p) => !p.url().startsWith('about:')) ?? pages[0] ?? (await browser.newPage());
+    // Adopt the workspace's existing tabs (a reload finds them right where it left them).
+    const pages = (await browser.pages()).filter((p) => session.adopt(p));
+    const first = pages.find((p) => !p.url().startsWith('about:')) ?? pages[0];
     // Fire-and-forget: never block startup on passkey setup across restored tabs —
     // a single hung tab must not delay (or wedge) the whole session coming up.
     for (const p of pages) void session.prepPage(p);
-    await session.setActive(first);
+    if (first) await session.setActive(first);
 
     // A genuinely site-opened popup/new tab becomes active and gets its own
     // revealed panel. Our own newPage() sets suppressOpen so it isn't
@@ -168,7 +141,7 @@ export class BrowserSession {
         try {
           const page = await target.page();
           if (!page) return; // not a page target
-          if (session.internalPages.has(page)) return; // infrastructure, not a user tab
+          if (!session.adopt(page)) return; // not one of this workspace's tabs
           const id = session.idFor(page);
           session.pushEvent('tab-opened', id, page.url());
           await session.prepPage(page); // fail-fast passkeys before any site script runs
@@ -193,20 +166,17 @@ export class BrowserSession {
             if (page.isClosed()) {
               session.pushEvent('tab-closed', id, page.url());
               session.ids.delete(page);
+              session.tabIds.delete(page);
               session.authSessions.delete(page); // CDP session dies with the page
               session.pageClosedCb?.(id);
             }
           }
           session.pagesChangedCb?.();
-          const open = (await browser.pages()).filter(
-            (p) => !p.isClosed() && !session.internalPages.has(p),
-          );
+          const open = (await browser.pages()).filter((p) => !p.isClosed() && session.tabIds.has(p));
           if (open.length === 0) {
-            // Last tab closed → quit the whole Chrome instance (onDisconnected then
-            // clears the session, so the next new tab relaunches a fresh browser).
-            session.allClosedCb?.(); // intentional empty → don't auto-relaunch on reload
-            session.disposing = true;
-            await browser.close().catch(() => undefined);
+            // Last tab closed: the app stays up (other workspaces may be using it); this
+            // workspace just has no browser until the next tab opens.
+            session.allClosedCb?.(); // intentional empty → don't auto-reopen on reload
             return;
           }
           if (!session.active || session.active.isClosed()) {
@@ -225,8 +195,23 @@ export class BrowserSession {
     return session;
   }
 
-  pid(): number | undefined {
-    return this.browser.process()?.pid ?? undefined;
+  /**
+   * Claim a page as one of this workspace's tabs. Only pages the app opened for THIS
+   * workspace have a tab id; the app's debugging port shows every workspace's tabs, and the
+   * others must stay invisible here. Idempotent.
+   */
+  private adopt(page: Page): boolean {
+    if (this.tabIds.has(page)) return true;
+    const targetId = (page.target() as unknown as { _targetId?: string })._targetId;
+    const tabId = targetId ? this.app.tabIdFor(targetId) : undefined;
+    if (!tabId) return false;
+    this.tabIds.set(page, tabId);
+    return true;
+  }
+
+  /** The app's id for a page, for the panel's frame subscription. */
+  tabIdOf(page: Page): string | undefined {
+    return this.tabIds.get(page);
   }
 
   /** Set the agent's active page (the target for tools without an explicit
@@ -405,46 +390,13 @@ export class BrowserSession {
     this.highlightCb = cb;
   }
 
-  /** Match a page's viewport to its panel (size + display DPR) so the screencast
-   *  isn't stretched to the wrong aspect ratio or rendered below the display's
-   *  resolution. Per-page now: each panel sizes its own page. */
-  async setViewport(
-    page: Page,
-    width: number,
-    height: number,
-    deviceScaleFactor: number,
-  ): Promise<void> {
+  /** Size a page to its panel in device pixels. Offscreen rendering paints exactly the
+   *  window's content size at scale 1, so the frame IS the viewport — no emulation, and no
+   *  phantom screen to reconcile with it. */
+  async setViewport(page: Page, width: number, height: number): Promise<void> {
     if (width < 1 || height < 1) return;
-    await withTimeout(
-      page.setViewport({ width, height, deviceScaleFactor: deviceScaleFactor || 1 }),
-      3000,
-    ).catch(() => undefined);
-    // Headless keeps a stock 800x600 phantom screen, so sizing the viewport to the panel
-    // (device pixels, for crisp text) leaves window.innerWidth LARGER than screen.width —
-    // physically impossible on real hardware, and a giveaway that reads as "scripted".
-    // Report a screen that plausibly contains the viewport instead.
-    try {
-      const cdp = this.authSessions.get(page) ?? (await withTimeout(page.createCDPSession(), 2000));
-      if (!cdp) return;
-      const screenWidth = Math.max(width, 1512);
-      const screenHeight = Math.max(height, 982);
-      await withTimeout(
-        cdp.send('Emulation.setDeviceMetricsOverride', {
-          width,
-          height,
-          deviceScaleFactor: deviceScaleFactor || 1,
-          mobile: false,
-          screenWidth,
-          screenHeight,
-          // Sit the window at a natural offset below the menu bar rather than 0,0.
-          positionX: 0,
-          positionY: 25,
-        }),
-        2000,
-      );
-    } catch {
-      /* emulation unsupported — the viewport itself is already applied */
-    }
+    const tabId = this.tabIds.get(page);
+    if (tabId) this.app.resize(tabId, width, height);
   }
 
   /** Serialize every browser action (agent + human) through one FIFO queue. */
@@ -478,7 +430,7 @@ export class BrowserSession {
   // ----- tool-facing operations (uid model mirrors chrome-devtools-mcp naming) -----
 
   async listPages(): Promise<PageInfo[]> {
-    const pages = (await this.browser.pages()).filter((p) => !this.internalPages.has(p));
+    const pages = (await this.browser.pages()).filter((p) => this.tabIds.has(p));
     const infos: PageInfo[] = [];
     for (let i = 0; i < pages.length; i++) {
       const p = pages[i];
@@ -502,7 +454,7 @@ export class BrowserSession {
     const page = await (async (): Promise<Page> => {
       this.suppressOpen++;
       try {
-        const p = this.separateWindows ? await this.createPageInNewWindow() : await this.browser.newPage();
+        const p = await this.openAppTab();
         await this.prepPage(p); // fail-fast passkeys before navigating anywhere
         if (url) await p.goto(url, { waitUntil: 'domcontentloaded' }).catch(() => undefined);
         return p;
@@ -524,110 +476,30 @@ export class BrowserSession {
     };
   }
 
-  /**
-   * Resize the OS-level window that owns `page` to a CSS size. Tab capture (the WebRTC
-   * path) renders the WINDOW surface — not the emulated viewport — and delivers it at 2x,
-   * so matching the window to the panel is what makes the video the right shape and
-   * natively crisp. Each page has its own window (createPageInNewWindow), so this only
-   * affects that tab. No-op'd errors: sizing is an optimization, never load-bearing.
-   */
-  async setWindowSize(page: Page, cssWidth: number, cssHeight: number): Promise<void> {
-    if (cssWidth < 50 || cssHeight < 50) return;
-    try {
-      const cdp = await withTimeout(this.browser.target().createCDPSession(), 2000);
-      if (!cdp) return;
-      try {
-        const targetId = (page.target() as unknown as { _targetId?: string })._targetId;
-        if (!targetId) return;
-        const { windowId } = (await withTimeout(
-          cdp.send('Browser.getWindowForTarget', { targetId }),
-          2000,
-        )) as { windowId: number };
-        // The window includes chrome above the content area, so the content comes out
-        // shorter than the bounds we ask for. Measure the delta once and compensate.
-        const before = await page.evaluate(() => window.innerHeight).catch(() => 0);
-        await withTimeout(
-          cdp.send('Browser.setWindowBounds', {
-            windowId,
-            bounds: { width: cssWidth, height: cssHeight + this.windowChromeH },
-          }),
-          2000,
-        );
-        if (!this.windowChromeMeasured && before > 0) {
-          const after = await page.evaluate(() => window.innerHeight).catch(() => 0);
-          if (after > 0 && after < cssHeight) {
-            this.windowChromeH = cssHeight - after;
-            this.windowChromeMeasured = true;
-            await withTimeout(
-              cdp.send('Browser.setWindowBounds', {
-                windowId,
-                bounds: { width: cssWidth, height: cssHeight + this.windowChromeH },
-              }),
-              2000,
-            );
-          }
-        }
-      } finally {
-        await cdp.detach().catch(() => undefined);
-      }
-    } catch {
-      /* window sizing unsupported — capture just keeps its previous shape */
-    }
+  /** Open a tab in the app and wait for puppeteer to see it. Electron does not support
+   *  Target.createTarget, so the app must create the window; we adopt it by target id. */
+  private async openAppTab(url = 'about:blank'): Promise<Page> {
+    const [w, h] = this.defaultSize;
+    const info = await this.app.openTab(url, w, h);
+    const target = await this.browser.waitForTarget(
+      (t) => (t as unknown as { _targetId?: string })._targetId === info.targetId,
+      { timeout: 10000 },
+    );
+    const page = await target.page();
+    if (!page) throw new Error('newly opened tab has no page');
+    this.tabIds.set(page, info.tabId);
+    return page;
   }
 
-  private windowChromeH = 0;
-  private windowChromeMeasured = false;
-
-  /** Window mode: raise the real Chrome window for the active tab, since there is no panel
-   *  to reveal. Best-effort — a hung page must not wedge the command. */
-  async bringToFront(): Promise<void> {
-    await withTimeout(this.active?.bringToFront(), 3000).catch(() => undefined);
-  }
-
-  /** Open an infrastructure page (own window) that is invisible to the agent's tab
-   *  list, panels, persistence, and last-tab-quit — used by the video-capture hub. */
-  async createInternalPage(url: string): Promise<Page> {
-    this.suppressOpen++;
-    try {
-      const page = await this.createPageInNewWindow();
-      this.internalPages.add(page);
-      await page.goto(url, { waitUntil: 'domcontentloaded' }).catch(() => undefined);
-      return page;
-    } finally {
-      this.suppressOpen--;
-    }
-  }
-
-  /** Open each page in its OWN headless window (Target.createTarget newWindow), not as
-   *  a tab of one shared window. Every window's sole tab is independently "visible", so
-   *  every panel's screencast pushes frames at full rate SIMULTANEOUSLY — verified 60fps
-   *  on two windows at once, unaffected by bringToFront. Tabs sharing one window share
-   *  one compositor, and all but the foreground tab freeze (the old poll workaround). */
-  private async createPageInNewWindow(): Promise<Page> {
-    const cdp = await this.browser.target().createCDPSession();
-    try {
-      const { targetId } = (await cdp.send('Target.createTarget', {
-        url: 'about:blank',
-        newWindow: true,
-      })) as { targetId: string };
-      const target = await this.browser.waitForTarget(
-        (t) => (t as unknown as { _targetId?: string })._targetId === targetId,
-        { timeout: 5000 },
-      );
-      const page = await target.page();
-      if (!page) throw new Error('newly created window has no page');
-      return page;
-    } finally {
-      await cdp.detach().catch(() => undefined);
-    }
-  }
+  /** Size for tabs opened before any panel has measured itself. Panels correct it on attach. */
+  defaultSize: [number, number] = [1280, 800];
 
   async selectPage(pageId: string, bringToFront = true): Promise<void> {
     this.markAgent();
     const page = this.pageById(pageId);
     if (!page) throw new Error(`No page with id ${pageId}`);
     await this.setActive(page);
-    if (bringToFront) await page.bringToFront();
+    if (bringToFront) await withTimeout(page.bringToFront(), 3000).catch(() => undefined);
     this.pageRevealCb?.(pageId); // reveal its VS Code tab so the human follows
   }
 
@@ -654,7 +526,8 @@ export class BrowserSession {
     // Close the underlying Chrome page. If it was the last one, the targetdestroyed
     // handler quits the whole Chrome instance so nothing is orphaned.
     const page = this.pageById(pageId);
-    if (page) await page.close().catch(() => undefined);
+    const tabId = page && this.tabIds.get(page);
+    if (tabId) this.app.closeTab(tabId);
   }
 
   async navigate(
@@ -851,10 +724,6 @@ export class BrowserSession {
     );
   }
 
-  wsEndpoint(): string {
-    return this.browser.wsEndpoint();
-  }
-
   /** Current pages (stable id + URL) in creation order, synchronously (no queue, no CDP
    *  round-trip) — for persisting the open-tab list + panel layout so a reload can restore
    *  both even when Chrome dies with the extension host and --restore-last-session doesn't
@@ -865,7 +734,7 @@ export class BrowserSession {
       .map(([p, id]) => ({ id, url: p.url() }));
   }
 
-  /** Detach WITHOUT closing Chrome — keeps its tabs alive for a reconnect after a reload. */
+  /** Detach, leaving the tabs alive in the app for the next connection (a reload). */
   async disconnect(): Promise<void> {
     this.disposing = true;
     try {
@@ -875,13 +744,11 @@ export class BrowserSession {
     }
   }
 
+  /** Close this workspace's tabs in the app, then detach. */
   async dispose(): Promise<void> {
     this.disposing = true;
-    try {
-      await this.browser.close();
-    } catch {
-      /* ignore */
-    }
+    this.app.closeAll();
+    await this.disconnect();
   }
 }
 

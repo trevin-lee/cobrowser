@@ -1,8 +1,8 @@
 {
   "name": "cobrowser",
   "displayName": "Cobrowser",
-  "description": "An embedded, agent-controllable browser inside your editor — co-driven by you (webview) and your AI agent (MCP).",
-  "version": "0.6.0",
+  "description": "An agent-controllable browser inside your editor — rendered offscreen by a companion app, co-driven by you (webview) and your AI agent (MCP).",
+  "version": "0.7.0",
   "publisher": "trevin-lee",
   "private": true,
   "license": "MIT",
@@ -51,14 +51,6 @@
       {
         "command": "cobrowser.restartBrowser",
         "title": "Cobrowser: Restart Browser"
-      },
-      {
-        "command": "cobrowser.useWindowMode",
-        "title": "Cobrowser: Use Window Mode (Real Chromium Windows)"
-      },
-      {
-        "command": "cobrowser.usePanelMode",
-        "title": "Cobrowser: Use Panel Mode (Embedded in Editor)"
       },
       {
         "command": "cobrowser.copyFirefoxBridgeUrl",
@@ -111,71 +103,15 @@
     "configuration": {
       "title": "Cobrowser",
       "properties": {
-        "cobrowser.chromePath": {
-          "type": "string",
-          "default": "",
-          "description": "Path to the Chrome/Chromium executable. Leave empty to auto-detect."
-        },
-        "cobrowser.display": {
-          "type": "string",
-          "default": "panel",
-          "enum": [
-            "panel",
-            "window"
-          ],
-          "enumDescriptions": [
-            "Headless Chrome, streamed as images into a webview panel. The browser lives inside the editor; no OS window appears.",
-            "Real Chrome in its own window on your desktop, with no panel. Use this when you want to drive Chrome directly — for OS password prompts, extension toolbars (e.g. pairing iCloud Passwords) or anything a chrome-less panel cannot show."
-          ],
-          "description": "Where YOU watch the browser. The agent drives the same browser either way. Set this per workspace (Workspace settings) to use a real window for one project and panels for another; changing it takes effect on the next browser launch, so run \"Cobrowser: Restart Browser\" after."
-        },
-        "cobrowser.headless": {
-          "type": "boolean",
-          "default": true,
-          "description": "Run the browser headless — embedded in the Cursor panel only, with no separate OS window. Set to false to also open a native Chrome window (needed for native dropdowns, file pickers, 2FA, and some sign-ins like Google that block headless).",
-          "deprecationMessage": "Superseded by cobrowser.display. Still honoured when display is unset: false means \"window\"."
-        },
         "cobrowser.port": {
           "type": "number",
           "default": 0,
           "description": "Localhost port for the shared cobrowser daemon — the single MCP endpoint every editor window and every agent client uses. 0 (default) means 39273. All windows must agree on this value; each window's own internal server takes an ephemeral port and is never contacted directly."
         },
-        "cobrowser.imageFormat": {
-          "type": "string",
-          "default": "jpeg",
-          "enum": [
-            "jpeg",
-            "png"
-          ],
-          "enumDescriptions": [
-            "Lossy, lighter frames. Slight ringing around text on close inspection.",
-            "Lossless — pixel-perfect text, no compression artifacts ever."
-          ],
-          "description": "Frame format for the browser stream. Measured while scrolling at 3.1Mpx: on text-heavy pages PNG is lossless AND slightly smaller than JPEG q90 (457KB vs 478KB per frame) at 41 vs 46fps; on photo-heavy pages PNG doubles the bytes (780KB vs 375KB) at similar frame rate. Bandwidth is not the bottleneck, so this is mostly 'perfect text' vs 'lighter frames'. Applies immediately."
-        },
-        "cobrowser.videoPipeline": {
-          "type": "boolean",
-          "default": false,
-          "description": "EXPERIMENTAL, off by default. Render panels via hardware H.264 video (getDisplayMedia tab capture -> WebRTC) instead of per-frame images. Known broken: pointer coordinates frequently miss their target, and a panel resize takes seconds at very low framerate. Use the image screencast until those are fixed. Panels fall back to the screencast automatically if capture fails.",
-          "tags": [
-            "experimental"
-          ]
-        },
-        "cobrowser.uncapFrameRate": {
-          "type": "boolean",
-          "default": false,
-          "description": "Remove Chromium's 60fps compositor pacing. NOT recommended with the video pipeline: measured, it does not raise delivered framerate (getDisplayMedia still samples at ~60) and makes rAF-driven pages render thousands of frames per second, burning CPU and battery. Only useful for the legacy image screencast.",
-          "tags": [
-            "experimental"
-          ]
-        },
         "cobrowser.autoFallbackPasskeys": {
-          "type": [
-            "boolean",
-            "null"
-          ],
-          "description": "Install a virtual WebAuthn authenticator so passkey prompts fail fast and sites fall back to a password. UNSET (default) follows cobrowser.display: ON in panel mode, where headless Chromium has no OS window and a passkey ceremony would hang forever; OFF in window mode, where real Chrome CAN show the Touch ID prompt and a virtual authenticator would replace a passkey you can actually use. Set true/false to override.",
-          "default": null
+          "type": "boolean",
+          "default": true,
+          "description": "Install a virtual WebAuthn authenticator so passkey prompts fail fast to a password fallback. The browser renders offscreen, so a real passkey ceremony has no window to show the OS prompt in and would hang."
         },
         "cobrowser.firefoxContainer": {
           "type": "string",
@@ -187,18 +123,6 @@
           "default": "",
           "description": "Deprecated: renamed to cobrowser.firefoxContainer. Still honoured as a fallback so existing configurations keep working.",
           "deprecationMessage": "Renamed to cobrowser.firefoxContainer — the bridge is a plain Firefox WebExtension, not Zen-specific. Still honoured as a fallback."
-        },
-        "cobrowser.applePasswords": {
-          "type": "boolean",
-          "default": true,
-          "description": "Load Apple's iCloud Passwords extension into every cobrowser browser, so iCloud Keychain logins autofill. Requires the extension to be installed in your normal Google Chrome (it is copied from there), plus a one-time admin step registering Apple's native helper for Chrome for Testing — the exact command is printed in the Cobrowser output channel."
-        },
-        "cobrowser.captureFps": {
-          "type": "number",
-          "default": 60,
-          "minimum": 1,
-          "maximum": 60,
-          "description": "Frames per second requested from the H.264 video pipeline. 60 is the practical ceiling: getDisplayMedia samples the compositor, which paces at ~60 in headless AND headful (measured on a 120Hz display). Lower it (e.g. 30) to halve encode work on battery. Raising it does nothing -- and neither does cobrowser.uncapFrameRate, which only makes pages render frames nobody consumes."
         }
       }
     }
@@ -215,7 +139,6 @@
     "release": "node scripts/release.mjs"
   },
   "dependencies": {
-    "@puppeteer/browsers": "^2.13.2",
     "puppeteer-core": "^24.10.0",
     "ws": "^8.21.1"
   },

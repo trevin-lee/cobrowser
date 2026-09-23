@@ -1,24 +1,19 @@
 import * as vscode from 'vscode';
 import * as path from 'node:path';
-import * as fs from 'node:fs';
 import * as crypto from 'node:crypto';
-import { execFileSync } from 'node:child_process';
 import { BrowserSession } from './browser/BrowserSession';
-import { ensureChromeExecutable } from './browser/ensureChrome';
-import { ensureApplePasswords, installNativeHost } from './browser/applePasswords';
 import { startMcpHttpServer, type McpHttp } from './mcp/server';
 import { BrowserPanel } from './webview/BrowserPanel';
 import { SessionTreeProvider } from './webview/SessionTreeProvider';
 import { writeClientConfigs } from './clients/writeClientConfigs';
 import { daemonToken, deregister, ensureDaemon, register } from './daemon/client';
 import { DEFAULT_DAEMON_PORT, DEV_DAEMON_PORT } from './daemon/protocol';
-import { CaptureHub } from './video/CaptureHub';
+import { AppConnection } from './app/AppClient';
+import { ensureApp } from './app/ensureApp';
 import { FirefoxBridge } from './firefox/FirefoxBridge';
 import { registerEndpoint } from './firefox/managedManifest';
 import { listFirefoxContainers } from './firefox/containers';
 
-const PID_KEY = 'cobrowser.browserPid';
-const BUILD_ID_KEY = 'cobrowser.chromeBuildId';
 // Bearer token for the local MCP endpoint. Stored in workspaceState (NOT globalState): each
 // workspace gets its OWN token, and it PERSISTS across reloads. Per-workspace so two windows
 // never share one endpoint (a rotating or shared token invalidates the written client configs
@@ -32,9 +27,6 @@ const EH_PID_KEY = 'cobrowser.extHostPid';
 // Per-workspace: was a browser running here? If so, relaunch it on activation so a
 // window reload brings the tabs back instead of leaving the editor tabs empty.
 const WAS_RUNNING_KEY = 'cobrowser.wasRunning';
-// The kept-alive Chrome's DevTools ws endpoint, so a reload can reconnect to it (tabs
-// intact) instead of relaunching + restoring.
-const WS_KEY = 'cobrowser.wsEndpoint';
 // Our own copy of the open tabs (URL + editor column), updated on every pages-change and
 // panel-layout change. Reconnect and --restore-last-session both fail when Chrome dies
 // WITH the extension host (a normal window reload kills the whole tree, and an unclean
@@ -62,35 +54,6 @@ let extensionContext: vscode.ExtensionContext | undefined;
 /** Set once this window has registered with the daemon, so deactivate() can withdraw it. */
 let registeredWith: { port: number; id: string; dev: boolean } | undefined;
 
-/**
- * Where the human watches the browser.
- *
- *  - 'panel'  : headless Chrome, screencast as images into a webview panel. No OS window.
- *  - 'window' : real Chrome on the desktop, with NO panel. The panel is a mirror of the same
- *               tab, so showing both was the confusing part: one page visible twice, with the
- *               viewport forced to the panel's size and the real window laid out wrong.
- *
- * The agent drives the same browser either way — only the human's view changes.
- */
-type DisplayMode = 'panel' | 'window';
-
-// Set by the "Use Window Mode" / "Use Panel Mode" commands. Kept in workspaceState rather
-// than writing `cobrowser.display` so switching doesn't drop a .vscode/settings.json into
-// the repo — and it outranks the setting, since it is the more recent, explicit choice.
-const DISPLAY_OVERRIDE_KEY = 'cobrowser.displayOverride';
-let displayOverride: DisplayMode | undefined;
-
-function displayMode(cfg: vscode.WorkspaceConfiguration): DisplayMode {
-  if (displayOverride) return displayOverride;
-  const explicit = cfg.get<string>('display');
-  if (explicit === 'window' || explicit === 'panel') return explicit;
-  // Back-compat: `cobrowser.headless: false` used to be the only way to ask for a real
-  // window, so honour it when display hasn't been set.
-  const legacy = cfg.inspect<boolean>('headless');
-  const set = legacy?.workspaceFolderValue ?? legacy?.workspaceValue ?? legacy?.globalValue;
-  return set === false ? 'window' : 'panel';
-}
-
 /** The container this workspace may drive: the command-set binding first, then the setting,
  *  then the pre-rename setting. Three sources so the binding can be per-workspace without
  *  writing a file into the repo, and so an existing zenContainer keeps working. */
@@ -113,27 +76,14 @@ function firefoxContainerFor(
   );
 }
 
-/**
- * Whether to install the virtual WebAuthn authenticator, which makes passkey ceremonies fail
- * fast so sites fall back to a password.
- *
- * It follows the display mode, because the two modes have opposite problems. Headless has no
- * OS window, so the Touch ID prompt can never appear and a passkey ceremony just hangs —
- * failing fast is the only way through. In window mode there IS a real Chrome window, the
- * prompt appears normally, and installing a virtual authenticator would REPLACE a passkey the
- * human can actually use with a forced password fallback. Defaulting it on everywhere quietly
- * broke working passkeys in window mode.
- *
- * An explicit setting still wins, at any scope.
- */
-function passkeyFallbackFor(cfg: vscode.WorkspaceConfiguration, headless: boolean): boolean {
-  const set = cfg.inspect<boolean>('autoFallbackPasskeys');
-  const explicit =
-    set?.workspaceFolderValue ?? set?.workspaceValue ?? set?.globalValue;
-  return typeof explicit === 'boolean' ? explicit : headless;
+/** Whether to install the virtual WebAuthn authenticator, which makes passkey ceremonies
+ *  fail fast so sites fall back to a password. An offscreen page has no window to host the
+ *  OS prompt, so a real ceremony would just hang. Explicit setting wins. */
+function passkeyFallbackFor(cfg: vscode.WorkspaceConfiguration): boolean {
+  return cfg.get<boolean>('autoFallbackPasskeys') ?? true;
 }
 
-/** The running build's version, so the daemon can be restarted when it is stale. */
+/** The running build's version, so the daemon and the app can be restarted when stale. */
 function extensionVersion(context: vscode.ExtensionContext): string {
   return (context.extension?.packageJSON as { version?: string } | undefined)?.version ?? '0.0.0';
 }
@@ -155,8 +105,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     await context.workspaceState.update(TOKEN_KEY, token);
   }
   const cfg = vscode.workspace.getConfiguration('cobrowser');
-  const savedDisplay = context.workspaceState.get<string>(DISPLAY_OVERRIDE_KEY);
-  displayOverride = savedDisplay === 'window' || savedDisplay === 'panel' ? savedDisplay : undefined;
   // `cobrowser.port` is the DAEMON's port — the one stable URL every client is configured
   // with. This window's own server is an internal detail the daemon proxies to, so it takes
   // any free port (0) and never needs to be stable.
@@ -173,20 +121,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const predecessorPid = context.workspaceState.get<number>(EH_PID_KEY);
   await context.workspaceState.update(EH_PID_KEY, process.pid);
 
-  // Per-workspace profile (isolated logins/tabs per project + no two-window SingletonLock
-  // conflict). Falls back to global storage for a window with no folder open.
-  const profileBase = context.storageUri ?? context.globalStorageUri;
-  const profileDir = path.join(profileBase.fsPath, 'chrome-profile');
-  await vscode.workspace.fs.createDirectory(vscode.Uri.file(profileDir));
+  // The app keeps one browser profile (partition) per workspace, keyed by this path, so
+  // logins and tabs are isolated per project. A window with no folder shares a default.
+  const workspaceId = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? path.join(context.globalStorageUri.fsPath, 'default');
 
   // Activity Bar sidebar: profile(s) + their open tabs. Created before getSession
   // so its `() => session` closure is always initialized when first read.
-  // Assigned after the MCP HTTP server is up (shares its port); wire() below runs
-  // later than that in practice, but keep the reference optional to stay safe.
-  let captureHub: CaptureHub | undefined;
-
   const tree = new SessionTreeProvider(
-    { label: vscode.workspace.name ?? 'Default', path: profileDir },
+    { label: vscode.workspace.name ?? 'Default', path: workspaceId },
     () => session,
   );
   context.subscriptions.push(vscode.window.registerTreeDataProvider('cobrowser.sessions', tree));
@@ -195,37 +137,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // existing pages. Shared by launch (getSession) and reconnect-on-activate.
   const wire = async (s: BrowserSession): Promise<BrowserSession> => {
     session = s;
-    captureHub?.setSession(s); // old controller page died with the old Chrome
-    const pid = s.pid();
-    if (pid !== undefined) await context.globalState.update(PID_KEY, pid);
     await context.workspaceState.update(WAS_RUNNING_KEY, true);
-    await context.workspaceState.update(WS_KEY, s.wsEndpoint());
     s.onAllClosed(() => {
-      // Last tab closed → the browser quits itself. onDisconnected skips cleanup
-      // here (isDisposing is set), so clear the session ourselves — otherwise the
-      // dead session stays cached and every later tool call returns "Connection
-      // closed". Clearing it makes the next tool/panel relaunch a fresh browser.
+      // Last tab closed: this workspace has no browser until the next tab opens. Clear the
+      // cached session so the next tool call or panel reconnects fresh rather than hitting
+      // a session with no pages.
       void context.workspaceState.update(WAS_RUNNING_KEY, false);
-      void context.workspaceState.update(WS_KEY, undefined);
-      void context.globalState.update(PID_KEY, undefined);
       BrowserPanel.disposeAll();
       if (session === s) session = undefined;
       sessionPromise = undefined;
+      void s.disconnect();
       tree.refresh(); // profile → "stopped", tabs cleared
     });
 
-    // Ordinary tabs in one real window when the human is watching Chrome itself; a window
-    // per page only helps the screencast, which window mode does not use.
-    s.separateWindows = displayMode(cfg) === 'panel';
-    // One VS Code editor tab per browser page — VS Code's tab bar is the tab bar. Skipped in
-    // window mode: a panel would mirror a page the human can already see, and its viewport
-    // override would relayout the real window to the panel's dimensions.
-    if (displayMode(cfg) === 'panel') {
-      s.onPageOpened((page, id, reveal) => BrowserPanel.openForPage(context, s, page, id, reveal));
-      s.onPageClosed((id) => BrowserPanel.closeForId(id));
-      s.onPageReveal((id) => BrowserPanel.reveal(id));
-      s.onAgentHighlight((id, box) => BrowserPanel.get(id)?.postHighlight(box));
-    }
+    // One VS Code editor tab per browser page — VS Code's tab bar is the tab bar.
+    s.onPageOpened((page, id, reveal) => BrowserPanel.openForPage(context, s, page, id, reveal));
+    s.onPageClosed((id) => BrowserPanel.closeForId(id));
+    s.onPageReveal((id) => BrowserPanel.reveal(id));
+    s.onAgentHighlight((id, box) => BrowserPanel.get(id)?.postHighlight(box));
     // Keep the Activity Bar sidebar live: re-render its tab list whenever pages open,
     // close, navigate, or the active tab changes. (These fire sites existed but were
     // never connected to the tree, so the sidebar showed a stale first snapshot.)
@@ -248,15 +177,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     s.onDisconnected(() => {
       // Only for UNEXPECTED exits (crash / Cmd-Q). Intentional disconnect (reload) and
-      // close set isDisposing and are handled by disposeSession — keeping WS_KEY for a
+      // close set isDisposing and are handled by disposeSession, which keeps the tabs for a
       // reconnect in the reload case.
       if (s.isDisposing) return;
-      log('Chromium exited unexpectedly — clearing session; it will relaunch on next use.');
+      log('The cobrowser app went away — clearing session; it will reconnect on next use.');
       BrowserPanel.disposeAll();
       if (session === s) session = undefined;
       sessionPromise = undefined;
-      void context.workspaceState.update(WS_KEY, undefined);
-      void context.globalState.update(PID_KEY, undefined);
       tree.refresh(); // profile → "stopped"
     });
 
@@ -267,18 +194,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     return s;
   };
 
-  // After a fresh launch, reopen the tabs we saved from the previous session. Only runs
-  // when the browser came up with nothing but the initial blank page — if Chrome's own
-  // --restore-last-session worked, we skip rather than duplicate.
+  // On a fresh connection (the app had no tabs for this workspace), reopen the tabs we saved
+  // from the previous session — or a blank one, so tools always have a page to act on.
   const restoreTabs = async (s: BrowserSession, tabs: SavedTab[]): Promise<void> => {
     try {
-      if (tabs.length === 0) return;
-      if (s.pageEntries().some((e) => e.url && e.url !== 'about:blank')) return; // Chrome restored on its own
-      log(`Restoring ${tabs.length} saved tab(s).`);
-      await s.run(() => s.navigate('url', tabs[0].url)); // reuse the initial blank page
-      for (const t of tabs.slice(1)) {
-        await s.run(() => s.newPage(t.url, { background: true }));
-      }
+      if (s.pageEntries().length > 0) return; // the app still had our tabs
+      const urls = tabs.map((t) => t.url).filter((u) => u && u !== 'about:blank');
+      if (urls.length) log(`Restoring ${urls.length} saved tab(s).`);
+      await s.run(() => s.newPage(urls[0] ?? 'about:blank'));
+      for (const u of urls.slice(1)) await s.run(() => s.newPage(u, { background: true }));
     } catch (err) {
       log(`Tab restore failed: ${String(err)}`);
     } finally {
@@ -287,56 +211,44 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
   };
 
-  // Lazily launch the browser only when first needed (a tool call or the panel opening),
-  // so merely opening an editor window doesn't spawn Chrome.
+  // Connect to the app only when first needed (a tool call or a panel opening). The app
+  // itself is started on demand and outlives this window.
   const getSession = async (): Promise<BrowserSession> => {
     if (session) return session;
     if (!sessionPromise) {
       sessionPromise = (async () => {
-        const display = displayMode(cfg);
-        const headless = display === 'panel';
-        const autoFallbackPasskeys = passkeyFallbackFor(cfg, headless);
-
-        // Reconnect to a Chrome kept alive across a reload (tabs intact) before launching.
-        const savedWs = context.workspaceState.get<string>(WS_KEY);
-        if (savedWs) {
-          try {
-            const s = await BrowserSession.connect(savedWs, headless, autoFallbackPasskeys);
-            log('Reconnected to the browser from before the reload — tabs intact.');
-            const wired = await wire(s);
-            BrowserPanel.disposeUnclaimedRestored(); // pages adopted their shells in wire()
-            return wired;
-          } catch {
-            await context.workspaceState.update(WS_KEY, undefined);
-            log('Previous browser is gone; launching a fresh one.');
-          }
-        }
-        // No live browser — clear any stale SingletonLock, then launch fresh.
-        // Snapshot OUR saved tab list first: wire() fires pagesChanged for the fresh
-        // blank page, which overwrites TABS_KEY before restore could read it.
+        // Snapshot OUR saved tab list first: wire() fires pagesChanged, which overwrites
+        // TABS_KEY before restore could read it.
         const savedTabs = (context.workspaceState.get<Array<string | SavedTab>>(TABS_KEY) ?? [])
           .map((t) => (typeof t === 'string' ? { url: t } : t)); // pre-0.1.25 saves were bare URLs
-        // Plan panel columns BEFORE wiring: the first restored page's panel opens during
-        // wire()/emitExisting, and each recreated panel must land in its pre-reload group.
         BrowserPanel.planColumns(savedTabs.map((t) => t.col));
-        await cleanupOrphan(context, profileDir, log);
-        const chromePath = await ensureChrome(context, cfg, log);
-        const s = await BrowserSession.launch(
-          profileDir,
-          chromePath,
-          headless,
-          autoFallbackPasskeys,
-          cfg.get<boolean>('uncapFrameRate', false),
-          applePasswordsExtensions(context, cfg, profileDir, log),
+
+        const state = await vscode.window.withProgress(
+          { location: vscode.ProgressLocation.Notification, title: 'Cobrowser: starting browser' },
+          (progress) =>
+            ensureApp({
+              appMain: path.join(context.extensionUri.fsPath, 'dist', 'app', 'main.js'),
+              cacheDir: path.join(context.globalStorageUri.fsPath, 'electron'),
+              devElectron: path.join(context.extensionUri.fsPath, 'app', 'node_modules', 'electron', 'dist', 'Electron.app', 'Contents', 'MacOS', 'Electron'),
+              version: extensionVersion(context),
+              iconPath: vscode.Uri.joinPath(context.extensionUri, 'media', 'trayTemplate.png').fsPath,
+              onProgress: (d, t) => progress.report({ message: t ? `downloading Electron ${Math.round(d / 1e6)} / ${Math.round(t / 1e6)} MB` : `downloading Electron ${Math.round(d / 1e6)} MB` }),
+              log,
+            }),
         );
-        log(`Chromium launched (pid ${s.pid() ?? '?'}), profile ${profileDir}`);
+        const { conn, tabs } = await AppConnection.connect(state, workspaceId);
+        BrowserPanel.app = conn;
+        conn.onClose = () => log('App connection closed.');
+        const s = await BrowserSession.connectApp(conn, passkeyFallbackFor(cfg));
+        log(`Connected to the cobrowser app ${state.version} (${tabs.length} tab(s) already open for this workspace).`);
         const wired = await wire(s);
-        void restoreTabs(wired, savedTabs);
+        if (tabs.length) BrowserPanel.disposeUnclaimedRestored(); // pages adopted their shells in wire()
+        else await restoreTabs(wired, savedTabs);
         return wired;
       })();
       sessionPromise.catch((err) => {
         sessionPromise = undefined;
-        log(`Chromium launch failed: ${String(err)}`);
+        log(`Browser start failed: ${String(err)}`);
         void vscode.window.showErrorMessage(`Cobrowser: ${String(err)}`);
       });
     }
@@ -363,7 +275,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // container is configured — otherwise the firefox_* tools stay hidden entirely.
   const zenContainer = firefoxContainerFor(context, cfg);
   if (zenContainer) {
-    const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? profileDir;
+    const workspacePath = workspaceId;
     firefoxBridge = new FirefoxBridge(token, zenContainer, workspacePath, log);
     firefoxBridge.attach(mcp.httpServer, mcp.port);
     log(`Zen bridge listening at ${firefoxBridge.url().replace(/token=.*/, 'token=…')} (container "${zenContainer}").`);
@@ -372,22 +284,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     registerEndpoint(workspacePath, firefoxBridge.url(), log);
   }
 
-  // Hardware-video pipeline (experimental, cobrowser.videoPipeline): a hidden in-browser
-  // controller captures tabs and streams WebCodecs H.264 over a WebSocket on the SAME
-  // port/token as the MCP server; panels fall back to the JPEG screencast on any failure.
-  captureHub = new CaptureHub(
-    token,
-    vscode.Uri.joinPath(context.extensionUri, 'media', 'capture.html').fsPath,
-    log,
-  );
-  captureHub.attach(mcp.httpServer, mcp.port);
-  captureHub.onFrame((h) => BrowserPanel.routeVideo(h));
-  if (session) captureHub.setSession(session); // session may already exist (fast restore)
-  BrowserPanel.videoHub = captureHub;
-  BrowserPanel.videoEnabled = cfg.get<boolean>('videoPipeline', false);
-  BrowserPanel.imageFormat = cfg.get<'jpeg' | 'png'>('imageFormat', 'jpeg');
-  // Live-apply the toggle: re-read on change and restart streaming so switching
-  // pipelines doesn't need a window reload (the setting is read at activation only).
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('cobrowser.firefoxContainer') || e.affectsConfiguration('cobrowser.zenContainer')) {
@@ -398,20 +294,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             'Cobrowser: reload the window to finish changing the Zen container binding.',
           );
       }
-      const video = e.affectsConfiguration('cobrowser.videoPipeline');
-      const format = e.affectsConfiguration('cobrowser.imageFormat');
-      if (!video && !format) return;
-      const c = vscode.workspace.getConfiguration('cobrowser');
-      BrowserPanel.videoEnabled = c.get<boolean>('videoPipeline', false);
-      BrowserPanel.imageFormat = c.get<'jpeg' | 'png'>('imageFormat', 'jpeg');
-      log(
-        `Render settings changed: pipeline=${BrowserPanel.videoEnabled ? 'webrtc' : 'screencast'}, format=${BrowserPanel.imageFormat}.`,
-      );
-      void BrowserPanel.restartStreaming();
     }),
   );
-  const hubRef = captureHub;
-  context.subscriptions.push({ dispose: () => hubRef.dispose() });
   context.subscriptions.push({ dispose: () => firefoxBridge?.dispose() });
 
   // B2: VS Code's MCP provider API does not exist in Cursor — feature-detect so
@@ -472,11 +356,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(
     vscode.commands.registerCommand('cobrowser.open', async () => {
       const s = await getSession();
-      if (displayMode(cfg) === 'window') {
-        // There are no panels to open — put the real Chrome window in front instead.
-        await s.run(() => s.bringToFront()).catch(() => undefined);
-        return;
-      }
       // Open a panel for each existing page (reveals the active one). Future
       // pages open their panels via onPageOpened.
       s.emitExisting();
@@ -534,40 +413,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await getSession();
       void vscode.window.showInformationMessage('Cobrowser: browser restarted.');
     }),
-    vscode.commands.registerCommand('cobrowser.useWindowMode', () => switchDisplay('window')),
-    vscode.commands.registerCommand('cobrowser.usePanelMode', () => switchDisplay('panel')),
   );
-
-  /** Switch this workspace between panels and real windows. Headless vs headful is fixed at
-   *  launch, so this has to quit and relaunch the browser. */
-  async function switchDisplay(next: DisplayMode): Promise<void> {
-    const label = next === 'window' ? 'window mode (real Chromium windows)' : 'panel mode (embedded)';
-    if (displayMode(cfg) === next && session) {
-      if (next === 'window') await session.run(() => session!.bringToFront()).catch(() => undefined);
-      void vscode.window.showInformationMessage(`Cobrowser: this workspace is already in ${label}.`);
-      return;
-    }
-    // Quitting the browser can fire page-closed events that save an emptier tab list over
-    // the real one, so snapshot it and put it back before the relaunch reads it.
-    const tabs = context.workspaceState.get(TABS_KEY);
-    displayOverride = next;
-    await context.workspaceState.update(DISPLAY_OVERRIDE_KEY, next);
-    log(`Display switched to ${next} for this workspace — restarting the browser.`);
-    try {
-      await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: `Cobrowser: switching to ${label}…` },
-        async () => {
-          await disposeSession(context);
-          await context.workspaceState.update(TABS_KEY, tabs);
-          const s = await getSession();
-          if (next === 'window') await s.run(() => s.bringToFront()).catch(() => undefined);
-        },
-      );
-      void vscode.window.showInformationMessage(`Cobrowser: now in ${label}.`);
-    } catch {
-      /* getSession already reported the launch failure */
-    }
-  }
 
   // If a browser was running in this workspace before (e.g. a window reload), bring it
   // back now — getSession reconnects to the kept-alive Chrome (tabs intact, no gap), or
@@ -593,30 +439,8 @@ export async function deactivate(): Promise<void> {
   mcp = undefined;
 }
 
-/** iCloud Passwords, when the user has it in Chrome and hasn't turned it off. Autofill also
- *  needs Apple's native helper, which only an admin can put where Chrome for Testing looks —
- *  so say exactly what to run rather than failing silently at autofill time. */
-function applePasswordsExtensions(
-  context: vscode.ExtensionContext,
-  cfg: vscode.WorkspaceConfiguration,
-  profileDir: string,
-  log: (m: string) => void,
-): string[] {
-  if (!cfg.get<boolean>('applePasswords', true)) return [];
-  const dir = ensureApplePasswords(context.globalStorageUri.fsPath, log);
-  if (!dir) {
-    log('iCloud Passwords is not installed in a Chrome profile — skipping (nothing to copy from).');
-    return [];
-  }
-  // Register Apple's helper INTO THIS PROFILE. Chromium resolves user-level native-messaging
-  // manifests relative to the user-data-dir, which cobrowser owns — so autofill needs no
-  // admin rights. Pair once per profile from the extension's popup page.
-  installNativeHost(profileDir, log);
-  return [dir];
-}
-
 async function disposeSession(
-  context: vscode.ExtensionContext | undefined,
+  _context: vscode.ExtensionContext | undefined,
   opts?: { keepAlive?: boolean },
 ): Promise<void> {
   const s = session;
@@ -629,92 +453,12 @@ async function disposeSession(
   if (s) {
     try {
       if (opts?.keepAlive) {
-        await s.disconnect(); // reload/close → leave Chrome + tabs alive to reconnect
+        await s.disconnect(); // reload/close → the app keeps the tabs for the reconnect
       } else {
-        await s.dispose(); // restartBrowser → actually quit Chrome
-        if (context) await context.workspaceState.update(WS_KEY, undefined);
+        await s.dispose(); // restartBrowser → close this workspace's tabs in the app
       }
     } catch {
       /* ignore */
     }
-  }
-  if (context) await context.globalState.update(PID_KEY, undefined);
-}
-
-async function cleanupOrphan(
-  context: vscode.ExtensionContext,
-  profileDir: string,
-  log: (m: string) => void,
-): Promise<void> {
-  // Reap EVERY orphaned cobrowser Chromium bound to our profile, not just the last
-  // tracked pid. Reloads keep Chrome alive on purpose (for reconnect); when reconnect
-  // later fails and we fall through to a fresh launch, any prior instances would
-  // otherwise pile up (we saw 9). This only runs on the launch path — never when we
-  // just reconnected — so it can't kill an instance we're actually using.
-  for (const orphan of findCobrowserChromePids(profileDir)) {
-    try {
-      process.kill(orphan, 'SIGKILL');
-      log(`Reaped orphaned Chromium (pid ${orphan}).`);
-    } catch {
-      /* already dead */
-    }
-  }
-  await context.globalState.update(PID_KEY, undefined);
-  for (const lock of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
-    try {
-      fs.rmSync(path.join(profileDir, lock), { force: true });
-    } catch {
-      /* ignore */
-    }
-  }
-}
-
-/** Resolve the Chrome executable (download-on-first-run), showing a progress notification. */
-async function ensureChrome(
-  context: vscode.ExtensionContext,
-  cfg: vscode.WorkspaceConfiguration,
-  log: (m: string) => void,
-): Promise<string> {
-  const cacheDir = path.join(context.globalStorageUri.fsPath, 'browsers');
-  const override = cfg.get<string>('chromePath') || undefined;
-  return vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title: 'Cobrowser: preparing browser', cancellable: false },
-    (progress) =>
-      ensureChromeExecutable({
-        cacheDir,
-        override,
-        store: {
-          get: () => context.globalState.get<string>(BUILD_ID_KEY),
-          set: (id) => context.globalState.update(BUILD_ID_KEY, id),
-        },
-        onProgress: (downloaded, total) => {
-          const mb = (n: number) => Math.round(n / 1e6);
-          progress.report({
-            message: total
-              ? `downloading Chrome ${mb(downloaded)} / ${mb(total)} MB`
-              : `downloading Chrome ${mb(downloaded)} MB`,
-          });
-        },
-        log,
-      }),
-  );
-}
-
-/** PIDs of all live main Chromium processes launched against our profile dir.
- *  Matches `--user-data-dir=<profileDir>` (only the main process carries that flag,
- *  so helpers/renderers are excluded and die with their parent). */
-function findCobrowserChromePids(profileDir: string): number[] {
-  try {
-    const out = execFileSync('ps', ['ax', '-o', 'pid=,command='], { encoding: 'utf8' });
-    const needle = `--user-data-dir=${profileDir}`;
-    const pids: number[] = [];
-    for (const line of out.split('\n')) {
-      if (!line.includes(needle)) continue;
-      const pid = Number.parseInt(line.trim().split(/\s+/)[0], 10);
-      if (Number.isInteger(pid) && pid !== process.pid) pids.push(pid);
-    }
-    return pids;
-  } catch {
-    return []; // ps failed — reap nothing rather than risk a wrong kill
   }
 }

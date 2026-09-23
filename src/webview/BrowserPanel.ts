@@ -3,13 +3,7 @@ import { pickColumn } from './columns';
 import * as fs from 'node:fs';
 import type { CDPSession, Page } from 'puppeteer-core';
 import type { BrowserSession, ElementBox } from '../browser/BrowserSession';
-import type { CaptureHub, VideoHeader } from '../video/CaptureHub';
-
-interface FrameEvent {
-  data: string;
-  sessionId: number;
-  metadata: unknown;
-}
+import type { AppConnection } from '../app/AppClient';
 
 /** Ceiling on rendered pixels per frame (device px). 5Mpx sits above a full-screen
  *  retina laptop panel (~3.6Mpx, measured 60fps) and below the point where JPEG
@@ -82,32 +76,8 @@ export class BrowserPanel {
    *  (a panel dragged to another editor group doesn't fire any session event). */
   static onLayoutChanged: (() => void) | undefined;
 
-  /** Hardware-video pipeline (H.264 over WebSocket). When enabled, visible panels
-   *  try video first and fall back to the JPEG screencast on any failure. */
-  static videoHub: CaptureHub | undefined;
-  static videoEnabled = false;
-
-  /** Deliver capture-side status (errors) from the hub to the owning panel. */
-  static routeVideo(header: VideoHeader): void {
-    BrowserPanel.panels.get(header.pageId)?.postVideo(header);
-  }
-
-  /** Tear down and re-establish every visible panel's stream — used when the
-   *  render pipeline changes under us (videoPipeline toggled). */
-  static async restartStreaming(): Promise<void> {
-    for (const p of BrowserPanel.panels.values()) {
-      if (!p.streaming) continue;
-      p.streaming = false;
-      if (p.videoMode) {
-        p.videoMode = false;
-        BrowserPanel.videoHub?.stop(p.id);
-        void p.panel.webview.postMessage({ method: 'cobrowser.rtcstop' });
-      } else {
-        await p.stopScreencast();
-      }
-      await p.syncRender();
-    }
-  }
+  /** The app streaming this workspace's tabs. Set by the extension once connected. */
+  static app: AppConnection | undefined;
 
   /** Inlined webview assets (CSS/JS), read ONCE and cached in memory. */
   private static assetCache: { css: string; js: string } | undefined;
@@ -249,17 +219,11 @@ export class BrowserPanel {
 
   private disposables: vscode.Disposable[] = [];
   private cdp: CDPSession | undefined;
-  private frameHandler: ((e: FrameEvent) => void) | undefined;
   private ready = false;
   private metrics = { cssW: 0, cssH: 0, dpr: 1 };
   private origin = '';
   private appliedKey = '';
   private streaming = false;
-  /** True while this panel renders via the WebRTC pipeline instead of the screencast. */
-  private videoMode = false;
-  /** True from the moment WebRTC negotiation starts until frames actually arrive (or it
-   *  fails). The screencast keeps painting throughout, so the swap is invisible. */
-  private videoPending = false;
 
   private constructor(
     private context: vscode.ExtensionContext,
@@ -314,173 +278,60 @@ export class BrowserPanel {
     void this.panel.webview.postMessage({ type: 'extension.highlight', box });
   }
 
-  /** Screencast whenever this panel is on screen. Each page owns a whole headless
-   *  window (BrowserSession.createPageInNewWindow), so its compositor pushes frames
-   *  at full rate regardless of which panel the human has focused — no foreground
-   *  coordination, no background polling. Hidden panels stream nothing. */
+  /** Stream whenever this panel is on screen. Every tab is its own offscreen window in the
+   *  app, so every visible panel gets frames at full rate at once; hidden panels get none. */
   private async syncRender(): Promise<void> {
     const shouldStream = this.panel.visible && this.ready;
     if (shouldStream === this.streaming) return;
     this.streaming = shouldStream;
     if (shouldStream) {
       // Becoming visible: make this the agent's current page too, and re-verify the
-      // viewport — it may be stale from a failed apply or a relaunch while hidden
-      // (the "stretched until you resize" bug). Dedupe keys drop on both sides so
-      // the re-apply actually runs.
+      // viewport — it may be stale from a failed apply while hidden.
       await this.session.run(() => this.session.focusPage(this.id)).catch(() => undefined);
       this.appliedKey = '';
       void this.panel.webview.postMessage({ type: 'extension.remeasure' });
-      // Prefer the WebRTC pipeline when enabled; any failure (controller, capture,
-      // negotiation, decode) falls straight back to the JPEG screencast.
-      if (BrowserPanel.videoEnabled && BrowserPanel.videoHub) {
-        // WebRTC needs ~1.7s to first frame (capture + offer/answer + ICE + keyframe),
-        // where the screencast delivers in ~10ms. So paint with JPEG straight away and
-        // hand over only once video is actually playing — the panel is never blank.
-        // Mark the handover as pending FIRST so the viewport is laid out in the size
-        // video will want, avoiding a reflow at the swap.
-        this.videoPending = true;
-        this.appliedKey = '';
-        void this.panel.webview.postMessage({ type: 'extension.remeasure' });
-        await this.startScreencast();
-        // Tell the webview to join as the receiver BEFORE the offer is created, so the
-        // controller's offer has somewhere to land.
-        void this.panel.webview.postMessage({
-          method: 'cobrowser.rtcstart',
-          url: BrowserPanel.videoHub.viewerUrl(this.id),
-        });
-        const ok = await BrowserPanel.videoHub.start(this.id, this.page);
-        // Success only means negotiation began; the webview reports 'extension.videolive'
-        // when frames actually arrive, and that is what stops the screencast.
-        if (!ok || !this.streaming) {
-          this.videoPending = false;
-          void this.panel.webview.postMessage({ method: 'cobrowser.rtcstop' });
-          this.appliedKey = ''; // back to the device-pixel viewport JPEG wants
-          void this.panel.webview.postMessage({ type: 'extension.remeasure' });
-        }
-        return;
-      }
-      await this.startScreencast();
-    } else if (this.videoMode || this.videoPending) {
-      // Hidden while on (or mid-handover to) video: tear both down. Clearing
-      // videoPending matters — it selects the viewport strategy.
-      this.videoMode = false;
-      this.videoPending = false;
-      BrowserPanel.videoHub?.stop(this.id);
-      void this.panel.webview.postMessage({ method: 'cobrowser.rtcstop' });
-      await this.stopScreencast(); // may still be covering the negotiation
+      this.startStream();
     } else {
-      await this.stopScreencast();
+      this.stopStream();
     }
   }
 
-  /** Capture-side status. Media itself never reaches this process — it flows
-   *  peer-to-peer from the browser into the webview — so only failures matter here. */
-  private postVideo(header: VideoHeader): void {
-    // Also while pending: capture can fail during negotiation, before video is live.
-    if (!this.videoMode && !this.videoPending) return;
-    if (header.kind === 'error') {
-      // Capture died mid-stream (track ended, negotiation failed) — fall back live.
-      this.videoMode = false;
-      this.videoPending = false;
-      void this.panel.webview.postMessage({ method: 'cobrowser.rtcstop' });
-      // Back to the device-pixel viewport the screencast path expects.
-      this.appliedKey = '';
-      void this.panel.webview.postMessage({ type: 'extension.remeasure' });
-      void this.startScreencast();
-    }
-  }
-
+  /** A CDP session on the page for trusted input (Input.*) and small page queries. */
   private async ensureCdp(): Promise<CDPSession> {
     if (this.cdp) return this.cdp;
     this.cdp = await this.page.createCDPSession();
-    this.frameHandler = (e: FrameEvent) => {
-      // Binary transport: decode the base64 ONCE here with native Buffer and hand the
-      // webview raw JPEG bytes. The old path shipped a 33%-larger base64 string through
-      // the JSON message channel and decoded it via an <img data:> URL on the webview's
-      // main thread — most of the same-device latency lived there, not in capture.
-      const buf = Buffer.from(e.data, 'base64');
-      void this.panel.webview.postMessage({
-        method: 'cobrowser.frame',
-        bytes: new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength),
-        metadata: e.metadata,
-      });
-      this.cdp?.send('Page.screencastFrameAck', { sessionId: e.sessionId }).catch(() => undefined);
-    };
-    this.cdp.on('Page.screencastFrame', this.frameHandler as never);
     return this.cdp;
   }
 
-  /** Adaptive quality, the way remote-desktop protocols do it: full fidelity when the
-   *  page is still, reduced while it's moving. Scrolling changes every pixel, so each
-   *  frame is a FULL-size JPEG — at q90/5Mpx that caps out around 20-25fps and reads as
-   *  sluggish. Detail is imperceptible mid-scroll anyway, so trade it for frame rate and
-   *  restore crispness the moment things settle. */
-  /** Frame format for the screencast, from `cobrowser.imageFormat`. */
-  static imageFormat: 'jpeg' | 'png' = 'jpeg';
-
-  /**
-   * Always full fidelity. The adaptive "drop quality while moving" scheme that used to
-   * live here was solving a bottleneck that measurement showed does not exist: with the
-   * frame path instrumented end to end, frames DRAWN always equalled frames RECEIVED.
-   * The real limit is Chrome rendering + encoding the page, which varies hugely by site
-   * (measured ~40fps on a dense article, ~90fps on Hacker News), and lowering quality
-   * did not raise it — so softening during scroll was pure loss.
-   *
-   * Format is a genuine either/or rather than a quality dial (measured, 3.1Mpx,
-   * scrolling): on text-heavy pages PNG is both LOSSLESS and slightly smaller than
-   * JPEG q90 (457KB vs 478KB) at 41 vs 46fps, because JPEG spends bits encoding the
-   * ringing it creates around glyphs. On photo-heavy pages PNG doubles the bytes
-   * (780KB vs 375KB) at comparable frame rate. Bandwidth is not the bottleneck here,
-   * so this is really "perfect text" vs "lighter frames".
-   */
-  private async startScreencast(): Promise<void> {
-    try {
-      const cdp = await this.ensureCdp();
-      const png = BrowserPanel.imageFormat === 'png';
-      await cdp.send('Page.startScreencast', {
-        format: png ? 'png' : 'jpeg',
-        // PNG is lossless — `quality` is meaningless and must not be sent.
-        ...(png ? {} : { quality: 90 }), // q70 ringing on text reads as "grainy"
-        // Caps must exceed the largest device-pixel viewport or frames get downscaled
-        // back to blurry — 8192 clears even a 6K display's full width.
-        maxWidth: 8192,
-        maxHeight: 8192,
-        everyNthFrame: 1,
+  /** Frames come from the app: each paint of the offscreen tab arrives as a JPEG with the
+   *  frame's device size, which the webview maps input against. */
+  private startStream(): void {
+    const tabId = this.session.tabIdOf(this.page);
+    if (!tabId || !BrowserPanel.app) return;
+    BrowserPanel.app.subscribe(tabId, (f) => {
+      void this.panel.webview.postMessage({
+        method: 'cobrowser.frame',
+        bytes: f.bytes,
+        metadata: { deviceWidth: f.metadata.deviceWidth, deviceHeight: f.metadata.deviceHeight },
       });
-    } catch {
-      /* page may be navigating/closed; a later view-state change retries */
-    }
+    });
   }
 
-  private async stopScreencast(): Promise<void> {
-    try {
-      await this.cdp?.send('Page.stopScreencast');
-    } catch {
-      /* page already gone */
-    }
+  private stopStream(): void {
+    const tabId = this.session.tabIdOf(this.page);
+    if (tabId) BrowserPanel.app?.unsubscribe(tabId);
   }
 
-  /** Size the page viewport to the panel in device pixels (screencast ignores
-   *  deviceScaleFactor), divided by the per-site zoom (persisted per origin). */
+  /** Size the page to the panel in DEVICE pixels (crisp text on retina), divided by the
+   *  per-site zoom (persisted per origin). The app renders exactly that size at scale 1. */
   private async applyViewport(): Promise<void> {
     const { cssW, cssH, dpr } = this.metrics;
     if (cssW < 50 || cssH < 50) return;
     const zoom = this.getZoom();
-    // Two viewport strategies, one per render path:
-    //  - JPEG: inflate the CSS viewport to DEVICE pixels, because the screencast captures
-    //    the emulated viewport at scale 1 (that is what makes text crisp there).
-    //  - WebRTC: keep the viewport at CSS size and let the WINDOW (sized to match) drive
-    //    capture — tab capture already delivers 2x, so crispness is free. Inflating here
-    //    too would lay the page out at 2x inside a 1x window (squashed, unreadable) and
-    //    put page coordinates 2x out of step with the video.
-    const renderScale = this.videoMode || this.videoPending ? 1 : dpr;
-    let width = Math.max(1, Math.round((cssW * renderScale) / zoom));
-    let height = Math.max(1, Math.round((cssH * renderScale) / zoom));
-    // Cap the rendered area. Rendering at full device pixels keeps text crisp, but the
-    // cost is quadratic and unbounded: a large panel at dpr 2 reaches ~10.7Mpx, where the
-    // JPEG encoder drops to 46fps with 1.26MB frames (measured) — the "low framerate and
-    // jitter" — and no H.264 level accepts it either. Past the budget, back the effective
-    // scale off toward 1x: still sharper than CSS pixels, and 60fps again.
+    let width = Math.max(1, Math.round((cssW * dpr) / zoom));
+    let height = Math.max(1, Math.round((cssH * dpr) / zoom));
+    // Cap the rendered area: full device pixels keep text crisp, but the cost is quadratic
+    // and unbounded. Past the budget, back the effective scale off toward 1x.
     const area = width * height;
     if (area > MAX_RENDER_PX) {
       const s = Math.sqrt(MAX_RENDER_PX / area);
@@ -491,29 +342,11 @@ export class BrowserPanel {
     const key = `${width}x${height}`;
     if (key === this.appliedKey) return;
     try {
-      await this.session.run(() => this.session.setViewport(this.page, width, height, 1));
-      // Mark applied only AFTER success. Setting it up-front meant a transient failure
-      // (page mid-navigation, session churn) left the page stuck on the 1280x800 launch
-      // default — stretched to the panel — until a manual resize changed the key.
-      this.appliedKey = key;
-      if (this.videoMode) {
-        // Keep the window (what tab capture records) the same size as the viewport,
-        // and tell the webview the page's coordinate space so input maps correctly —
-        // the video is 2x this, so it cannot be used as the coordinate reference.
-        await this.session
-          .run(() => this.session.setWindowSize(this.page, width, height))
-          .catch(() => undefined);
-        void this.panel.webview.postMessage({
-          method: 'cobrowser.rtcpagesize',
-          width,
-          height,
-        });
-      }
+      await this.session.run(() => this.session.setViewport(this.page, width, height));
+      this.appliedKey = key; // only after success, so a transient failure retries
     } catch {
-      this.appliedKey = ''; // retry on the next viewport push / remeasure
-      return;
+      this.appliedKey = '';
     }
-    if (this.streaming && !this.videoMode) await this.startScreencast();
   }
 
   private zoomMap(): Record<string, number> {
@@ -542,24 +375,6 @@ export class BrowserPanel {
             this.ready = true;
             await this.syncRender();
             void this.panel.webview.postMessage({ type: 'extension.url', url: this.page.url() });
-            break;
-          case 'extension.videolive':
-            // Frames are on screen — retire the screencast now, not before.
-            if (this.videoPending) {
-              this.videoPending = false;
-              this.videoMode = true;
-              await this.stopScreencast();
-            }
-            break;
-          case 'extension.videoerror':
-            // Receiver-side failure (negotiation, connection state) — abandon video for
-            // this panel and restore the screencast's device-pixel viewport.
-            this.videoMode = false;
-            this.videoPending = false;
-            BrowserPanel.videoHub?.stop(this.id);
-            this.appliedKey = '';
-            void this.panel.webview.postMessage({ type: 'extension.remeasure' });
-            await this.startScreencast();
             break;
           case 'extension.contextinfo': {
             // Right-click: report what's under the cursor (selection / link) so the
@@ -664,7 +479,9 @@ export class BrowserPanel {
     // CDP passthrough (Input.*). Sent DIRECTLY, not through session.run(): human input must
     // never queue behind a slow agent action (navigate / waitFor) — that head-of-line blocking
     // was the main "laggy" feel. Input events are independent CDP calls, safe to interleave.
-    const cdp = this.cdp;
+    // The session is created on first use: the screencast used to create it as a side
+    // effect, and without that every click was silently dropped.
+    const cdp = await this.ensureCdp().catch(() => undefined);
     if (!cdp) return;
     try {
       const result = await (cdp.send as (method: string, params?: unknown) => Promise<unknown>)(
@@ -683,7 +500,7 @@ export class BrowserPanel {
 
   /** Full panel HTML. Static so serializer-restored shells can paint before any
    *  BrowserPanel instance exists (instant tabs on reload). */
-  private static renderHtml(context: vscode.ExtensionContext): string {
+  static renderHtml(context: vscode.ExtensionContext): string {
     const nonce = getNonce();
     // Inline CSS + JS instead of <link>/<script src>: an external asWebviewUri fetch can race
     // or 404 (e.g. a retained webview still pointing at a pruned old build after an update),
@@ -739,17 +556,9 @@ export class BrowserPanel {
 
   dispose(): void {
     BrowserPanel.panels.delete(this.id);
-    if (this.videoMode) BrowserPanel.videoHub?.stop(this.id);
+    this.stopStream();
     this.page.off('framenavigated', this.onNav);
-    if (this.cdp && this.frameHandler) {
-      try {
-        this.cdp.off('Page.screencastFrame', this.frameHandler as never);
-        this.cdp.send('Page.stopScreencast').catch(() => undefined);
-        this.cdp.detach().catch(() => undefined);
-      } catch {
-        /* ignore */
-      }
-    }
+    this.cdp?.detach().catch(() => undefined);
     // The human closed this editor tab → close the underlying browser page. But during a
     // session teardown (window reload), leave the pages open so browser.close() saves them
     // and --restore-last-session brings them back.

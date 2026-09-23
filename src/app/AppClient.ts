@@ -1,0 +1,175 @@
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import WebSocket from 'ws';
+
+export interface AppState {
+  wsPort: number;
+  token: string;
+  debugWs: string;
+  pid: number;
+  version: string;
+}
+
+export interface AppTabInfo {
+  tabId: string;
+  targetId: string;
+  url: string;
+  opener?: string;
+}
+
+export interface AppFrame {
+  bytes: Uint8Array;
+  metadata: { tabId: string; deviceWidth: number; deviceHeight: number };
+}
+
+export const STATE_FILE = path.join(os.homedir(), '.cobrowser', 'app.json');
+
+/** The running app's connection details, or undefined if it isn't running. */
+export function readAppState(): AppState | undefined {
+  try {
+    const s = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')) as AppState;
+    process.kill(s.pid, 0); // throws when the pid is gone → the file is stale
+    return s;
+  } catch {
+    return undefined;
+  }
+}
+
+type FrameListener = (f: AppFrame) => void;
+
+/**
+ * This editor window's connection to the app, scoped to one workspace. Tabs belong to the
+ * workspace inside the app, not to this socket: a reload reconnects and finds them again.
+ */
+export class AppConnection {
+  private ws: WebSocket;
+  private nextRequest = 1;
+  private pending = new Map<number, (m: Record<string, unknown>) => void>();
+  private frameListeners = new Map<string, FrameListener>();
+  /** targetId → tabId for every tab the app has told us about. */
+  private byTarget = new Map<string, string>();
+  readonly debugWs: string;
+  readonly version: string;
+  onTabOpened?: (t: AppTabInfo) => void;
+  onTabClosed?: (tabId: string) => void;
+  onClose?: () => void;
+
+  private constructor(ws: WebSocket, hello: { debugWs: string; version: string; tabs: AppTabInfo[] }) {
+    this.ws = ws;
+    this.debugWs = hello.debugWs;
+    this.version = hello.version;
+    for (const t of hello.tabs) this.byTarget.set(t.targetId, t.tabId);
+    ws.on('message', (data, isBinary) => this.receive(data as Buffer, isBinary));
+    ws.on('close', () => this.onClose?.());
+    ws.on('error', () => undefined); // surfaced through 'close'
+  }
+
+  static async connect(state: AppState, workspace: string): Promise<{ conn: AppConnection; tabs: AppTabInfo[] }> {
+    const ws = new WebSocket(`ws://127.0.0.1:${state.wsPort}/?token=${state.token}`);
+    await new Promise<void>((resolve, reject) => {
+      ws.once('open', () => resolve());
+      ws.once('error', reject);
+    });
+    const hello = await new Promise<{ debugWs: string; version: string; tabs: AppTabInfo[] }>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('app did not answer hello')), 10000);
+      ws.once('message', (data) => {
+        clearTimeout(timer);
+        resolve(JSON.parse((data as Buffer).toString()));
+      });
+      ws.send(JSON.stringify({ type: 'hello', workspace }));
+    });
+    return { conn: new AppConnection(ws, hello), tabs: hello.tabs };
+  }
+
+  private send(m: Record<string, unknown>): void {
+    if (this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(m));
+  }
+
+  private request(m: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const requestId = this.nextRequest++;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(requestId);
+        reject(new Error(`app did not answer ${String(m.type)}`));
+      }, 15000);
+      this.pending.set(requestId, (r) => {
+        clearTimeout(timer);
+        resolve(r);
+      });
+      this.send({ ...m, requestId });
+    });
+  }
+
+  async openTab(url: string, width: number, height: number): Promise<AppTabInfo> {
+    const r = (await this.request({ type: 'openTab', url, width, height })) as unknown as AppTabInfo;
+    this.byTarget.set(r.targetId, r.tabId);
+    return r;
+  }
+
+  async listTabs(): Promise<AppTabInfo[]> {
+    const r = await this.request({ type: 'listTabs' });
+    const tabs = r.tabs as AppTabInfo[];
+    for (const t of tabs) this.byTarget.set(t.targetId, t.tabId);
+    return tabs;
+  }
+
+  tabIdFor(targetId: string): string | undefined {
+    return this.byTarget.get(targetId);
+  }
+
+  closeTab(tabId: string): void {
+    this.send({ type: 'closeTab', tabId });
+  }
+
+  closeAll(): void {
+    this.send({ type: 'closeAll' });
+  }
+
+  resize(tabId: string, width: number, height: number): void {
+    this.send({ type: 'resize', tabId, width, height });
+  }
+
+  subscribe(tabId: string, listener: FrameListener): void {
+    this.frameListeners.set(tabId, listener);
+    this.send({ type: 'subscribe', tabId });
+  }
+
+  unsubscribe(tabId: string): void {
+    this.frameListeners.delete(tabId);
+    this.send({ type: 'unsubscribe', tabId });
+  }
+
+  private receive(data: Buffer, isBinary: boolean): void {
+    if (isBinary) {
+      const metaLen = data.readUInt32LE(0);
+      const metadata = JSON.parse(data.subarray(4, 4 + metaLen).toString()) as AppFrame['metadata'];
+      const listener = this.frameListeners.get(metadata.tabId);
+      if (!listener) return;
+      const bytes = new Uint8Array(data.buffer, data.byteOffset + 4 + metaLen, data.length - 4 - metaLen);
+      listener({ bytes, metadata });
+      return;
+    }
+    const m = JSON.parse(data.toString()) as Record<string, unknown>;
+    if (typeof m.requestId === 'number') {
+      const cb = this.pending.get(m.requestId);
+      this.pending.delete(m.requestId);
+      cb?.(m);
+      return;
+    }
+    if (m.type === 'tab') {
+      const t = m as unknown as AppTabInfo;
+      this.byTarget.set(t.targetId, t.tabId);
+      this.onTabOpened?.(t);
+    } else if (m.type === 'tabClosed') {
+      const id = String(m.tabId);
+      for (const [target, tab] of this.byTarget) if (tab === id) this.byTarget.delete(target);
+      this.frameListeners.delete(id);
+      this.onTabClosed?.(id);
+    }
+  }
+
+  close(): void {
+    this.ws.close();
+  }
+}

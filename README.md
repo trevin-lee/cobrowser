@@ -1,8 +1,8 @@
 # Cobrowser
 
-An embedded, agent-controllable browser inside your editor — **co-driven** by you and your AI agent. One persistent, isolated Chromium lives in a webview panel in VS Code / Cursor. You drive it (screencast + input); your agent drives the *same* browser over MCP (Claude Code, Cursor, or VS Code's agent). Log into a site once — the session persists and the agent acts as you, sandboxed from your daily-driver browser.
+An embedded, agent-controllable browser inside your editor — **co-driven** by you and your AI agent. A small companion app renders one isolated browser per workspace *offscreen* and streams it into a webview panel in VS Code / Cursor. You drive it (frames + input); your agent drives the *same* tabs over MCP (Claude Code, Cursor, or VS Code's agent). Log into a site once — the session persists and the agent acts as you, sandboxed from your daily-driver browser.
 
-> **Status: early.** The core loop (persistent profile → screencast → agent-over-MCP → same browser) works and is what you get by default. The H.264 video pipeline is opt-in and still settling. See [Simplifications](#simplifications) and [Next steps](#next-steps).
+> **Status: early.** The core loop (per-workspace profile → offscreen frames → agent-over-MCP → same tabs) works and is what you get by default. See [Simplifications](#simplifications) and [Next steps](#next-steps).
 
 ## Install
 
@@ -10,45 +10,41 @@ Not on the marketplaces yet — install the VSIX from [Releases](https://github.
 
 ```bash
 # Cursor
-cursor --install-extension cobrowser-0.5.10.vsix
+cursor --install-extension cobrowser-0.7.0.vsix
 # VS Code
-code --install-extension cobrowser-0.5.10.vsix
+code --install-extension cobrowser-0.7.0.vsix
 ```
 
 Or use the editor's **Extensions: Install from VSIX…** command. Then reload the window and run **Cobrowser: Open Browser Panel** from the Command Palette.
 
-No Chrome setup required — a dedicated Chrome-for-Testing downloads on first run (see [Requirements](#requirements)).
+No browser setup required — the companion app (a pinned Electron, ~120 MB) downloads on first run (see [Requirements](#requirements)).
 
 ## Why
 
-- **Agent acts as you, but isolated.** The profile lives in the extension's storage (`globalStorageUri`), never your real Chrome/Zen profile and never the repo working tree. Manual logins persist there; the agent inherits them.
-- **One app, no floating browser windows.** The browser is a panel next to your code.
+- **Agent acts as you, but isolated.** Each workspace gets its own browser profile inside the app, never your real Chrome/Zen profile and never the repo working tree. Manual logins persist there; the agent inherits them.
+- **No floating browser windows.** Tabs render offscreen — there is no OS window at all — and appear as editor tabs next to your code.
 - **Consistent tool surface.** MCP tool names mirror [`chrome-devtools-mcp`](https://github.com/ChromeDevTools/chrome-devtools-mcp) (`navigate_page`, `take_snapshot`, `click`, `fill`, …).
 
 ## Architecture
 
 ```
-┌──────────── VS Code / Cursor extension host (Node) ────────────┐
-│                                                                │
-│   BrowserSession (single owner)                                │
-│     • owns ONE puppeteer-core Chromium (persistent profile)    │
-│     • one CDPSession to the active page                        │
-│     • run() FIFO queue serializes ALL actions                  │
-│        ▲                         ▲                             │
-│        │ tool calls              │ input + screencast          │
-│   in-process MCP           BrowserPanel (webview host)         │
-│   Streamable HTTP          postMessage <-> canvas              │
-│   127.0.0.1:PORT/mcp                                           │
-│   + Bearer token                                               │
-└────────┼─────────────────────────┼────────────────────────────┘
-         │ HTTP (localhost)         │ postMessage
-   agent (Claude Code /       webview <canvas>  ── you click/type
-   Cursor / VS Code)          renders JPEG frames, forwards input
+┌──────── cobrowser app (Electron, menu-bar icon; one per machine) ────────┐
+│  workspace A ─ partition persist:A ─ tab ─ tab      (offscreen webContents)│
+│  workspace B ─ partition persist:B ─ tab                                   │
+│  paints → JPEG frames over a local WebSocket   ·   Chromium debugging port │
+└───────────────┬──────────────────────────────────────────┬────────────────┘
+                │ frames / resize / open / close            │ CDP (puppeteer)
+┌───────────────┴──────────── extension host (per editor window) ───────────┐
+│  BrowserPanel (webview host)             BrowserSession + MCP tools        │
+│  postMessage ↔ canvas, forwards input    run() FIFO serializes all actions │
+└───────────────────────────────────────────────────────────────────────────┘
+            │ postMessage                                    │ HTTP (daemon)
+     webview <canvas> — you click/type                 agent (Claude Code / …)
 ```
 
-**One browser, two drivers.** The extension host owns Chromium and hosts the MCP server *in the same process*, so MCP tool handlers and the webview both call one in-memory `BrowserSession`. No second browser, no cross-process handshake. Everything funnels through `run()` so agent and human actions never interleave mid-action.
+**The app owns the browsers; the editor is a client.** Tabs are offscreen webContents: rendered into GPU memory with no OS window, so nothing can hide, minimize or stall them, and they keep painting while you work elsewhere. The app outlives editor windows — a reload reconnects and finds the tabs where they were, and session cookies survive. The extension's puppeteer attaches to the app's debugging port, so the MCP tools and the panel's trusted input drive the very same tabs. Everything funnels through `run()` so agent and human actions never interleave mid-action.
 
-Chosen over the alternative (launch with a fixed `--remote-debugging-port` and attach two independent CDP clients) because in-process sharing makes concurrency a local queue instead of cross-process contention. Migrating to survive extension-host reloads later is a `launch()` → `connect()` swap that doesn't touch the MCP or webview layers.
+Electron is pinned (`ELECTRON_VERSION`), so the app's Chromium is the browser version for every install — no dependence on what happens to be in `/Applications`.
 
 ## How the agent discovers it
 
@@ -81,16 +77,9 @@ removed on first run.
 
 ## Where you watch it
 
-`cobrowser.display` picks how *you* see the browser. The agent drives the same Chrome either way.
+Every tab is an editor tab in a dedicated pane, streamed from the app at up to 60 fps. There is no OS window to show — the page is rendered offscreen — so prompts that need one (Touch ID, an extension's toolbar popup) cannot appear; passkeys fail fast to a password by default (`cobrowser.autoFallbackPasskeys`).
 
-| Mode | What you get |
-|---|---|
-| `panel` (default) | Headless Chrome streamed as images into a webview panel. Lives inside the editor; no OS window. |
-| `window` | Real Chrome in its own window on your desktop, and **no** panel. |
-
-It is a `window`-scoped setting, so set it per project in **Workspace settings** — a real window for one repo, panels for another. It applies at browser launch, so run **Cobrowser: Restart Browser** afterwards (a plain reload reconnects to the still-running Chrome).
-
-Use `window` when you need something a chrome-less panel cannot show: OS password prompts, or an extension's toolbar popup (pairing iCloud Passwords, for instance). Note the two modes are deliberately exclusive — the panel is a *mirror* of the same tab, so running both showed one page twice and forced the real window to the panel's viewport dimensions. In `window` mode pages also open as ordinary tabs in one window, rather than one window per page (that trick exists only to keep simultaneous screencasts alive).
+The menu-bar icon lists each workspace and its tab count, and quits the app. Quitting closes every workspace's tabs; the next panel or tool call starts it again.
 
 ## Working on cobrowser while using it
 
@@ -129,11 +118,11 @@ npm run build      # esbuild → dist/extension.js + dist/webview.js
 
 Then open this folder in VS Code / Cursor and press **F5** (launches the Extension Development Host). In the dev host:
 
-1. Run **Cobrowser: Open Browser Panel** (Command Palette) — Chromium launches headful and streams into the panel.
-2. Navigate + **log into** the sites you want the agent to use. Credentials persist in the profile.
-3. Point your agent at the MCP server (auto-registered per the table above) and drive the same browser.
+1. Run **Cobrowser: Open Browser Panel** (Command Palette) — the app starts (from `app/node_modules` in a checkout, no download) and a tab streams into the panel.
+2. Navigate + **log into** the sites you want the agent to use. Credentials persist in the workspace's profile.
+3. Point your agent at the MCP server (auto-registered per the table above) and drive the same tabs.
 
-By default the browser runs **headless** — it lives entirely in the Cursor panel with no separate OS window. If you need native-UI moments (file pickers, native `<select>` dropdowns, 2FA, drag-drop, or sign-ins like Google that block headless), set **`cobrowser.headless`** to `false` and reload: a real Chrome window opens alongside the panel, and **Open native window** brings it to the front. Same browser, same session either way.
+The app's source is `app/main.js`, bundled to `dist/app/main.js` by the build; the installed extension runs that bundle with a downloaded Electron, a checkout runs it with the one in `app/node_modules`.
 
 Scripts: `npm run watch` (rebuild on change), `npm run typecheck`.
 
@@ -141,20 +130,21 @@ Scripts: `npm run watch` (rebuild on change), `npm run typecheck`.
 
 - **Per-request MCP transport.** Stateless Streamable HTTP creates a fresh `McpServer` + transport per POST (a single shared instance would misroute concurrent clients).
 - **Cursor-safe activation.** The VS Code-only MCP API is feature-detected.
-- **Orphan cleanup.** The Chromium PID is persisted; a stale one is killed and `SingletonLock`/`SingletonSocket`/`SingletonCookie` cleared on activate, so the reload loop can't brick the persistent profile.
-- **Screencast re-attach.** The pump tears down + re-establishes (and re-acks) on every active-page change.
+- **Tabs belong to the app, not the socket.** A window's connection can drop (reload) without closing anything; the same workspace reconnecting adopts its tabs by target id. Another workspace never sees them.
+- **Never uncap the frame rate.** Measured twice: `--disable-frame-rate-limit` multiplies CPU ~35x for no extra frames. `setFrameRate` alone reaches 120 fps at a tenth of a core.
 
 ## Simplifications
 
 - Stateless MCP (no resumable sessions); single active page tracked; screencast follows the active target only.
-- JPEG screencast — no adaptive bitrate. The opt-in H.264 pipeline (`cobrowser.videoPipeline`) is experimental.
+- JPEG frames encoded on the app's main thread (~6 ms at panel size). Shared-texture hardware encode is the planned next step, not a switch.
 - `uid` model is DOM-attribute tagging, not a full accessibility tree.
 - `evaluate_script` runs arbitrary JS in the page (escape hatch).
 
 ## Next steps
 
 - Publish to Open VSX so Cursor can install it directly.
-- Cross-platform launch paths (Windows/Linux) — developed against macOS.
+- Windows/Linux (the Electron download is macOS-only so far).
+- Pop-out to a real window; a local, Touch-ID-unlocked vault the agent fills from without seeing.
 - Richer/accessibility-tree `take_snapshot`; multi-tab mirroring UI.
 - Input-owner hard lock (currently a FIFO queue + advisory flag).
 
@@ -165,8 +155,8 @@ The profile holds live session cookies — treat it as credentials. It lives in 
 ## Requirements
 
 - **VS Code or Cursor**, and an agent that speaks MCP over HTTP (Claude Code, Cursor, or VS Code's agent).
-- **No Chrome setup.** On first run the extension resolves an executable in this order: `cobrowser.chromePath` if you set it → a dedicated **Chrome-for-Testing** downloaded into `globalStorage` and pinned by buildId → your system Chrome as a last-resort fallback. Only the third depends on what you have installed.
-- Developed and tested on **macOS**; Windows/Linux launch paths aren't done yet.
+- **No browser setup.** On first run the extension downloads the pinned Electron into `globalStorage` (checksum-verified against the release's `SHASUMS256.txt`) and runs the bundled app with it. Nothing depends on what you have installed.
+- **macOS** only for now (arm64 and x64).
 
 ## Publishing (Open VSX)
 

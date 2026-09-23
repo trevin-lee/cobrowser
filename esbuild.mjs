@@ -21,7 +21,7 @@ const targets = [
     platform: 'node',
     format: 'cjs',
     target: 'node20',
-    external: ['vscode', 'puppeteer-core', '@puppeteer/browsers'],
+    external: ['vscode', 'puppeteer-core'],
   },
   {
     // Daemon: a standalone Node process (spawned detached), so it must be its own bundle
@@ -33,6 +33,17 @@ const targets = [
     format: 'cjs',
     target: 'node20',
     external: [],
+  },
+  {
+    // The companion app's main process: a single file Electron runs directly. `electron` is
+    // provided by the runtime; ws is bundled so the app needs no node_modules of its own.
+    ...common,
+    entryPoints: ['app/main.js'],
+    outfile: 'dist/app/main.js',
+    platform: 'node',
+    format: 'cjs',
+    target: 'node20',
+    external: ['electron'],
   },
   {
     // Webview: browser/IIFE.

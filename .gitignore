@@ -7,3 +7,4 @@ dist-test/
 *.xpi
 .env.amo
 web-ext-artifacts/
+app/node_modules/
