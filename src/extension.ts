@@ -7,12 +7,11 @@ import { BrowserPanel } from './webview/BrowserPanel';
 import { SessionTreeProvider } from './webview/SessionTreeProvider';
 import { writeClientConfigs } from './clients/writeClientConfigs';
 import { daemonToken, deregister, ensureDaemon, register } from './daemon/client';
-import { DEFAULT_DAEMON_PORT, DEV_DAEMON_PORT } from './daemon/protocol';
+import { DEFAULT_DAEMON_PORT, DEV_DAEMON_PORT, bridgeEndpointUrl } from './daemon/protocol';
 import { AppConnection } from './app/AppClient';
 import { ensureApp } from './app/ensureApp';
 import { findLegacyChrome, findOldProfiles, readCookies, toElectronCookie } from './app/importProfiles';
-import { FirefoxBridge } from './firefox/FirefoxBridge';
-import { registerEndpoint } from './firefox/managedManifest';
+import { registerEndpoint, unregisterEndpoint } from './firefox/managedManifest';
 import { listFirefoxContainers } from './firefox/containers';
 
 // Bearer token for the local MCP endpoint. Stored in workspaceState (NOT globalState): each
@@ -41,6 +40,8 @@ const FIREFOX_CONTAINER_KEY = 'cobrowser.firefoxContainerBinding';
 /** Pre-rename key. Read (and migrated forward) so a binding made before the Zen->Firefox
  *  rename is not silently lost, which would present as "I bound it and nothing happened". */
 const LEGACY_CONTAINER_KEY = 'cobrowser.zenContainerBinding';
+/** Which browser the binding above is for: 'firefox' (container) or 'chrome' (tab group). */
+const BRIDGE_BROWSER_KEY = 'cobrowser.bridgeBrowser';
 interface SavedTab {
   url: string;
   col?: number;
@@ -49,7 +50,6 @@ interface SavedTab {
 let session: BrowserSession | undefined;
 let sessionPromise: Promise<BrowserSession> | undefined;
 let mcp: McpHttp | undefined;
-let firefoxBridge: FirefoxBridge | undefined;
 let output: vscode.OutputChannel;
 let extensionContext: vscode.ExtensionContext | undefined;
 /** Set once this window has registered with the daemon, so deactivate() can withdraw it. */
@@ -269,35 +269,28 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   // In-process MCP server (per-request stateless transport).
-  mcp = await startMcpHttpServer(token, preferredPort, predecessorPid, getSession, () => firefoxBridge, log);
+  mcp = await startMcpHttpServer(token, preferredPort, predecessorPid, getSession, log);
 
-  // Zen bridge: the human's OWN browser, reached through the Cobrowser Bridge extension,
-  // scoped to the single container this workspace is bound to. Only stood up when a
-  // container is configured — otherwise the firefox_* tools stay hidden entirely.
-  const zenContainer = firefoxContainerFor(context, cfg);
-  if (zenContainer) {
-    const workspacePath = workspaceId;
-    firefoxBridge = new FirefoxBridge(token, zenContainer, workspacePath, log);
-    firefoxBridge.attach(mcp.httpServer, mcp.port);
-    log(`Zen bridge listening at ${firefoxBridge.url().replace(/token=.*/, 'token=…')} (container "${zenContainer}").`);
-    // Hand the endpoint to the browser extension through Firefox's managed-storage
-    // manifest, so installing the extension is the only manual step.
-    registerEndpoint(workspacePath, firefoxBridge.url(), log);
-  }
-
+  // The Firefox bridge is served by the DAEMON (fixed port, machine-wide token), so the URL
+  // the add-on dials for this workspace never changes across reloads. This window only tells
+  // the daemon which container the workspace is bound to, and keeps the managed-storage
+  // manifest — which Firefox reads to configure the add-on — pointing at that stable URL.
+  const bridgeUrl = (): string => bridgeEndpointUrl(daemonPort, daemonToken(undefined, dev), workspaceId);
+  /** (Re)register this window with the daemon, carrying the current Firefox container binding. */
+  let registerWithDaemon: () => Promise<void> = async () => undefined;
+  const bridgeBrowser = (): 'firefox' | 'chrome' => (context.workspaceState.get<string>(BRIDGE_BROWSER_KEY) === 'chrome' ? 'chrome' : 'firefox');
+  const syncBridge = (): void => {
+    const container = firefoxContainerFor(context, cfg);
+    // Only Firefox reads the managed manifest; Chrome is configured by pasting the same URL.
+    if (container && bridgeBrowser() === 'firefox') registerEndpoint(workspaceId, bridgeUrl(), log);
+    else unregisterEndpoint(workspaceId, log);
+    void registerWithDaemon();
+  };
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration('cobrowser.firefoxContainer') || e.affectsConfiguration('cobrowser.zenContainer')) {
-        const next = firefoxContainerFor(context, vscode.workspace.getConfiguration('cobrowser'));
-        if (firefoxBridge && next) firefoxBridge.setContainer(next);
-        else
-          void vscode.window.showInformationMessage(
-            'Cobrowser: reload the window to finish changing the Zen container binding.',
-          );
-      }
+      if (e.affectsConfiguration('cobrowser.firefoxContainer') || e.affectsConfiguration('cobrowser.zenContainer')) syncBridge();
     }),
   );
-  context.subscriptions.push({ dispose: () => firefoxBridge?.dispose() });
 
   // B2: VS Code's MCP provider API does not exist in Cursor — feature-detect so
   // activate() doesn't throw there; the file-based writers below cover Cursor/Claude Code.
@@ -338,12 +331,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   if (await ensureDaemon({ port: daemonPort, version: extensionVersion(context), daemonScript, log, dev })) {
     if (workspaceFolder) {
       const id = workspaceFolder.uri.fsPath;
-      await register(
-        daemonPort,
-        { id, name: path.basename(id), url: `http://127.0.0.1:${mcp.port}/mcp`, token, pid: process.pid },
-        log,
-        dev,
-      );
+      const mcpPort = mcp.port;
+      registerWithDaemon = () =>
+        register(
+          daemonPort,
+          { id, name: path.basename(id), url: `http://127.0.0.1:${mcpPort}/mcp`, token, pid: process.pid, container: firefoxContainerFor(context, cfg) || undefined, browser: bridgeBrowser() },
+          log,
+          dev,
+        );
+      await registerWithDaemon();
+      if (firefoxContainerFor(context, cfg) && bridgeBrowser() === 'firefox') registerEndpoint(workspaceId, bridgeUrl(), log);
       // Hand the port + id to deactivate(), which must unregister before the window goes.
       registeredWith = { port: daemonPort, id, dev };
       context.subscriptions.push({ dispose: () => void deregister(daemonPort, id, dev) });
@@ -366,20 +363,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await s.newPage('about:blank');
     }),
     vscode.commands.registerCommand('cobrowser.copyFirefoxBridgeUrl', async () => {
-      if (!firefoxBridge) {
-        const pick = await vscode.window.showWarningMessage(
-          'Cobrowser: set "cobrowser.zenContainer" for this workspace first — it names the one Zen container this workspace may drive.',
-          'Open Settings',
-        );
-        if (pick) {
-          await vscode.commands.executeCommand('workbench.action.openSettings', 'cobrowser.zenContainer');
-        }
-        return;
-      }
-      await vscode.env.clipboard.writeText(firefoxBridge.url());
+      await vscode.env.clipboard.writeText(bridgeUrl());
       void vscode.window.showInformationMessage(
-        'Cobrowser: bridge URL copied. This workspace is normally registered with the Zen extension ' +
-          'automatically — only paste it into the extension (toolbar button → Endpoints) if that did not work.',
+        'Cobrowser: bridge URL copied. It never changes for this workspace. Firefox configures itself from the managed manifest; ' +
+          'paste it into the add-on (toolbar button → Endpoints) only if that did not happen — or into the Chrome extension, which has no manifest.',
       );
     }),
     vscode.commands.registerCommand('cobrowser.bindFirefoxContainer', async () => {
@@ -394,20 +381,39 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }));
       items.push({ label: '$(circle-slash) Unbind', detail: 'Hide the firefox_* tools in this workspace' });
       const picked = await vscode.window.showQuickPick(items, {
-        title: 'Bind this workspace to one Zen container',
+        title: 'Bind this workspace to one Firefox container',
         placeHolder: containers.length
           ? 'The agent will be able to drive ONLY this container'
-          : 'No containers found — create one in Zen first, then run this again',
+          : 'No containers found — create one in Firefox first, then run this again',
       });
       if (!picked) return;
       const next = picked.label.includes('Unbind') ? '' : picked.label;
       await context.workspaceState.update(FIREFOX_CONTAINER_KEY, next);
-      await vscode.window.showInformationMessage(
-        next
-          ? `Cobrowser: this workspace is bound to the "${next}" Zen container. Reload the window to connect the bridge.`
-          : 'Cobrowser: Zen container unbound for this workspace.',
+      await context.workspaceState.update(BRIDGE_BROWSER_KEY, 'firefox');
+      syncBridge(); // takes effect now: the daemon re-hellos the add-on's socket, no reload
+      void vscode.window.showInformationMessage(
+        next ? `Cobrowser: this workspace is bound to the "${next}" container.` : 'Cobrowser: Firefox container unbound for this workspace.',
       );
-      log(next ? `Zen bridge: bound to container "${next}".` : 'Zen bridge: unbound.');
+      log(next ? `Firefox bridge: bound to container "${next}".` : 'Firefox bridge: unbound.');
+    }),
+    vscode.commands.registerCommand('cobrowser.bindChromeTabGroup', async () => {
+      // Chrome has no containers; a tab group's title (or "profile" for every tab) is the scope.
+      const current = bridgeBrowser() === 'chrome' ? context.workspaceState.get<string>(FIREFOX_CONTAINER_KEY) ?? '' : '';
+      const next = await vscode.window.showInputBox({
+        title: 'Bind this workspace to a Chrome tab group',
+        prompt: 'The tab group\'s name as shown in Chrome\'s tab strip, or "profile" for every tab. Empty unbinds.',
+        value: current,
+        placeHolder: 'profile',
+      });
+      if (next === undefined) return;
+      await context.workspaceState.update(FIREFOX_CONTAINER_KEY, next.trim());
+      await context.workspaceState.update(BRIDGE_BROWSER_KEY, 'chrome');
+      syncBridge();
+      void vscode.window.showInformationMessage(
+        next.trim()
+          ? `Cobrowser: bound to Chrome tab group "${next.trim()}". If the extension is not connected yet, run "Cobrowser: Copy Bridge URL" and paste it into its popup.`
+          : 'Cobrowser: Chrome tab group unbound for this workspace.',
+      );
     }),
     vscode.commands.registerCommand('cobrowser.importProfiles', async () => {
       // Bring logins over from the per-workspace Chrome profiles of the pre-app releases.

@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Cobrowser Bridge",
+  "version": "0.4.0",
+  "description": "Lets Cobrowser (in your editor) see and drive the tabs of ONE tab group, or this whole Chrome profile.",
+  "minimum_chrome_version": "116",
+  "permissions": ["tabs", "tabGroups", "scripting", "storage", "alarms"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js" },
+  "options_ui": { "page": "options.html", "open_in_tab": true },
+  "action": { "default_title": "Cobrowser Bridge", "default_popup": "options.html" }
+}

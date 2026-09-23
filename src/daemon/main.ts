@@ -23,6 +23,8 @@ import { IDLE_EXIT_MS, type HealthResponse, type Registration } from './protocol
 import { Registry, isSelf } from './registry';
 import { listWorkspacesTool, withWorkspaceArg, type Tool } from './toolSchema';
 import { callUpstream, isUnreachable } from './upstream';
+import { ZenHub } from './zenHub';
+import { ZEN_TOOLS, callZenTool, isZenTool } from './zenTools';
 
 function arg(flag: string): string | undefined {
   const i = process.argv.indexOf(flag);
@@ -65,6 +67,16 @@ let toolCache: Tool[] | undefined;
 let lastOccupied = Date.now();
 
 const log = (m: string): void => console.log(`[cobrowserd] ${m}`);
+
+/** The Firefox bridge lives here so its endpoint never moves with an editor window. */
+const zen = new ZenHub(
+  currentToken,
+  (workspace) => {
+    const r = registry.list().find((x) => x.id === workspace);
+    return r?.container ? { browser: r.browser ?? 'firefox', container: r.container } : undefined;
+  },
+  log,
+);
 
 // ---------------------------------------------------------------------------------------
 // Registry
@@ -160,9 +172,12 @@ function buildServer(scope: Registration | undefined): Server {
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     const raw = await rawTools();
+    // firefox_* tools only appear for a workspace that is bound to a container, so an agent
+    // never sees tools it cannot use. An unscoped caller sees them and names a workspace.
+    const zenTools = scope ? (scope.container ? ZEN_TOOLS : []) : ZEN_TOOLS;
     return scope
-      ? { tools: [listWorkspacesTool(true), ...raw] }
-      : { tools: [listWorkspacesTool(false), ...withWorkspaceArg(raw)] };
+      ? { tools: [listWorkspacesTool(true), ...raw, ...zenTools] }
+      : { tools: [listWorkspacesTool(false), ...withWorkspaceArg([...raw, ...zenTools])] };
   });
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
@@ -213,6 +228,20 @@ function buildServer(scope: Registration | undefined): Server {
       target = resolved.ok;
     }
     delete args.workspace; // the window's tools never saw this parameter
+
+    if (isZenTool(name)) {
+      if (!target.container) {
+        return {
+          content: [{ type: 'text' as const, text: `The "${target.name}" workspace is not bound to a browser. Run "Bind Firefox Container…" or "Bind Chrome Tab Group…" in that editor window.` }],
+          isError: true,
+        };
+      }
+      try {
+        return await callZenTool(zen, target.id, name, args);
+      } catch (e) {
+        return { content: [{ type: 'text' as const, text: `bridge (${target.name}): ${String((e as Error).message ?? e)}` }], isError: true };
+      }
+    }
 
     try {
       const result = await callUpstream(target, 'tools/call', { name, arguments: args }, { version: VERSION });
@@ -305,14 +334,15 @@ const httpServer = http.createServer((req, res) => {
       }
       registry.add(reg);
       lastOccupied = Date.now();
-      log(`registered ${reg.name} (${reg.id}) -> ${reg.url}`);
+      log(`registered ${reg.name} (${reg.id}) -> ${reg.url}${reg.container ? ` [${reg.browser ?? 'firefox'}: ${reg.container}]` : ''}`);
+      zen.rebind(reg.id); // the add-on's socket for this workspace learns its (possibly new) container
       json(res, 200, { ok: true });
       return;
     }
 
     if (req.method === 'POST' && url === '/deregister') {
       const { id } = ((await readBody(req)) ?? {}) as { id?: string };
-      if (id && registry.remove(id)) log(`deregistered ${id}`);
+      if (id && registry.remove(id)) { log(`deregistered ${id}`); zen.rebind(id); }
       json(res, 200, { ok: true });
       return;
     }
@@ -357,6 +387,7 @@ httpServer.on('error', (err: NodeJS.ErrnoException) => {
   process.exit(1);
 });
 
+zen.attach(httpServer);
 httpServer.listen(PORT, '127.0.0.1', () => log(`listening on http://127.0.0.1:${PORT}/mcp (v${VERSION})`));
 
 setInterval(() => {

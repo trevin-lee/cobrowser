@@ -2,7 +2,7 @@
   "name": "cobrowser",
   "displayName": "Cobrowser",
   "description": "An agent-controllable browser inside your editor — rendered offscreen by a companion app, co-driven by you (webview) and your AI agent (MCP).",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "publisher": "trevin-lee",
   "private": true,
   "license": "MIT",
@@ -54,7 +54,7 @@
       },
       {
         "command": "cobrowser.copyFirefoxBridgeUrl",
-        "title": "Cobrowser: Copy Firefox Bridge URL"
+        "title": "Cobrowser: Copy Bridge URL"
       },
       {
         "command": "cobrowser.bindFirefoxContainer",
@@ -76,6 +76,11 @@
       {
         "command": "cobrowser.lockVault",
         "title": "Cobrowser: Lock Vault"
+      },
+      {
+        "command": "cobrowser.bindChromeTabGroup",
+        "title": "Bind Chrome Tab Group to This Workspace",
+        "category": "Cobrowser"
       }
     ],
     "menus": {

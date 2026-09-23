@@ -1,0 +1,36 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Cobrowser Bridge</title>
+<link rel="stylesheet" href="options.css" />
+<body>
+  <h1>Cobrowser Bridge</h1>
+
+  <section>
+    <h2>Endpoints</h2>
+    <p class="hint">
+      One per line. Get each URL from your editor: run
+      <code>Cobrowser: Copy Bridge URL</code> in the workspace you want to connect.
+      The URL never changes for that workspace, so this is a one-time paste.
+      The workspace decides which tab group it may touch.
+    </p>
+    <textarea id="endpoints" spellcheck="false" rows="6"
+      placeholder="ws://127.0.0.1:39273/zen?token=…&amp;workspace=…"></textarea>
+    <div class="row">
+      <button id="save">Save</button>
+      <span id="saved" class="saved" hidden>saved</span>
+    </div>
+  </section>
+
+  <section>
+    <h2>Status</h2>
+    <ul id="status" class="status"></ul>
+  </section>
+
+  <section>
+    <h2>Tab groups in this profile</h2>
+    <p class="hint">Bind a workspace to one of these by name, or to <code>profile</code> for every tab.</p>
+    <ul id="containers" class="containers"></ul>
+  </section>
+
+  <script src="options.js"></script>
+</body>

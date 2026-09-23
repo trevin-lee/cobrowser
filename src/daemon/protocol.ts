@@ -12,12 +12,26 @@ export interface Registration {
   token: string;
   /** Extension-host pid, so the daemon can detect a window that died without deregistering. */
   pid: number;
+  /** The scope this workspace's bridge is bound to, if any: a Firefox container, or a Chrome
+   *  tab group (or "profile"). The daemon holds the add-on's socket and scopes it to this. */
+  container?: string;
+  /** Which browser's add-on the binding is for. Defaults to firefox. */
+  browser?: BridgeBrowser;
 }
+
+export type BridgeBrowser = 'firefox' | 'chrome';
 
 export interface HealthResponse {
   version: string;
   pid: number;
   workspaces: { id: string; name: string }[];
+}
+
+/** The URL a browser bridge add-on dials for a workspace: the daemon's fixed port, the
+ *  admin token, and the workspace path. Nothing in it belongs to an editor window, so it
+ *  is the same after every reload — which is what keeps the add-on connected. */
+export function bridgeEndpointUrl(port: number, token: string, workspace: string): string {
+  return `ws://127.0.0.1:${port}/zen?token=${encodeURIComponent(token)}&workspace=${encodeURIComponent(workspace)}`;
 }
 
 /** Default daemon port. Fixed, because the whole point is a URL that never moves. */

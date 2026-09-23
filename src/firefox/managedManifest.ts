@@ -59,6 +59,38 @@ function read(file: string): ManagedManifest | undefined {
  * The file carries live localhost tokens, so it is written 0600 — same sensitivity as the
  * MCP client configs.
  */
+export function unregisterEndpoint(workspace: string, log: (m: string) => void): void {
+  const file = manifestPath();
+  if (!file) return;
+  const existing = read(file);
+  if (!existing?.data.workspaces[workspace]) return;
+  const workspaces = { ...existing.data.workspaces };
+  delete workspaces[workspace];
+  write(file, workspaces, log);
+}
+
+function write(file: string, workspaces: Record<string, string>, log: (m: string) => void): void {
+  const manifest: ManagedManifest = {
+    name: BRIDGE_EXTENSION_ID,
+    description: 'Cobrowser workspace endpoints (written by the Cobrowser editor extension).',
+    type: 'storage',
+    data: { endpoints: [...new Set(Object.values(workspaces))], workspaces },
+  };
+  const next = JSON.stringify(manifest, null, 2);
+  try {
+    // Unchanged content is not rewritten: Firefox re-reads the file on change, and a needless
+    // rewrite on every activation is exactly the churn that made the add-on reconnect.
+    try { if (fs.readFileSync(file, 'utf8') === next) return; } catch { /* absent */ }
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const tmp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, next, { mode: 0o600 });
+    fs.renameSync(tmp, file);
+    log(`Firefox bridge: wrote ${file} (${manifest.data.endpoints.length} endpoint(s)).`);
+  } catch (err) {
+    log(`Firefox bridge: could not write the managed-storage manifest (${String(err)}) — paste the URL into the add-on instead.`);
+  }
+}
+
 export function registerEndpoint(workspace: string, url: string, log: (m: string) => void): void {
   const file = manifestPath();
   if (!file) {
@@ -71,25 +103,11 @@ export function registerEndpoint(workspace: string, url: string, log: (m: string
   workspaces[workspace] = url;
 
   for (const key of Object.keys(workspaces)) {
-    if (key !== workspace && !fs.existsSync(key)) delete workspaces[key];
+    if (key === workspace) continue;
+    // A deleted checkout, or an entry from before the bridge moved to the daemon (those URLs
+    // pointed at per-window ports that no longer exist): either way, the add-on would sit
+    // retrying a dead port forever.
+    if (!fs.existsSync(key) || !workspaces[key].includes('workspace=')) delete workspaces[key];
   }
-
-  const manifest: ManagedManifest = {
-    name: BRIDGE_EXTENSION_ID,
-    description: 'Cobrowser workspace endpoints (written by the Cobrowser editor extension).',
-    type: 'storage',
-    data: { endpoints: [...new Set(Object.values(workspaces))], workspaces },
-  };
-
-  try {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    // Write-then-rename so a Zen reading the file never sees a half-written one, and so two
-    // editor windows starting at once can't interleave into a corrupt manifest.
-    const tmp = `${file}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(manifest, null, 2), { mode: 0o600 });
-    fs.renameSync(tmp, file);
-    log(`Zen bridge: registered this workspace in ${file} (${manifest.data.endpoints.length} endpoint(s)).`);
-  } catch (err) {
-    log(`Zen bridge: could not write the managed-storage manifest (${String(err)}) — paste the URL into the extension instead.`);
-  }
+  write(file, workspaces, log);
 }
