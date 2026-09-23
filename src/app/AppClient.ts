@@ -122,6 +122,12 @@ export class AppConnection {
     this.send({ type: 'closeTab', tabId });
   }
 
+  /** Write cookies into a workspace's partition (any workspace — used by the migration). */
+  async importCookies(workspace: string, cookies: Record<string, unknown>[]): Promise<{ imported: number; failed: number }> {
+    const r = await this.request({ type: 'importCookies', workspace, cookies });
+    return { imported: Number(r.imported) || 0, failed: Number(r.failed) || 0 };
+  }
+
   closeAll(): void {
     this.send({ type: 'closeAll' });
   }

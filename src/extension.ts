@@ -10,6 +10,7 @@ import { daemonToken, deregister, ensureDaemon, register } from './daemon/client
 import { DEFAULT_DAEMON_PORT, DEV_DAEMON_PORT } from './daemon/protocol';
 import { AppConnection } from './app/AppClient';
 import { ensureApp } from './app/ensureApp';
+import { findLegacyChrome, findOldProfiles, readCookies, toElectronCookie } from './app/importProfiles';
 import { FirefoxBridge } from './firefox/FirefoxBridge';
 import { registerEndpoint } from './firefox/managedManifest';
 import { listFirefoxContainers } from './firefox/containers';
@@ -407,6 +408,42 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           : 'Cobrowser: Zen container unbound for this workspace.',
       );
       log(next ? `Zen bridge: bound to container "${next}".` : 'Zen bridge: unbound.');
+    }),
+    vscode.commands.registerCommand('cobrowser.importProfiles', async () => {
+      // Bring logins over from the per-workspace Chrome profiles of the pre-app releases.
+      const chrome = findLegacyChrome(context.globalStorageUri.fsPath);
+      if (!chrome) {
+        void vscode.window.showErrorMessage('Cobrowser: no Chrome build found to read the old profiles with (Chrome for Testing cache or /Applications/Chromium.app).');
+        return;
+      }
+      const found = findOldProfiles();
+      if (!found.length) {
+        void vscode.window.showInformationMessage('Cobrowser: no old profiles found.');
+        return;
+      }
+      const picked = await vscode.window.showQuickPick(
+        found.map((p) => ({ label: path.basename(p.workspace), description: p.workspace, detail: `~${p.cookieCount} cookies`, picked: p.cookieCount > 0, profile: p })),
+        { canPickMany: true, title: 'Import logins from old cobrowser profiles', placeHolder: 'Each goes into that workspace\'s new browser profile' },
+      );
+      if (!picked?.length) return;
+      const s = await getSession(); // ensures the app is up
+      void s;
+      const app = BrowserPanel.app!;
+      const lines: string[] = [];
+      await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Cobrowser: importing profiles' }, async (progress) => {
+        for (const { profile } of picked) {
+          progress.report({ message: path.basename(profile.workspace) });
+          try {
+            const cookies = await readCookies(profile.profileDir, chrome);
+            const r = await app.importCookies(profile.workspace, cookies.map(toElectronCookie));
+            lines.push(`${path.basename(profile.workspace)}: ${r.imported} cookies${r.failed ? ` (${r.failed} failed)` : ''}`);
+          } catch (err) {
+            lines.push(`${path.basename(profile.workspace)}: ${String((err as Error).message || err)}`);
+          }
+        }
+      });
+      log(`Profile import:\n  ${lines.join('\n  ')}`);
+      void vscode.window.showInformationMessage(`Cobrowser: imported — ${lines.join('; ')}`);
     }),
     vscode.commands.registerCommand('cobrowser.restartBrowser', async () => {
       await disposeSession(context);

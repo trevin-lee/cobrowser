@@ -60,6 +60,10 @@
         "command": "cobrowser.bindFirefoxContainer",
         "title": "Bind Firefox Container to This Workspace",
         "category": "Cobrowser"
+      },
+      {
+        "command": "cobrowser.importProfiles",
+        "title": "Cobrowser: Import Logins from Old Profiles"
       }
     ],
     "menus": {
