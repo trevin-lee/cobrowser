@@ -21,7 +21,8 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { parseSite, siteMatches, siteLabel } = require('./site.js');
 
-const STATE_DIR = path.join(os.homedir(), '.cobrowser');
+// Overridable so tests can run a second instance beside the real one without clobbering its state.
+const STATE_DIR = process.env.COBROWSER_STATE_DIR || path.join(os.homedir(), '.cobrowser');
 const STATE_FILE = path.join(STATE_DIR, 'app.json');
 const JPEG_QUALITY = 80;
 const FRAME_RATE = 60;
@@ -67,13 +68,21 @@ const CHROME_UA = (() => {
 const VAULT_FILE = path.join(DATA_DIR, 'vault.bin');
 let vault = null; // { entries: [{ id, host, username, password, updatedAt }] } while unlocked
 
+// Test-only: the UI tests run an isolated instance nobody is sitting at, so they cannot
+// answer a Touch ID prompt. Never set in normal use; every skip is logged.
+const SKIP_BIOMETRICS = process.env.COBROWSER_TEST_NO_BIOMETRICS === '1';
+async function promptBiometrics(reason) {
+  if (SKIP_BIOMETRICS) { log('vault: TEST MODE — biometrics skipped for: ' + reason); return; }
+  await Promise.race([
+    systemPreferences.promptTouchID(reason),
+    new Promise((_r, rej) => setTimeout(() => rej(new Error('Touch ID prompt timed out')), 45000)),
+  ]);
+}
+
 async function unlockVault(reason) {
   if (vault) return vault;
   if (process.platform === 'darwin' && systemPreferences.canPromptTouchID()) {
-    await Promise.race([
-      systemPreferences.promptTouchID(reason || 'unlock the cobrowser vault'), // rejects on cancel/failure
-      new Promise((_r, rej) => setTimeout(() => rej(new Error('Touch ID prompt timed out')), 45000)),
-    ]);
+    await promptBiometrics(reason || 'unlock the cobrowser vault'); // rejects on cancel/failure
   } else {
     log('vault: Touch ID unavailable (lid closed / no sensor) — unlocking without biometrics');
   }
@@ -224,135 +233,166 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser logins
 <style>
   :root {
     color-scheme: light dark;
-    /* cobrowser's own palette: the icon's navy, blue, teal and green. */
-    --bg: #16181d; --panel: #1c1f25; --raise: #23272e; --line: rgba(255,255,255,.07); --line-strong: rgba(255,255,255,.13);
-    --fg: #e6e8ec; --muted: #8b919c; --dim: #5b616c;
+    /* cobrowser's palette, from its mark: navy, blue, teal (the overlap), green. */
+    --bg: #16181d; --panel: #1b1e24; --lift: #22262d; --line: rgba(255,255,255,.07); --line-2: rgba(255,255,255,.13);
+    --fg: #e6e8ec; --muted: #8b919c; --dim: #4f5560;
     --blue: #388bfd; --teal: #2fbdb9; --green: #29a891; --danger: #e5534b;
-    --blue-soft: rgba(56,139,253,.16); --green-soft: rgba(41,168,145,.16);
+    --blue-soft: rgba(56,139,253,.14); --green-soft: rgba(41,168,145,.16); --teal-glow: rgba(47,189,185,.35); --sel-ring: #1f2b3d;
   }
   @media (prefers-color-scheme: light) {
-    :root { --bg: #f3f4f6; --panel: #ffffff; --raise: #f7f8fa; --line: rgba(0,0,0,.07); --line-strong: rgba(0,0,0,.14);
-      --fg: #171a20; --muted: #666c78; --dim: #a5aab3; --blue: #1f6fe0; --teal: #1d9b98; --green: #1f8f7b; }
+    :root { --bg: #f2f3f5; --panel: #fff; --lift: #f7f8fa; --line: rgba(0,0,0,.07); --line-2: rgba(0,0,0,.14);
+      --fg: #171a20; --muted: #656b77; --dim: #b3b8c2; --blue: #1f6fe0; --teal: #1a9c98; --green: #1f8f7b; --danger: #c93c31; --teal-glow: rgba(26,156,152,.3); --sel-ring: #e4ecfa; }
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
-  body { background: var(--bg); color: var(--fg); font: 13px/1.45 -apple-system, "SF Pro Text", system-ui, sans-serif; -webkit-user-select: none; display: grid; grid-template-rows: auto 1fr; }
-  .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px; letter-spacing: -.01em; }
+  body { background: var(--bg); color: var(--fg); font: 13px/1.45 -apple-system, "SF Pro Text", system-ui, sans-serif; -webkit-user-select: none; display: grid; grid-template-rows: auto 1fr; -webkit-font-smoothing: antialiased; }
+  .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; letter-spacing: -.01em; }
   input { font: inherit; color: var(--fg); }
-  button { font: inherit; color: var(--fg); background: var(--raise); border: 1px solid var(--line-strong); border-radius: 7px; height: 28px; padding: 0 12px; cursor: default; }
+  button { font: inherit; color: var(--fg); background: var(--lift); border: 1px solid var(--line-2); border-radius: 7px; height: 28px; padding: 0 12px; cursor: default; }
   button:hover { border-color: var(--muted); }
-  button.quiet { background: transparent; border-color: transparent; color: var(--muted); } button.quiet:hover { color: var(--fg); background: var(--raise); }
+  button.quiet { background: transparent; border-color: transparent; color: var(--muted); } button.quiet:hover { color: var(--fg); background: var(--lift); }
   button.primary { background: var(--blue); border-color: transparent; color: #fff; font-weight: 600; } button.primary:disabled { opacity: .4; }
   button.danger:hover { color: var(--danger); border-color: var(--danger); }
   :focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+  ::-webkit-scrollbar { width: 8px; } ::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 4px; border: 2px solid transparent; background-clip: padding-box; }
 
-  header { -webkit-app-region: drag; display: flex; align-items: center; gap: 10px; padding: 30px 20px 12px; }
-  header svg { width: 18px; height: 18px; }
+  header { -webkit-app-region: drag; display: flex; align-items: center; gap: 10px; padding: 30px 22px 14px; }
+  header svg { width: 20px; height: 20px; }
   header h1 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: -.01em; }
-  header .spacer { flex: 1; } header button, header .pill { -webkit-app-region: no-drag; }
-  .pill { display: inline-flex; align-items: center; gap: 7px; padding: 3px 10px 3px 8px; border-radius: 999px; border: 1px solid var(--line-strong); color: var(--muted); font-size: 12px; }
-  .pill i { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); } .pill.on i { background: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
+  header .sub { color: var(--muted); margin-left: 2px; }
+  header .spacer { flex: 1; } header button, header .state { -webkit-app-region: no-drag; }
+  .state { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; padding: 0 4px; }
+  .state i { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); } .state.on i { background: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
 
-  .panes { display: grid; grid-template-columns: 300px 1fr; gap: 14px; padding: 0 20px 20px; min-height: 0; }
+  .panes { display: grid; grid-template-columns: 320px 1fr; gap: 14px; padding: 0 22px 22px; min-height: 0; }
   .pane { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
-  .search { display: flex; align-items: center; padding: 10px 12px; border-bottom: 1px solid var(--line); }
-  .search input { width: 100%; background: var(--raise); border: 1px solid var(--line); border-radius: 7px; height: 28px; padding: 0 10px; outline: 0; -webkit-user-select: text; }
+
+  /* roster */
+  .search { padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  .search input { width: 100%; background: var(--lift); border: 1px solid var(--line); border-radius: 7px; height: 28px; padding: 0 10px 0 28px; outline: 0; -webkit-user-select: text;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%238b919c' stroke-width='2.2' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='M20 20l-3.5-3.5'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: 9px center; }
   .search input::placeholder { color: var(--dim); }
   .list { overflow: auto; flex: 1; }
-  .item { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-bottom: 1px solid var(--line); }
-  .item:hover { background: var(--raise); } .item.sel { background: var(--blue-soft); }
-  .item .id { min-width: 0; flex: 1; } .item b { display: block; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .item b em { font-style: normal; color: var(--muted); font-weight: 400; }
-  .item span { display: block; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .badge { flex: none; font-size: 11px; color: var(--muted); padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line-strong); white-space: nowrap; }
-  .badge.all { color: var(--green); border-color: var(--green-soft); background: var(--green-soft); } .badge.none { color: var(--dim); border-style: dashed; }
-  .foot { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); }
-  .foot .primary { flex: 1; }
+  .item { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  .item:hover { background: var(--lift); } .item.sel { background: var(--blue-soft); box-shadow: inset 3px 0 0 var(--blue); }
+  .item .id { min-width: 0; flex: 1; }
+  .item b { display: block; font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } b em { font-style: normal; color: var(--muted); font-weight: 400; }
+  .item .id span { display: block; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .foot { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); } .foot .primary { flex: 1; }
   .empty { margin: auto; padding: 24px; text-align: center; color: var(--muted); max-width: 300px; line-height: 1.5; }
 
-  .detail { padding: 18px 20px; overflow: auto; display: flex; flex-direction: column; gap: 16px; }
+  /* the signature: where a login meets a workspace. One disc per workspace, in its hue. */
+  .discs { display: inline-flex; align-items: center; flex: none; }
+  .disc { width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid var(--dim); background: transparent; flex: none; }
+  .discs .disc { margin-left: -5px; box-shadow: 0 0 0 2px var(--panel); } .discs .disc:first-child { margin-left: 0; }
+  .item.sel .discs .disc { box-shadow: 0 0 0 2px var(--sel-ring); }
+  .disc.on { border-color: transparent; background: var(--c, var(--teal)); }
+  .disc.all { border-color: var(--green); background: radial-gradient(circle, var(--green) 0 3px, transparent 3.5px); }
+  .disc.none { border-style: dashed; }
+  .discs small { color: var(--muted); font-size: 11px; margin-left: 5px; }
+
+  /* card */
+  .detail { padding: 20px 22px; display: flex; flex-direction: column; gap: 18px; min-height: 0; }
+  .card-in { display: flex; flex-direction: column; gap: 18px; flex: 1; min-height: 0; }
+  .sec.grow { flex: 1; min-height: 0; }
   .title { display: flex; align-items: flex-start; gap: 12px; }
-  .title .id { flex: 1; min-width: 0; } .title h2 { margin: 0; font-size: 17px; font-weight: 600; } .title h2 em { font-style: normal; font-weight: 400; color: var(--muted); }
-  .title .user { color: var(--muted); margin-top: 2px; }
+  .title .id { flex: 1; min-width: 0; } .title h2 { margin: 0; font-size: 22px; font-weight: 600; line-height: 1.2; overflow-wrap: anywhere; } .title h2 em { font-style: normal; font-weight: 400; color: var(--muted); }
+  .title .user { color: var(--muted); margin-top: 3px; font-size: 13px; }
+  .title .acts { display: flex; gap: 4px; flex: none; }
+  h3 { margin: 0; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); }
+  .sec { display: flex; flex-direction: column; gap: 8px; }
   .fields { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
-  .field { display: grid; grid-template-columns: 96px 1fr; align-items: center; height: 40px; padding: 0 14px; border-bottom: 1px solid var(--line); background: var(--raise); }
+  .field { display: grid; grid-template-columns: 96px 1fr; align-items: center; min-height: 40px; padding: 0 14px; border-bottom: 1px solid var(--line); background: var(--lift); }
   .field:last-child { border-bottom: 0; } .field label { color: var(--muted); font-size: 12.5px; }
-  .field input { background: none; border: 0; outline: 0; height: 100%; padding: 0; -webkit-user-select: text; } .field input::placeholder { color: var(--dim); }
-  h3 { margin: 0; font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
-  .scope { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; max-height: 320px; }
-  .row { display: flex; align-items: center; gap: 10px; padding: 0 14px; height: 40px; border-bottom: 1px solid var(--line); }
+  .field input { background: none; border: 0; outline: 0; height: 40px; padding: 0; -webkit-user-select: text; } .field input::placeholder { color: var(--dim); }
+  .pw { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .pw span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); letter-spacing: .12em; }
+  .pw span.revealed { color: var(--fg); letter-spacing: 0; -webkit-user-select: text; }
+  .scope { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; flex: 1; min-height: 160px; }
+  .row { display: flex; align-items: center; gap: 12px; padding: 0 14px; height: 40px; border-bottom: 1px solid var(--line); }
   .row:last-child { border-bottom: 0; }
-  .row.every { background: var(--raise); } .row.every b { flex: 1; font-weight: 600; } .row.every small { color: var(--muted); }
+  .row.every { background: var(--lift); } .row.every b { flex: 1; font-weight: 600; } .row.every small { color: var(--muted); }
   .switch { width: 34px; height: 20px; border-radius: 999px; background: var(--dim); position: relative; border: 0; padding: 0; transition: background .15s; }
   .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform .15s; }
   .switch[aria-checked="true"] { background: var(--green); } .switch[aria-checked="true"]::after { transform: translateX(14px); }
   .wsfilter { padding: 8px 10px; border-bottom: 1px solid var(--line); } .wsfilter input { width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: 7px; height: 26px; padding: 0 9px; outline: 0; -webkit-user-select: text; font-size: 12.5px; }
-  .wslist { overflow: auto; }
-  .ws { height: 36px; } .ws:hover { background: var(--raise); } .ws .name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .ws .name small { color: var(--muted); margin-left: 6px; }
-  .check { width: 16px; height: 16px; border-radius: 4px; border: 1.5px solid var(--dim); display: grid; place-items: center; flex: none; }
-  .check.on { background: var(--blue); border-color: var(--blue); } .check.on::after { content: ""; width: 5px; height: 9px; border: solid #fff; border-width: 0 2px 2px 0; transform: translateY(-1px) rotate(45deg); }
-  .ws.inherit { opacity: .55; pointer-events: none; } .ws.inherit .check { background: var(--green); border-color: var(--green); } .ws.inherit .check::after { content: ""; width: 5px; height: 9px; border: solid #fff; border-width: 0 2px 2px 0; transform: translateY(-1px) rotate(45deg); }
-  .hint { color: var(--muted); font-size: 12px; margin: -6px 0 0; }
-  .pw { display: flex; align-items: center; gap: 8px; min-width: 0; } .pw span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); letter-spacing: .08em; } .pw span.revealed { color: var(--fg); letter-spacing: 0; -webkit-user-select: text; }
-  .actions { display: flex; gap: 8px; margin-top: auto; padding-top: 6px; }
-  .actions .spacer { flex: 1; }
+  .wslist { overflow: auto; flex: 1; }
+  .ws { height: 38px; } .ws:hover { background: var(--lift); }
+  .ws .disc { transition: transform .12s ease, background-color .12s ease; } .ws:hover .disc { transform: scale(1.15); }
+  .ws .disc.on { box-shadow: 0 0 0 3px var(--teal-glow); }
+  .ws .name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .ws .name small { color: var(--muted); margin-left: 8px; }
+  .ws.inherit { opacity: .5; pointer-events: none; }
+  .hint { color: var(--muted); font-size: 12px; margin: 0; line-height: 1.5; }
+  .actions { display: flex; gap: 8px; padding-top: 2px; align-items: center; flex: none; } .actions .spacer { flex: 1; }
   #status { color: var(--muted); font-size: 12px; min-height: 17px; }
-  ::-webkit-scrollbar { width: 8px; } ::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 4px; border: 2px solid transparent; background-clip: padding-box; }
-  @media (prefers-reduced-motion: reduce) { .switch, .switch::after { transition: none; } }
+  .lockcard { margin: auto; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 12px; color: var(--muted); max-width: 320px; line-height: 1.5; }
+  .lockcard svg { width: 28px; height: 28px; opacity: .6; }
+  @media (prefers-reduced-motion: reduce) { .switch, .switch::after, .ws .disc { transition: none; } }
 </style>
 <header>
   <svg viewBox="0 0 128 128" aria-hidden="true"><circle cx="46" cy="64" r="40" fill="#388bfd"/><circle cx="82" cy="64" r="40" fill="#29a891"/><path d="M64 33.4a40 40 0 0 1 0 61.2 40 40 0 0 1 0-61.2z" fill="#2fbdb9"/></svg>
-  <h1>Logins</h1>
+  <h1>Logins</h1><span class="sub">what the agent may sign in with, and where</span>
   <span class="spacer"></span>
-  <span class="pill" id="pill"><i></i><span>Locked</span></span>
+  <span class="state" id="state"><i></i><span>Locked</span></span>
   <button class="quiet" id="lock">Lock</button>
 </header>
 <div class="panes">
   <section class="pane">
-    <div class="search"><input id="q" placeholder="Filter logins" autocomplete="off" spellcheck="false"></div>
-    <div class="list" id="list"></div>
+    <div class="search"><input id="q" placeholder="Filter" autocomplete="off" spellcheck="false"></div>
+    <div class="list" id="list" tabindex="0"></div>
     <div class="foot"><button class="primary" id="new">Add login</button><button id="import">Import CSV…</button></div>
   </section>
   <section class="pane detail" id="detail"></section>
 </div>
 <script>
   const $ = (id) => document.getElementById(id);
-  let known = [], rows = [], unlocked = false, sel = null, mode = 'view'; // view | add | import
+  let known = [], rows = [], unlocked = false, unlocking = false, lastError = '', sel = null, mode = 'view';
   const draft = { host: '', user: '', pass: '', scope: [] };
-  const base = (p) => p.split('/').filter(Boolean).slice(-1)[0] || p;
-  const dir = (p) => { const d = '/' + p.split('/').filter(Boolean).slice(0, -1).join('/'); return d.replace(new RegExp('^/Users/[^/]+'), '~'); };
-  const say = (t) => { const el = $('status'); if (el) el.textContent = t; };
-  const hostParts = (h) => { const p = h.split('.'); return p.length > 2 ? [p.slice(0, -2).join('.') + '.', p.slice(-2).join('.')] : ['', h]; };
-  const scopeLabel = (sc) => sc === 'all' ? 'Everywhere' : !sc || !sc.length ? 'Nowhere' : sc.length === 1 ? base(sc[0]) : sc.length + ' workspaces';
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+  const base = (p) => p.split('/').filter(Boolean).slice(-1)[0] || p;
+  const dir = (p) => ('/' + p.split('/').filter(Boolean).slice(0, -1).join('/')).replace(new RegExp('^/Users/[^/]+'), '~');
+  const say = (t) => { const s = $('status'); if (s) s.textContent = t; };
+  const hostParts = (h) => { const [hostOnly, port] = h.split(':'); const p = hostOnly.split('.'); const tail = port ? ':' + port : ''; return p.length > 2 && !/^\\d+$/.test(p[0]) ? [p.slice(0, -2).join('.') + '.', p.slice(-2).join('.') + tail] : ['', h]; };
+  const scopeText = (sc) => sc === 'all' ? 'everywhere' : !sc || !sc.length ? 'nowhere' : sc.length === 1 ? base(sc[0]) : sc.length + ' workspaces';
 
-  function pill() { $('pill').className = 'pill' + (unlocked ? ' on' : ''); $('pill').lastElementChild.textContent = unlocked ? rows.length + ' login' + (rows.length === 1 ? '' : 's') + ' · unlocked' : 'Locked'; }
+  /** A stable hue per workspace on the brand arc (blue 212° → green 168°). */
+  const hue = (w) => { let h = 0; for (const ch of w) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return 168 + (h % 45); };
+  const color = (w) => 'hsl(' + hue(w) + ' 62% 56%)';
+  function disc(cls, w) { const d = el('span', 'disc' + (cls ? ' ' + cls : '')); if (w) { d.style.setProperty('--c', color(w)); d.title = base(w); } return d; }
+  function discStack(sc) {
+    const box = el('span', 'discs');
+    if (sc === 'all') { box.append(disc('all')); box.append(el('small', null, 'everywhere')); return box; }
+    if (!sc || !sc.length) { box.append(disc('none')); box.append(el('small', null, 'nowhere')); return box; }
+    for (const w of sc.slice(0, 4)) box.append(disc('on', w));
+    box.append(el('small', null, sc.length > 4 ? '+' + (sc.length - 4) : sc.length === 1 ? base(sc[0]) : ''));
+    return box;
+  }
+
+  function state() { $('state').className = 'state' + (unlocked ? ' on' : ''); $('state').lastElementChild.textContent = unlocked ? rows.length + ' login' + (rows.length === 1 ? '' : 's') + ' · unlocked' : 'Locked'; }
 
   function renderList() {
     const q = $('q').value.trim().toLowerCase();
     const list = $('list'); list.innerHTML = '';
-    const shown = rows.filter((r) => !q || (r.host + ' ' + r.username).toLowerCase().includes(q));
-    if (!unlocked) { list.append(el('div', 'empty', 'Locked. Unlock to see and change logins.')); return; }
+    const shown = rows.filter((r) => !q || (r.host + ' ' + r.username + ' ' + scopeText(r.scope)).toLowerCase().includes(q));
+    if (!unlocked) { list.append(el('div', 'empty', 'Locked.')); return; }
     if (!rows.length) { list.append(el('div', 'empty', 'No logins yet. Add one, or import a CSV export from Passwords, Bitwarden or Chrome.')); return; }
     if (!shown.length) { list.append(el('div', 'empty', 'Nothing matches “' + q + '”.')); return; }
     for (const r of shown) {
       const it = el('div', 'item' + (sel === r ? ' sel' : ''));
       const id = el('div', 'id'); const b = el('b', 'mono'); const [pre, dom] = hostParts(r.host); b.append(el('em', null, pre), dom);
       id.append(b, el('span', 'mono', r.username || '(no username)'));
-      const sc = r.scope; it.append(id, el('span', 'badge' + (sc === 'all' ? ' all' : (!sc || !sc.length) ? ' none' : ''), scopeLabel(sc)));
+      it.append(id, discStack(r.scope));
       it.onclick = () => { sel = r; mode = 'view'; render(); };
       list.append(it);
     }
   }
 
-  /** The scope editor: an Everywhere switch, then a filterable checklist. Scales to any
-   *  number of workspaces — checked ones sort first, and the filter narrows the rest. */
   function scopeEditor(getScope, setScope) {
     const box = el('div', 'scope');
-    const every = el('div', 'row every'); every.append(el('b', null, 'Everywhere'), el('small', null, 'any workspace may use it'));
+    const every = el('div', 'row every'); every.append(disc('all'), el('b', null, 'Everywhere'), el('small', null, 'any workspace'));
     const sw = el('button', 'switch'); sw.setAttribute('role', 'switch'); every.append(sw);
     const filt = el('div', 'wsfilter'); const fi = el('input'); fi.placeholder = 'Filter workspaces'; fi.autocomplete = 'off'; fi.spellcheck = false; filt.append(fi);
-    const wl = el('div', 'wslist');
-    box.append(every, filt, wl);
+    const wl = el('div', 'wslist'); box.append(every, filt, wl);
     const paint = () => {
       const sc = getScope(); const all = sc === 'all';
       sw.setAttribute('aria-checked', String(all));
@@ -364,105 +404,104 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser logins
         const on = all || sc.includes(w);
         const r = el('div', 'row ws' + (all ? ' inherit' : ''));
         const name = el('div', 'name'); name.append(base(w), el('small', null, dir(w))); name.title = w;
-        r.append(el('div', 'check' + (on ? ' on' : '')), name);
+        r.append(disc(on ? 'on' : '', w), name);
         r.onclick = () => { if (all) return; setScope(on ? sc.filter((x) => x !== w) : [...sc, w]); paint(); };
         wl.append(r);
       }
     };
     sw.onclick = () => { setScope(getScope() === 'all' ? [] : 'all'); paint(); };
-    fi.oninput = paint;
-    paint();
+    fi.oninput = paint; paint();
     return box;
   }
 
+  function section(title, body, grow) { const s = el('div', 'sec' + (grow ? ' grow' : '')); s.append(el('h3', null, title), body); return s; }
+
   function renderDetail() {
     const d = $('detail'); d.innerHTML = '';
+    const wrap = el('div', 'card-in'); d.append(wrap);
     if (!unlocked) {
-      const wrap = el('div', 'empty'); wrap.style.margin = 'auto';
+      const lc = el('div', 'lockcard');
+      lc.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>';
       const b = el('button', 'primary', unlocking ? 'Waiting for Touch ID…' : 'Unlock'); b.disabled = unlocking; b.onclick = refresh;
-      wrap.append(b);
-      if (lastError && !unlocking) wrap.append(el('p', 'hint', lastError));
-      d.append(wrap); return;
+      lc.append(el('div', null, 'Locked. Unlock to see logins; changes always ask for Touch ID.'), b);
+      if (lastError && !unlocking) lc.append(el('p', 'hint', lastError));
+      wrap.append(lc); return;
     }
     if (mode === 'add' || mode === 'import') {
       const importing = mode === 'import';
-      const t = el('div', 'title'); const id = el('div', 'id'); id.append(el('h2', null, importing ? 'Import logins' : 'New login')); t.append(id); d.append(t);
-      if (importing) d.append(el('p', 'hint', 'Choose which workspaces every imported login may be used in, then pick the CSV file. You can change each one afterwards.'));
+      const t = el('div', 'title'); const id = el('div', 'id'); id.append(el('h2', null, importing ? 'Import logins' : 'New login')); t.append(id); wrap.append(t);
+      if (importing) wrap.append(el('p', 'hint', 'Every imported login gets the workspaces you choose here. You can change each one afterwards.'));
       else {
         const f = el('div', 'fields');
-        for (const [key, label, ph, type] of [['host', 'Site', 'costco.com', 'text'], ['user', 'Username', 'you@example.com', 'text'], ['pass', 'Password', '', 'password']]) {
-          const row = el('div', 'field'); const lab = el('label', null, label); const inp = el('input', key === 'pass' ? '' : 'mono'); inp.type = type; inp.placeholder = ph; inp.value = draft[key]; inp.autocomplete = 'off'; inp.spellcheck = false;
+        for (const [key, label, ph, type] of [['host', 'Site', 'costco.com, or 192.168.1.50:8080', 'text'], ['user', 'Username', 'you@example.com', 'text'], ['pass', 'Password', '', 'password']]) {
+          const row = el('div', 'field'); const inp = el('input', key === 'pass' ? '' : 'mono'); inp.type = type; inp.placeholder = ph; inp.value = draft[key]; inp.autocomplete = 'off'; inp.spellcheck = false;
           inp.oninput = () => { draft[key] = inp.value; sync(); }; inp.onkeydown = (e) => { if (e.key === 'Enter' && canSave()) save(); };
-          row.append(lab, inp); f.append(row);
+          row.append(el('label', null, label), inp); f.append(row);
         }
-        d.append(f);
+        wrap.append(section('Login', f));
       }
-      d.append(el('h3', null, 'Can be used in'));
-      d.append(scopeEditor(() => draft.scope, (v) => { draft.scope = v; sync(); }));
+      wrap.append(section('Where the agent may use it', scopeEditor(() => draft.scope, (v) => { draft.scope = v; sync(); }), true));
       const a = el('div', 'actions'); const st = el('div'); st.id = 'status'; a.append(st, el('span', 'spacer'));
-      const cancel = el('button', 'quiet', 'Cancel'); cancel.onclick = () => { mode = 'view'; render(); };
+      const cancel = el('button', 'quiet', 'Cancel'); cancel.onclick = () => { Object.assign(draft, { host: '', user: '', pass: '', scope: [] }); mode = 'view'; render(); };
       const ok = el('button', 'primary', importing ? 'Choose CSV…' : 'Save login'); ok.id = 'save'; ok.onclick = importing ? doImport : save;
-      a.append(cancel, ok); d.append(a); sync();
-      if (!importing) d.querySelector('input').focus();
+      a.append(cancel, ok); wrap.append(a); sync();
+      if (!importing) wrap.querySelector('input').focus();
       return;
     }
-    if (!sel) { d.append(el('div', 'empty', rows.length ? 'Select a login to see where it can be used.' : 'Add a login and choose which workspaces may use it. The agent can sign in with it but never sees the password.')); return; }
+    if (!sel) { wrap.append(el('div', 'empty', rows.length ? 'Pick a login to see where the agent may use it.' : 'Add a login and choose which workspaces may use it. The agent can sign in with it, but never sees the password.')); return; }
+
     const t = el('div', 'title'); const id = el('div', 'id'); const h2 = el('h2', 'mono'); const [pre, dom] = hostParts(sel.host); h2.append(el('em', null, pre), dom);
     id.append(h2, el('div', 'user mono', sel.username || '(no username)')); t.append(id);
-    const rm = el('button', 'quiet danger', 'Remove'); rm.onclick = async () => { await vault.remove(sel.host, sel.username); sel = null; await refresh(); }; t.append(rm); d.append(t);
-    // Password: hidden; Show asks for a fresh Touch ID and reveals it for 30 seconds.
-    const pw = el('div', 'fields'); const prow = el('div', 'field'); prow.append(el('label', null, 'Password'));
+    const acts = el('div', 'acts'); const rm = el('button', 'quiet danger', 'Remove'); rm.onclick = async () => { await vault.remove(sel.host, sel.username); sel = null; await refresh(); }; acts.append(rm); t.append(acts); wrap.append(t);
+
+    const pw = el('div', 'fields'); const prow = el('div', 'field'); prow.style.gridTemplateColumns = '1fr';
     const pval = el('div', 'pw'); const dots = el('span', 'mono', '••••••••••'); pval.append(dots);
-    const show = el('button', 'quiet', 'Show'); let hideTimer;
+    const copyBtn = el('button', 'quiet', 'Copy'); copyBtn.hidden = true; const show = el('button', 'quiet', 'Show'); let hideTimer;
     const hide = () => { clearTimeout(hideTimer); dots.textContent = '••••••••••'; dots.classList.remove('revealed'); show.textContent = 'Show'; copyBtn.hidden = true; };
-    const copyBtn = el('button', 'quiet', 'Copy'); copyBtn.hidden = true;
     show.onclick = async () => {
       if (dots.classList.contains('revealed')) return hide();
-      try {
-        const secret = await vault.reveal(sel.host, sel.username);
-        dots.textContent = secret; dots.classList.add('revealed'); show.textContent = 'Hide'; copyBtn.hidden = false;
+      try { const secret = await vault.reveal(sel.host, sel.username); dots.textContent = secret; dots.classList.add('revealed'); show.textContent = 'Hide'; copyBtn.hidden = false;
         copyBtn.onclick = async () => { await navigator.clipboard.writeText(secret); copyBtn.textContent = 'Copied'; setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500); };
-        hideTimer = setTimeout(hide, 30000);
-      } catch (e) { say(e.message); }
+        hideTimer = setTimeout(hide, 30000); } catch (e) { say(e.message); }
     };
-    pval.append(copyBtn, show); prow.append(pval); pw.append(prow); d.append(pw);
-    d.append(el('h3', null, 'Can be used in'));
-    d.append(scopeEditor(() => sel.scope, async (v) => { sel.scope = v; renderList(); try { await vault.setScope(sel.host, sel.username, v); } catch (e) { say(e.message); } }));
-    const a = el('div', 'actions'); const st = el('div'); st.id = 'status'; a.append(st); d.append(a);
+    pval.append(copyBtn, show); prow.append(pval); pw.append(prow);
+    wrap.append(section('Password', pw));
+    wrap.append(section('Where the agent may use it', scopeEditor(() => sel.scope, async (v) => { sel.scope = v; renderList(); try { await vault.setScope(sel.host, sel.username, v); } catch (e) { say(e.message); } }), true));
+    const a = el('div', 'actions'); const st = el('div'); st.id = 'status'; a.append(st); wrap.append(a);
   }
   const canSave = () => !!(draft.host.trim() && draft.pass && (draft.scope === 'all' || draft.scope.length));
-  const sync = () => { const b = $('save'); if (b && mode === 'add') b.disabled = !canSave(); if (b && mode === 'import') b.disabled = !(draft.scope === 'all' || draft.scope.length); };
+  const sync = () => {
+    const b = $('save'); if (!b) return;
+    const scoped = draft.scope === 'all' || draft.scope.length > 0;
+    b.disabled = mode === 'add' ? !canSave() : !scoped;
+    // Say why Save is off, once the rest is filled in — the missing piece is otherwise invisible.
+    const st = $('status'); if (st && (mode !== 'add' || (draft.host.trim() && draft.pass))) st.textContent = scoped ? '' : 'Choose a workspace, or Everywhere.';
+  };
   async function save() {
-    try { await vault.add(draft.host.trim(), draft.user.trim(), draft.pass, draft.scope); const h = draft.host.trim(); Object.assign(draft, { host: '', user: '', pass: '', scope: [] }); mode = 'view'; await refresh(); sel = rows.find((r) => h.includes(r.host)) || null; render(); }
+    try { await vault.add(draft.host.trim(), draft.user.trim(), draft.pass, draft.scope); const h = draft.host.trim().toLowerCase(); Object.assign(draft, { host: '', user: '', pass: '', scope: [] }); mode = 'view'; await refresh(); sel = rows.find((r) => h.includes(r.host.split(':')[0])) || null; render(); }
     catch (e) { say(e.message); }
   }
   async function doImport() {
     try { const n = await vault.importCsv(draft.scope); if (n == null) return; mode = 'view'; draft.scope = []; await refresh(); say('Imported ' + n + ' login' + (n === 1 ? '' : 's') + '.'); }
     catch (e) { say(e.message); }
   }
-  function render() { renderList(); renderDetail(); pill(); }
-  let unlocking = false;
+  function render() { renderList(); renderDetail(); state(); }
   async function refresh() {
-    if (unlocking) return;
-    unlocking = true;
-    try { rows = await vault.list(); unlocked = true; }
-    catch (e) { unlocked = false; rows = []; lastError = e.message; }
-    finally { unlocking = false; }
+    if (unlocking) return; unlocking = true; render();
+    try { rows = await vault.list(); unlocked = true; lastError = ''; } catch (e) { unlocked = false; rows = []; lastError = e.message; } finally { unlocking = false; }
     known = await vault.workspaces();
     if (sel) sel = rows.find((r) => r.host === sel.host && r.username === sel.username) || null;
     render();
   }
-  let lastError = '';
   const ensureUnlocked = async () => { if (!unlocked) await refresh(); return unlocked; };
   $('q').oninput = renderList;
   $('new').onclick = async () => { if (!(await ensureUnlocked())) return; mode = 'add'; sel = null; render(); };
   $('import').onclick = async () => { if (!(await ensureUnlocked())) return; mode = 'import'; sel = null; render(); };
   $('lock').onclick = async () => { await vault.lock(); unlocked = false; rows = []; sel = null; mode = 'view'; render(); };
-  // Draw the locked state before asking for anything, so a missed or dismissed Touch ID
-  // prompt leaves a window with an Unlock button in it, not a blank one.
+  // ↑/↓ move the selection through the roster.
+  $('list').addEventListener('keydown', (e) => { if (!rows.length || (e.key !== 'ArrowDown' && e.key !== 'ArrowUp')) return; e.preventDefault(); const i = rows.indexOf(sel); sel = rows[Math.max(0, Math.min(rows.length - 1, i + (e.key === 'ArrowDown' ? 1 : -1)))]; mode = 'view'; render(); });
   vault.workspaces().then((w) => { known = w; });
-  render();
-  refresh();
+  render(); refresh();
 </script>`;
 
 let vaultWin;
@@ -470,7 +509,7 @@ function openVaultWindow() {
   if (vaultWin && !vaultWin.isDestroyed()) { vaultWin.show(); vaultWin.focus(); return; }
   const { nativeTheme } = require('electron');
   vaultWin = new BrowserWindow({
-    width: 780, height: 540, minWidth: 620, minHeight: 420, title: 'cobrowser logins', show: false,
+    width: 820, height: 560, minWidth: 660, minHeight: 440, title: 'cobrowser logins', show: false,
     titleBarStyle: 'hiddenInset', backgroundColor: nativeTheme.shouldUseDarkColors ? '#16181d' : '#f3f4f6',
     webPreferences: { preload: path.join(__dirname, 'vault-preload.js'), contextIsolation: true, sandbox: true, nodeIntegration: false },
   });
@@ -490,12 +529,9 @@ ipcMain.handle('vault:remove', async (_e, { host, username }) => { await unlockV
 ipcMain.handle('vault:reveal', async (_e, { host, username }) => {
   // Showing a password is the one thing that must not ride on the session unlock: a fresh
   // biometric check every time, and no fallback when Touch ID cannot be presented.
-  if (process.platform !== 'darwin' || !systemPreferences.canPromptTouchID()) throw new Error('Touch ID is needed to show a password (open the lid, or use a Mac with Touch ID)');
+  if (!SKIP_BIOMETRICS && (process.platform !== 'darwin' || !systemPreferences.canPromptTouchID())) throw new Error('Touch ID is needed to show a password (open the lid, or use a Mac with Touch ID)');
   await unlockVault('show a password');
-  await Promise.race([
-    systemPreferences.promptTouchID(`show the password for ${username || host} on ${host}`),
-    new Promise((_r, rej) => setTimeout(() => rej(new Error('Touch ID prompt timed out')), 45000)),
-  ]);
+  await promptBiometrics(`show the password for ${username || host} on ${host}`);
   const e = findEntry(host, username);
   if (!e) throw new Error('no such login');
   log(`vault: revealed password for ${e.username} on ${siteLabel(e)}`);
