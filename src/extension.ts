@@ -454,7 +454,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (!password) return;
       await getSession();
       await BrowserPanel.app!.vaultAdd(site, username, password);
-      void vscode.window.showInformationMessage(`Cobrowser: saved a login for ${site}.`);
+      void vscode.window.showInformationMessage(`Cobrowser: saved a login for ${site}, usable in this workspace. Change its scope from the menu-bar Logins window.`);
     }),
     vscode.commands.registerCommand('cobrowser.importLoginsCsv', async () => {
       const picked = await vscode.window.showOpenDialog({ canSelectMany: false, filters: { CSV: ['csv'] }, title: 'Import logins (Apple Passwords / Bitwarden / Chrome CSV export)' });
@@ -462,7 +462,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const csv = Buffer.from(await vscode.workspace.fs.readFile(picked[0])).toString('utf8');
       await getSession();
       const n = await BrowserPanel.app!.vaultImport(csv);
-      const del = await vscode.window.showInformationMessage(`Cobrowser: imported ${n} login(s). The CSV is plaintext — delete it?`, 'Delete the CSV', 'Keep');
+      const del = await vscode.window.showInformationMessage(`Cobrowser: imported ${n} login(s), usable in this workspace. The CSV is plaintext — delete it?`, 'Delete the CSV', 'Keep');
       if (del === 'Delete the CSV') await vscode.workspace.fs.delete(picked[0]);
     }),
     vscode.commands.registerCommand('cobrowser.lockVault', async () => {

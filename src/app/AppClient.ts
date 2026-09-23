@@ -130,12 +130,13 @@ export class AppConnection {
 
   // --- vault: the agent can use logins without seeing them; passwords never cross this socket
   //     outbound except INTO the app (add/import), and never come back.
-  async vaultAdd(host: string, username: string, password: string): Promise<void> {
-    const r = await this.request({ type: 'vault.add', host, username, password }, 120000);
+  /** `scope` defaults to this connection's workspace inside the app. */
+  async vaultAdd(host: string, username: string, password: string, scope?: 'all' | string[]): Promise<void> {
+    const r = await this.request({ type: 'vault.add', host, username, password, ...(scope ? { scope } : {}) }, 120000);
     if (r.error) throw new Error(String(r.error));
   }
-  async vaultImport(csv: string): Promise<number> {
-    const r = await this.request({ type: 'vault.import', csv }, 120000);
+  async vaultImport(csv: string, scope?: 'all' | string[]): Promise<number> {
+    const r = await this.request({ type: 'vault.import', csv, ...(scope ? { scope } : {}) }, 120000);
     if (r.error) throw new Error(String(r.error));
     return Number(r.count) || 0;
   }

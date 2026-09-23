@@ -46,6 +46,16 @@ const targets = [
     external: ['electron'],
   },
   {
+    // The vault window's preload: a separate file because Electron loads it by path.
+    ...common,
+    entryPoints: ['app/vault-preload.js'],
+    outfile: 'dist/app/vault-preload.js',
+    platform: 'node',
+    format: 'cjs',
+    target: 'node20',
+    external: ['electron'],
+  },
+  {
     // Webview: browser/IIFE.
     ...common,
     entryPoints: ['webview-src/index.ts'],
