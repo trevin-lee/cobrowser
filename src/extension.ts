@@ -125,6 +125,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // The app keeps one browser profile (partition) per workspace, keyed by this path, so
   // logins and tabs are isolated per project. A window with no folder shares a default.
   const workspaceId = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? path.join(context.globalStorageUri.fsPath, 'default');
+  const readRender = (c: vscode.WorkspaceConfiguration): void => {
+    BrowserPanel.renderScale = c.get<number>('renderScale', 2);
+    BrowserPanel.renderBudgetPx = Math.round(c.get<number>('renderBudgetMegapixels', 6.5) * 1_000_000);
+  };
+  readRender(cfg);
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration('cobrowser.renderScale') || e.affectsConfiguration('cobrowser.renderBudgetMegapixels')) {
+        readRender(vscode.workspace.getConfiguration('cobrowser'));
+        BrowserPanel.remeasureAll();
+      }
+    }),
+  );
 
   // Activity Bar sidebar: profile(s) + their open tabs. Created before getSession
   // so its `() => session` closure is always initialized when first read.
@@ -362,6 +375,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const s = await getSession();
       await s.newPage('about:blank');
     }),
+    // Browser-chrome shortcuts, bound in package.json while a cobrowser panel is active.
+    vscode.commands.registerCommand('cobrowser.closeTab', () => BrowserPanel.active?.close()),
+    vscode.commands.registerCommand('cobrowser.reloadTab', () => BrowserPanel.active?.navigate('reload')),
+    vscode.commands.registerCommand('cobrowser.back', () => BrowserPanel.active?.navigate('back')),
+    vscode.commands.registerCommand('cobrowser.forward', () => BrowserPanel.active?.navigate('forward')),
     vscode.commands.registerCommand('cobrowser.copyFirefoxBridgeUrl', async () => {
       await vscode.env.clipboard.writeText(bridgeUrl());
       void vscode.window.showInformationMessage(

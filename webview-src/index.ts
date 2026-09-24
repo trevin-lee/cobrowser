@@ -430,6 +430,12 @@ stage.addEventListener(
 stage.addEventListener('keydown', (e) => {
   // ⌘/Ctrl +/-/0 → per-site zoom, don't forward to the page.
   if (e.metaKey || e.ctrlKey) {
+    // Browser chrome shortcuts. ⌘L is handled here; the rest are VS Code keybindings
+    // contributed by the extension (when: activeWebviewPanelId == cobrowser), which receive
+    // the event through the webview's key forwarding — so just keep them from the page.
+    const k = e.key.toLowerCase();
+    if (k === 'l') { e.preventDefault(); urlInput.focus(); urlInput.select(); return; }
+    if (k === 't' || k === 'w' || k === 'r' || k === '[' || k === ']' || k === 'n') { e.preventDefault(); return; }
     if (e.key === '=' || e.key === '+') { e.preventDefault(); fire('extension.zoom', { dir: 'in' }); return; }
     if (e.key === '-' || e.key === '_') { e.preventDefault(); fire('extension.zoom', { dir: 'out' }); return; }
     if (e.key === '0') { e.preventDefault(); fire('extension.zoom', { dir: 'reset' }); return; }
@@ -504,7 +510,8 @@ zoomOutBtn.addEventListener('click', () => fire('extension.zoom', { dir: 'out' }
 // can see where the agent is working without a rendered cursor.
 let highlightTimer = 0;
 function flashHighlight(box: Box): void {
-  const scaleX = canvas.clientWidth / (canvas.width || 1);
+  // Boxes arrive in the page's CSS space; the bitmap is scale*zoom times larger than that.
+  const scaleX = canvas.clientWidth / (lastMeta.deviceWidth || canvas.width || 1);
   const scaleY = canvas.clientHeight / (canvas.height || 1);
   highlightEl.style.left = `${box.x * scaleX}px`;
   highlightEl.style.top = `${box.y * scaleY}px`;

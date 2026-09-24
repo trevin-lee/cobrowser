@@ -20,10 +20,13 @@ export interface AppTabInfo {
 
 export interface AppFrame {
   bytes: Uint8Array;
-  metadata: { tabId: string; deviceWidth: number; deviceHeight: number };
+  /** deviceWidth/Height: the page's CSS coordinate space; frameWidth/Height: the bitmap. */
+  metadata: { tabId: string; deviceWidth: number; deviceHeight: number; frameWidth?: number; frameHeight?: number };
 }
 
-export const STATE_FILE = path.join(os.homedir(), '.cobrowser', 'app.json');
+/** Overridable with COBROWSER_STATE_DIR — the app honours the same variable — so a test can
+ *  run a second instance and never reach the user's real app. */
+export const STATE_FILE = path.join(process.env.COBROWSER_STATE_DIR || path.join(os.homedir(), '.cobrowser'), 'app.json');
 
 /** The running app's connection details, or undefined if it isn't running. */
 export function readAppState(): AppState | undefined {
@@ -161,8 +164,10 @@ export class AppConnection {
     this.send({ type: 'closeAll' });
   }
 
-  resize(tabId: string, width: number, height: number): void {
-    this.send({ type: 'resize', tabId, width, height });
+  /** Lay the page out at cssW x cssH CSS px (divided by `zoom`), rasterized at `scale` device
+   *  pixels per CSS px — the frame comes back css*scale pixels wide. */
+  resize(tabId: string, width: number, height: number, scale = 1, zoom = 1): void {
+    this.send({ type: 'resize', tabId, width, height, scale, zoom });
   }
 
   subscribe(tabId: string, listener: FrameListener): void {

@@ -5,10 +5,12 @@ import type { CDPSession, Page } from 'puppeteer-core';
 import type { BrowserSession, ElementBox } from '../browser/BrowserSession';
 import type { AppConnection } from '../app/AppClient';
 
-/** Ceiling on rendered pixels per frame (device px). 5Mpx sits above a full-screen
- *  retina laptop panel (~3.6Mpx, measured 60fps) and below the point where JPEG
- *  encode falls apart (~10.7Mpx → 46fps, 1.26MB frames) and H.264 levels run out. */
-const MAX_RENDER_PX = 5_000_000;
+/** Default ceiling on rendered pixels per frame (cobrowser.renderBudgetMegapixels). Measured
+ *  on an M4 Pro: the app's JPEG encode holds 24fps at 8.2Mpx (a full-height retina laptop
+ *  panel at 2x) and ~30fps at 6.5Mpx, so 6.5 keeps scrolling smooth at ~1.8x there and gives
+ *  true 2x on anything smaller. The old 5Mpx cap rendered that panel at 0.78x and stretched
+ *  it back up, which is what "not perfectly crisp" was. Raise it for crisp over smooth. */
+const DEFAULT_RENDER_BUDGET_PX = 6_500_000;
 
 // Every page lives in its own headless window (see BrowserSession.createPageInNewWindow),
 // so every visible panel screencasts at full compositor rate simultaneously — no
@@ -78,6 +80,13 @@ export class BrowserPanel {
 
   /** The app streaming this workspace's tabs. Set by the extension once connected. */
   static app: AppConnection | undefined;
+  /** Device pixels per CSS px to render at (cobrowser.renderScale). 2 is native on a retina
+   *  display and a 2x supersample on a 1x one; the area cap above may pull it down. */
+  static renderScale = 2;
+  /** Pixel budget per frame; see DEFAULT_RENDER_BUDGET_PX. */
+  static renderBudgetPx = DEFAULT_RENDER_BUDGET_PX;
+  /** The panel that is the active editor, for the keyboard-shortcut commands. */
+  static active: BrowserPanel | undefined;
 
   /** Inlined webview assets (CSS/JS), read ONCE and cached in memory. */
   private static assetCache: { css: string; js: string } | undefined;
@@ -209,6 +218,14 @@ export class BrowserPanel {
     BrowserPanel.panels.get(id)?.panel.reveal(undefined, false);
   }
 
+  /** Re-apply every panel's viewport (a render setting changed). */
+  static remeasureAll(): void {
+    for (const p of BrowserPanel.panels.values()) {
+      p.appliedKey = '';
+      void p.applyViewport();
+    }
+  }
+
   static closeForId(id: string): void {
     BrowserPanel.panels.get(id)?.panel.dispose();
   }
@@ -241,8 +258,11 @@ export class BrowserPanel {
     // to another editor group (a split), so it keeps updating while you work
     // elsewhere. It only stops when actually hidden (another tab selected in its
     // own group), where there would be nothing to show anyway.
+    if (panel.active) BrowserPanel.active = this;
     this.panel.onDidChangeViewState(
       () => {
+        if (this.panel.active) BrowserPanel.active = this;
+        else if (BrowserPanel.active === this) BrowserPanel.active = undefined;
         void this.syncRender();
         // Follow the user: if they move a browser tab to another group, that group becomes
         // the dedicated pane and later tabs open there too.
@@ -312,7 +332,7 @@ export class BrowserPanel {
       void this.panel.webview.postMessage({
         method: 'cobrowser.frame',
         bytes: f.bytes,
-        metadata: { deviceWidth: f.metadata.deviceWidth, deviceHeight: f.metadata.deviceHeight },
+        metadata: f.metadata,
       });
     });
   }
@@ -325,28 +345,35 @@ export class BrowserPanel {
   /** Size the page to the panel in DEVICE pixels (crisp text on retina), divided by the
    *  per-site zoom (persisted per origin). The app renders exactly that size at scale 1. */
   private async applyViewport(): Promise<void> {
-    const { cssW, cssH, dpr } = this.metrics;
+    const { cssW, cssH } = this.metrics;
     if (cssW < 50 || cssH < 50) return;
     const zoom = this.getZoom();
-    let width = Math.max(1, Math.round((cssW * dpr) / zoom));
-    let height = Math.max(1, Math.round((cssH * dpr) / zoom));
-    // Cap the rendered area: full device pixels keep text crisp, but the cost is quadratic
-    // and unbounded. Past the budget, back the effective scale off toward 1x.
-    const area = width * height;
-    if (area > MAX_RENDER_PX) {
-      const s = Math.sqrt(MAX_RENDER_PX / area);
-      width = Math.max(1, Math.round(width * s));
-      height = Math.max(1, Math.round(height * s));
-    }
+    // Render at renderScale device pixels per CSS px — native crispness on retina, a
+    // supersample on a 1x display — backed off only if the frame would exceed the budget.
+    let scale = Math.max(1, BrowserPanel.renderScale);
+    const area = cssW * cssH * scale * scale;
+    if (area > BrowserPanel.renderBudgetPx) scale = Math.max(1, Math.sqrt(BrowserPanel.renderBudgetPx / (cssW * cssH)));
+    scale = Math.round(scale * 100) / 100;
     void this.panel.webview.postMessage({ type: 'extension.zoomlabel', zoom });
-    const key = `${width}x${height}`;
+    const key = `${cssW}x${cssH}@${scale}z${zoom}`;
     if (key === this.appliedKey) return;
     try {
-      await this.session.run(() => this.session.setViewport(this.page, width, height));
+      await this.session.run(() => this.session.setViewport(this.page, cssW, cssH, scale, zoom));
       this.appliedKey = key; // only after success, so a transient failure retries
     } catch {
       this.appliedKey = '';
     }
+  }
+
+  /** Keyboard-shortcut commands act on the active panel. */
+  async navigate(kind: 'back' | 'forward' | 'reload'): Promise<void> {
+    await this.session
+      .run(() => (kind === 'back' ? this.page.goBack() : kind === 'forward' ? this.page.goForward() : this.page.reload()).then(() => undefined).catch(() => undefined))
+      .catch(() => undefined);
+  }
+
+  close(): void {
+    this.panel.dispose();
   }
 
   private zoomMap(): Record<string, number> {

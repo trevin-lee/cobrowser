@@ -393,10 +393,10 @@ export class BrowserSession {
   /** Size a page to its panel in device pixels. Offscreen rendering paints exactly the
    *  window's content size at scale 1, so the frame IS the viewport — no emulation, and no
    *  phantom screen to reconcile with it. */
-  async setViewport(page: Page, width: number, height: number): Promise<void> {
-    if (width < 1 || height < 1) return;
+  async setViewport(page: Page, cssW: number, cssH: number, scale = 1, zoom = 1): Promise<void> {
+    if (cssW < 1 || cssH < 1) return;
     const tabId = this.tabIds.get(page);
-    if (tabId) this.app.resize(tabId, width, height);
+    if (tabId) this.app.resize(tabId, cssW, cssH, scale, zoom);
   }
 
   /** Serialize every browser action (agent + human) through one FIFO queue. */

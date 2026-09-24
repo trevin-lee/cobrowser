@@ -24,7 +24,7 @@ const { parseSite, siteMatches, siteLabel } = require('./site.js');
 // Overridable so tests can run a second instance beside the real one without clobbering its state.
 const STATE_DIR = process.env.COBROWSER_STATE_DIR || path.join(os.homedir(), '.cobrowser');
 const STATE_FILE = path.join(STATE_DIR, 'app.json');
-const JPEG_QUALITY = 80;
+const JPEG_QUALITY = 90; // q80 rings around glyphs; the frame is the thing the human reads
 const FRAME_RATE = 60;
 const VERSION = process.env.COBROWSER_VERSION || app.getVersion();
 const ICON = process.env.COBROWSER_ICON;
@@ -557,6 +557,12 @@ class Tab {
     this.id = `t${nextTabId++}`;
     this.subscribers = new Set(); // sockets receiving frames
     this.targetId = undefined;
+    /** CSS size the panel wants, the render scale (device pixels per CSS px), and the
+     *  per-site zoom. The window is css*scale pixels wide and the page is zoomed by
+     *  scale*zoom, so it lays out at css/zoom CSS px and rasterizes at `scale` px per CSS px.
+     *  Offscreen painting always produces exactly the window's pixels, so this is the only
+     *  way to get a genuinely 2x (or supersampled) frame with a correctly sized layout. */
+    this.layout = { cssW: Math.round(width) || 1280, cssH: Math.round(height) || 800, scale: 1, zoom: 1 };
     this.win = new BrowserWindow({
       show: false,
       width: Math.max(100, Math.round(width) || 1280),
@@ -573,6 +579,12 @@ class Tab {
     wc.setFrameRate(FRAME_RATE);
     wc.debugger.attach('1.3');
     wc.on('paint', (_e, _dirty, image) => this.onPaint(image));
+    // Chromium forgets the zoom factor on cross-origin navigation; the panel's scale must not.
+    wc.on('did-navigate', () => this.applyZoom());
+    // An offscreen page is never focused as far as Chromium knows, which breaks
+    // navigator.clipboard.writeText ("Document is not focused") and anything else gated on
+    // focus. Emulate it: the panel IS what the human is looking at.
+    wc.debugger.sendCommand('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => undefined);
     // A page opening a window (target=_blank, window.open) gets a real tab of its own, which
     // the editor adopts through puppeteer's targetcreated exactly like a Chrome popup.
     wc.setWindowOpenHandler(({ url: u }) => {
@@ -594,7 +606,14 @@ class Tab {
     if (this.subscribers.size === 0) return;
     const size = image.getSize();
     const jpeg = image.toJPEG(JPEG_QUALITY);
-    const metaBuf = Buffer.from(JSON.stringify({ tabId: this.id, deviceWidth: size.width, deviceHeight: size.height }));
+    const { cssW, cssH, zoom } = this.layout;
+    // deviceWidth/Height is the page's CSS coordinate space (what input events map to);
+    // frameWidth/Height is the bitmap. They differ by scale*zoom.
+    const metaBuf = Buffer.from(JSON.stringify({
+      tabId: this.id,
+      deviceWidth: Math.round(cssW / zoom), deviceHeight: Math.round(cssH / zoom),
+      frameWidth: size.width, frameHeight: size.height,
+    }));
     const head = Buffer.alloc(4);
     head.writeUInt32LE(metaBuf.length, 0);
     const frame = Buffer.concat([head, metaBuf, jpeg]);
@@ -606,10 +625,19 @@ class Tab {
     }
   }
 
-  resize(width, height) {
-    const w = Math.max(100, Math.round(width)), h = Math.max(100, Math.round(height));
+  resize(cssW, cssH, scale = 1, zoom = 1) {
+    this.layout = { cssW: Math.max(50, Math.round(cssW)), cssH: Math.max(50, Math.round(cssH)), scale: Math.max(1, Number(scale) || 1), zoom: Math.max(0.25, Number(zoom) || 1) };
+    const w = Math.round(this.layout.cssW * this.layout.scale), h = Math.round(this.layout.cssH * this.layout.scale);
     const [cw, ch] = this.win.getContentSize();
     if (cw !== w || ch !== h) this.win.setContentSize(w, h);
+    this.applyZoom();
+  }
+
+  applyZoom() {
+    const wc = this.win.webContents;
+    if (wc.isDestroyed()) return;
+    const zf = this.layout.scale * this.layout.zoom;
+    if (Math.abs(wc.getZoomFactor() - zf) > 0.001) wc.setZoomFactor(zf);
   }
 
   info() {
@@ -733,7 +761,7 @@ async function handle(ws, state, m) {
     }
     case 'closeTab': return void w.tabs.get(m.tabId)?.close();
     case 'closeAll': return void w.closeAll();
-    case 'resize': return void w.tabs.get(m.tabId)?.resize(m.width, m.height);
+    case 'resize': return void w.tabs.get(m.tabId)?.resize(m.width, m.height, m.scale, m.zoom);
     case 'subscribe': {
       const t = w.tabs.get(m.tabId);
       if (!t) return;

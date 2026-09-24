@@ -81,6 +81,22 @@
         "command": "cobrowser.bindChromeTabGroup",
         "title": "Bind Chrome Tab Group to This Workspace",
         "category": "Cobrowser"
+      },
+      {
+        "command": "cobrowser.closeTab",
+        "title": "Cobrowser: Close Browser Tab"
+      },
+      {
+        "command": "cobrowser.reloadTab",
+        "title": "Cobrowser: Reload Tab"
+      },
+      {
+        "command": "cobrowser.back",
+        "title": "Cobrowser: Back"
+      },
+      {
+        "command": "cobrowser.forward",
+        "title": "Cobrowser: Forward"
       }
     ],
     "menus": {
@@ -144,9 +160,65 @@
           "default": "",
           "description": "Deprecated: renamed to cobrowser.firefoxContainer. Still honoured as a fallback so existing configurations keep working.",
           "deprecationMessage": "Renamed to cobrowser.firefoxContainer — the bridge is a plain Firefox WebExtension, not Zen-specific. Still honoured as a fallback."
+        },
+        "cobrowser.renderScale": {
+          "type": "number",
+          "default": 2,
+          "minimum": 1,
+          "maximum": 3,
+          "description": "Device pixels rendered per CSS pixel. 2 is native on a Retina display and a 2x supersample on a 1x one — crisper text at the cost of larger frames. Backed off automatically on very large panels."
+        },
+        "cobrowser.renderBudgetMegapixels": {
+          "type": "number",
+          "default": 6.5,
+          "minimum": 1,
+          "maximum": 16,
+          "description": "Largest frame the app will render, in megapixels. Above it the render scale is backed off. 6.5 keeps scrolling at ~30fps on a full-height Retina panel (~1.8x); 9 gives true 2x there at ~24fps. Measured on an M4 Pro."
         }
       }
-    }
+    },
+    "keybindings": [
+      {
+        "command": "cobrowser.newTab",
+        "key": "ctrl+t",
+        "mac": "cmd+t",
+        "when": "activeWebviewPanelId == 'cobrowser'"
+      },
+      {
+        "command": "cobrowser.closeTab",
+        "key": "ctrl+w",
+        "mac": "cmd+w",
+        "when": "activeWebviewPanelId == 'cobrowser'"
+      },
+      {
+        "command": "cobrowser.reloadTab",
+        "key": "ctrl+r",
+        "mac": "cmd+r",
+        "when": "activeWebviewPanelId == 'cobrowser'"
+      },
+      {
+        "command": "cobrowser.back",
+        "key": "ctrl+[",
+        "mac": "cmd+[",
+        "when": "activeWebviewPanelId == 'cobrowser'"
+      },
+      {
+        "command": "cobrowser.forward",
+        "key": "ctrl+]",
+        "mac": "cmd+]",
+        "when": "activeWebviewPanelId == 'cobrowser'"
+      },
+      {
+        "command": "cobrowser.back",
+        "key": "alt+left",
+        "when": "activeWebviewPanelId == 'cobrowser'"
+      },
+      {
+        "command": "cobrowser.forward",
+        "key": "alt+right",
+        "when": "activeWebviewPanelId == 'cobrowser'"
+      }
+    ]
   },
   "scripts": {
     "build": "node esbuild.mjs",
