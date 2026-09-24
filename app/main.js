@@ -55,7 +55,8 @@ process.on('unhandledRejection', (e) => log('unhandledRejection', e));
 const WEBAUTHN_GROUP = process.env.COBROWSER_WEBAUTHN_GROUP || '';
 if (WEBAUTHN_GROUP && typeof app.configureWebAuthn === 'function') {
   try {
-    app.configureWebAuthn({ touchID: { keychainAccessGroup: WEBAUTHN_GROUP, promptReason: 'sign in with a passkey' } });
+    // Only the group: passing promptReason aborts Electron 44 at startup (SIGTRAP in Node init).
+    app.configureWebAuthn({ touchID: { keychainAccessGroup: WEBAUTHN_GROUP } });
   } catch (e) { console.error('configureWebAuthn failed:', e.message); }
 }
 
