@@ -83,6 +83,12 @@ Every tab is an editor tab in a dedicated pane, streamed from the app at up to 6
 
 Cobrowser says what it is. The user agent is the standard reduced Chromium UA with a `Cobrowser/<version>` token where Edge and Opera put theirs, the client hints name Chromium and Cobrowser (never Google Chrome), Accept-Language comes from your macOS language list, and the page's `screen` is the real display the pane sits on rather than a fake screen the size of the viewport. Sites asking for a permission (camera, location, notifications, clipboard read) get a native Allow/Block dialog, remembered per site in `permissions.json`; until you answer, they have nothing. `navigator.webdriver` reads false, as it does in any Electron app: nothing is overridden, the process is simply not launched with a debugging port. The agent can read the page's console and request log (`list_console_messages`, `list_network_requests`); a DevTools window is refused because it would take the tab's debugger session away from the app.
 
+### Logins
+
+The app keeps a local vault (encrypted through the OS keychain, unlocked with Touch ID) that the agent fills from without ever seeing a password: `list_credentials` shows the sites and usernames this workspace may use, `fill_credentials` types a login into the fields the agent picked, and the app checks the page is really on that site first. Add logins from the menu-bar **Logins…** window or by CSV import, and scope each one to the workspaces that may use it, or to all.
+
+When an agent needs a login its workspace is not scoped for, it calls `request_credential` with the site and a one-line reason. You get a native dialog naming the workspace and the login: **Allow in this workspace** adds the workspace to the login's scope, **Allow once** permits a single fill, **Deny** does nothing. The agent only learns the outcome, and a denial is indistinguishable from there being no such login, so a workspace still cannot enumerate what others hold.
+
 ### Passkeys
 
 Run **Cobrowser: Enable Passkeys (Sign the Browser)** once. Chromium's Touch ID authenticator only works in an app signed with a `keychain-access-groups` entitlement, and Apple only grants that entitlement through a provisioning profile, so the command re-signs the downloaded browser as `dev.trevin.cobrowser` with your Apple Development identity. It builds a stub Xcode project and lets `xcodebuild -allowProvisioningUpdates` mint the profile, which needs Xcode with an Apple ID signed in (Xcode → Settings → Accounts). After that the Touch ID sheet is a system dialog, so it appears even though the page renders offscreen; passkeys are created inside cobrowser (add one from a site's security settings after a password sign-in) and live in this Mac's Secure Enclave keychain — they do not sync, and existing iCloud Keychain passkeys are not visible here, because Apple grants that only to real browsers. USB security keys work too. The browser restarts signed the next time a panel opens. A Developer ID certificate is used instead when present.
@@ -152,7 +158,7 @@ Scripts: `npm run watch` (rebuild on change), `npm run typecheck`.
 
 - Publish to Open VSX so Cursor can install it directly.
 - Windows/Linux (the Electron download is macOS-only so far).
-- Pop-out to a real window; a local, Touch-ID-unlocked vault the agent fills from without seeing.
+- Pop-out to a real window.
 - Richer/accessibility-tree `take_snapshot`; multi-tab mirroring UI.
 - Input-owner hard lock (currently a FIFO queue + advisory flag).
 

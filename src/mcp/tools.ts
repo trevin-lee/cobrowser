@@ -268,7 +268,7 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'list_credentials',
     {
       description:
-        "Logins THIS workspace may use, from the human's cobrowser vault — sites and usernames only, never passwords. Logins scoped to other workspaces are not listed and cannot be filled from here. Check this before fill_credentials.",
+        "Logins THIS workspace may use, from the human's cobrowser vault — sites and usernames only, never passwords. Logins scoped to other workspaces are not listed and cannot be filled from here; if the site you need is missing, request_credential asks the human to grant one.",
       inputSchema: {},
     },
     async () => {
@@ -281,7 +281,7 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'fill_credentials',
     {
       description:
-        'Fill the saved login for the CURRENT site into fields you choose: pass the username and/or password field uids from take_snapshot. The password never enters your context — the app types it in directly and reports what it filled. Refused unless the page is on the login\'s site. Pass `username` when the site has more than one saved login. Do NOT submit payment or MFA steps for the human.',
+        'Fill the saved login for the CURRENT site into fields you choose: pass the username and/or password field uids from take_snapshot. The password never enters your context — the app types it in directly and reports what it filled. Refused unless the page is on the login\'s site. Pass `username` when the site has more than one saved login. If it answers "no saved login", call request_credential — the human may hold one scoped to another workspace. Do NOT submit payment or MFA steps for the human.',
       inputSchema: {
         usernameUid: z.string().optional(),
         passwordUid: z.string().optional(),
@@ -291,6 +291,23 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     async (opts) => {
       const s = await getSession();
       return asText(JSON.stringify(await s.run(() => s.fillCredentials(opts))));
+    },
+  );
+
+  server.registerTool(
+    'request_credential',
+    {
+      description:
+        'Ask the human to let THIS workspace use a saved login for a site (one that list_credentials does not show). They answer in the cobrowser app: allow it here from now on, allow it once, or deny — you learn only the outcome, never the password, and a denial looks the same as no such login. Give a one-line `reason` the human will read (what you are doing that needs it). After a grant, use fill_credentials. Blocks until they answer, up to a few minutes.',
+      inputSchema: {
+        site: z.string().describe('The site, e.g. "github.com" or the page URL'),
+        username: z.string().optional(),
+        reason: z.string().optional(),
+      },
+    },
+    async (opts) => {
+      const s = await getSession();
+      return asText(JSON.stringify(await s.requestCredential(opts)));
     },
   );
 

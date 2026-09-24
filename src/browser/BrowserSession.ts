@@ -628,6 +628,12 @@ export class BrowserSession {
     return this.app.vaultFill(this.current().tabId, opts);
   }
 
+  /** Ask the human to grant this workspace a login for a site. Answered in the app. */
+  requestCredential(opts: { site: string; username?: string; reason?: string }) {
+    this.markAgent();
+    return this.app.vaultRequest(opts.site, opts.username, opts.reason);
+  }
+
   /** Text bound for the agent, with any unlocked vault password removed. */
   scrub(text: string): Promise<string> {
     return this.app.scrub(text);

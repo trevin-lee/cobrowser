@@ -219,6 +219,11 @@ export class AppConnection {
   async vaultLock(): Promise<void> {
     await this.request({ type: 'vault.lock' });
   }
+  /** Ask the human (native dialog) to let this workspace use a login it is not scoped for. */
+  async vaultRequest(site: string, username: string | undefined, reason: string | undefined): Promise<{ granted: 'workspace' | 'once' | 'already' | 'denied'; host?: string; username?: string; error?: string }> {
+    // Long timeout: Touch ID plus a dialog the human may take a while to notice.
+    return (await this.request({ type: 'vault.request', site, username, reason }, 300000)) as unknown as { granted: 'workspace' | 'once' | 'already' | 'denied'; host?: string; username?: string; error?: string };
+  }
   async vaultFill(tabId: string, opts: { usernameUid?: string; passwordUid?: string; username?: string }): Promise<{ filled: string[]; username?: string; error?: string; candidates?: string[] }> {
     return (await this.request({ type: 'vault.fill', tabId, ...opts }, 120000)) as unknown as { filled: string[]; username?: string; error?: string; candidates?: string[] };
   }

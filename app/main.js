@@ -181,6 +181,73 @@ function normalizeScope(scope) {
 function allowed(entry, workspaceId) {
   return entry.scope === 'all' || (Array.isArray(entry.scope) && entry.scope.includes(workspaceId));
 }
+
+// One-time grants from the request dialog ("Allow once"): entry id + workspace, consumed by
+// the next successful fill. Never persisted — they die with the app.
+const oneTimeGrants = new Set();
+const grantKey = (entry, workspaceId) => `${entry.id}|${workspaceId}`;
+function usable(entry, workspaceId) {
+  return allowed(entry, workspaceId) || oneTimeGrants.has(grantKey(entry, workspaceId));
+}
+
+// Test-only: an isolated instance has nobody to answer the dialog. Never set in normal use.
+const TEST_GRANT = SKIP_BIOMETRICS ? process.env.COBROWSER_TEST_GRANT : undefined;
+
+/**
+ * The agent in a workspace asks to use a login it is not scoped for. The human decides in a
+ * native dialog; the agent learns only the outcome. A login that does not exist and a login
+ * the human denies look the same to the agent, so a workspace still cannot enumerate what
+ * other workspaces hold.
+ */
+async function requestCredential(workspaceId, { site, username, reason }) {
+  const v = await unlockVault('grant a login to a workspace');
+  const page = parseSite(String(site || ''));
+  if (!page.host) return { granted: 'denied', error: 'site is required' };
+  const label = siteLabel(page);
+  let matches = v.entries.filter((e) => siteMatches(e, page));
+  if (username) matches = matches.filter((e) => e.username === username);
+  const already = matches.find((e) => allowed(e, workspaceId));
+  if (already) return { granted: 'already', host: label, username: already.username };
+  if (matches.length === 0) return { granted: 'denied', error: `no login for ${label} was granted` };
+  const name = path.basename(workspaceId) || workspaceId;
+  const why = reason ? `Reason given: ${String(reason).slice(0, 300)}` : 'No reason given.';
+  let entry = matches[0];
+  let mode; // 'workspace' | 'once' | 'denied'
+  if (TEST_GRANT) {
+    log(`vault: TEST MODE — request for ${label} auto-answered "${TEST_GRANT}"`);
+    mode = TEST_GRANT === 'workspace' || TEST_GRANT === 'once' ? TEST_GRANT : 'denied';
+  } else if (matches.length === 1) {
+    const { response } = await dialog.showMessageBox({
+      type: 'question',
+      message: `The agent in "${name}" asks to use ${entry.username || 'the login'} on ${label}`,
+      detail: `${why}
+
+Allowing lets that workspace's agent fill this login into the page; it never sees the password. Workspace: ${workspaceId}`,
+      buttons: ['Allow in this workspace', 'Allow once', 'Deny'], defaultId: 2, cancelId: 2,
+    });
+    mode = response === 0 ? 'workspace' : response === 1 ? 'once' : 'denied';
+  } else {
+    const names = matches.slice(0, 3).map((e) => e.username || '(no username)');
+    const { response } = await dialog.showMessageBox({
+      type: 'question',
+      message: `The agent in "${name}" asks to use a login on ${label} — which one?`,
+      detail: `${why}
+
+Choosing one allows it in this workspace from now on; the agent never sees the password. Workspace: ${workspaceId}`,
+      buttons: [...names, 'Deny'], defaultId: names.length, cancelId: names.length,
+    });
+    if (response < names.length) { entry = matches[response]; mode = 'workspace'; } else mode = 'denied';
+  }
+  if (mode === 'workspace') {
+    entry.scope = normalizeScope([...(entry.scope === 'all' ? [] : entry.scope), workspaceId]);
+    saveVault();
+  } else if (mode === 'once') {
+    oneTimeGrants.add(grantKey(entry, workspaceId));
+  }
+  log(`vault: request from ${name} for ${entry.username} on ${label}: ${mode}`);
+  if (mode === 'denied') return { granted: 'denied', error: `no login for ${label} was granted` };
+  return { granted: mode, host: label, username: entry.username };
+}
 function publicEntry(e) { return { host: siteLabel(e), username: e.username, scope: e.scope }; }
 
 function upsertLogin(site, username, password, scope) {
@@ -257,7 +324,7 @@ async function fillCredentials(tab, { usernameUid, passwordUid, username }) {
   const page = parseSite(tab.win.webContents.getURL());
   const host = siteLabel(page);
   // Scope first: a login outside this workspace's scope does not exist as far as it knows.
-  let matches = v.entries.filter((e) => allowed(e, tab.workspace.id) && siteMatches(e, page));
+  let matches = v.entries.filter((e) => usable(e, tab.workspace.id) && siteMatches(e, page));
   if (username) matches = matches.filter((e) => e.username === username);
   if (matches.length === 0) return { filled: [], error: `no saved login for ${host}` };
   if (matches.length > 1) return { filled: [], error: 'several logins match — pass username', candidates: matches.map((e) => e.username) };
@@ -274,6 +341,7 @@ async function fillCredentials(tab, { usernameUid, passwordUid, username }) {
     await dbg.sendCommand('Input.insertText', { text: value }); // trusted keystrokes, never page JS
     filled.push(label);
   }
+  if (filled.length) oneTimeGrants.delete(grantKey(entry, tab.workspace.id)); // a one-time grant is spent
   log(`vault: filled ${filled.join('+')} for ${entry.username} on ${host}`);
   return { filled, username: entry.username };
 }
@@ -900,6 +968,10 @@ async function handle(ws, state, m) {
           return reply({ logins: v.entries.filter((e) => wsId && allowed(e, wsId)).map((e) => ({ host: siteLabel(e), username: e.username })) });
         }
         case 'vault.lock': { lockVault(); return reply({ ok: true }); }
+        case 'vault.request': {
+          if (!state.workspace) return reply({ granted: 'denied', error: 'no workspace' });
+          return reply(await requestCredential(state.workspace.id, m));
+        }
         case 'vault.scrub': return reply({ text: scrubSecrets(m.text) });
         case 'vault.fill': {
           const tab = state.workspace?.tabs.get(m.tabId);
