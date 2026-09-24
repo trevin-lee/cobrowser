@@ -123,6 +123,18 @@ export class AppConnection {
     return this.byTarget.get(targetId);
   }
 
+  /**
+   * The tab id for a target that may have just been created: puppeteer's targetcreated can
+   * beat the app's own announcement of the tab, so fall back to asking the app, which answers
+   * only once the tab's target id is known.
+   */
+  async resolveTabId(targetId: string): Promise<string | undefined> {
+    const known = this.byTarget.get(targetId);
+    if (known) return known;
+    await this.listTabs().catch(() => undefined);
+    return this.byTarget.get(targetId);
+  }
+
   closeTab(tabId: string): void {
     this.send({ type: 'closeTab', tabId });
   }

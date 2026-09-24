@@ -446,12 +446,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return;
       }
       try {
+        // Quit the app BEFORE signing: macOS kills a running process whose binary is re-signed
+        // underneath it, the next time it pages in code — minutes later, mid-session.
+        await disposeSession(context);
+        try { const st = readAppState(); if (st) process.kill(st.pid, 'SIGTERM'); } catch { /* not running */ }
+        const gone = Date.now() + 8000;
+        while (readAppState() && Date.now() < gone) await new Promise((r) => setTimeout(r, 200));
         const marker = await vscode.window.withProgress(
           { location: vscode.ProgressLocation.Notification, title: 'Cobrowser: signing the browser for passkeys' },
           () => Promise.resolve(signElectronForPasskeys(exe, log)),
         );
-        await disposeSession(context); // the running app is the unsigned binary; quit it
-        try { const st = readAppState(); if (st) process.kill(st.pid, 'SIGTERM'); } catch { /* not running */ }
         void vscode.window.showInformationMessage(`Cobrowser: passkeys enabled (${marker.identity.replace(/:.*/, '')}). The browser restarts signed the next time a panel opens.`);
       } catch (err) {
         void vscode.window.showErrorMessage(`Cobrowser: could not enable passkeys — ${String((err as Error).message ?? err)}`);

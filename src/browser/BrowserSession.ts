@@ -141,7 +141,7 @@ export class BrowserSession {
         try {
           const page = await target.page();
           if (!page) return; // not a page target
-          if (!session.adopt(page)) return; // not one of this workspace's tabs
+          if (!(await session.adoptLater(page))) return; // not one of this workspace's tabs
           const id = session.idFor(page);
           session.pushEvent('tab-opened', id, page.url());
           await session.prepPage(page); // fail-fast passkeys before any site script runs
@@ -204,6 +204,16 @@ export class BrowserSession {
     if (this.tabIds.has(page)) return true;
     const targetId = (page.target() as unknown as { _targetId?: string })._targetId;
     const tabId = targetId ? this.app.tabIdFor(targetId) : undefined;
+    if (!tabId) return false;
+    this.tabIds.set(page, tabId);
+    return true;
+  }
+
+  /** adopt() for a target that may be newer than the app's announcement of it. */
+  private async adoptLater(page: Page): Promise<boolean> {
+    if (this.adopt(page)) return true;
+    const targetId = (page.target() as unknown as { _targetId?: string })._targetId;
+    const tabId = targetId ? await this.app.resolveTabId(targetId) : undefined;
     if (!tabId) return false;
     this.tabIds.set(page, tabId);
     return true;

@@ -600,7 +600,9 @@ class Tab {
     wc.setWindowOpenHandler(({ url: u }) => {
       const [w, h] = this.win.getContentSize();
       const t = workspace.openTab({ url: u, width: w, height: h });
-      workspace.broadcast({ type: 'tab', tabId: t.id, targetId: t.targetId, url: u, opener: this.id });
+      // The target id arrives asynchronously; announcing before it is known gave the editor a
+      // tab with no target, so every target=_blank link looked like a dead click.
+      void t.ready.then(() => workspace.broadcast({ type: 'tab', ...t.info(), url: u, opener: this.id }));
       return { action: 'deny' };
     });
     wc.on('destroyed', () => workspace.onTabGone(this));
