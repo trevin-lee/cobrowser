@@ -11,6 +11,8 @@ export interface PageInfo {
   url: string;
   title: string;
   selected: boolean;
+  /** Who opened the tab: the agent (new_page) or the human / a site popup. */
+  openedBy: 'agent' | 'human';
 }
 
 /** Viewport-relative box of an element the agent just acted on, in CSS px. */
@@ -89,6 +91,8 @@ export class BrowserSession {
 
   /** The app's tab id for each page — what frames, resizes and closes are addressed by. */
   private tabIds = new Map<Page, string>();
+  /** Pages the agent opened with new_page — the ones it is expected to tidy up. */
+  private agentPages = new WeakSet<Page>();
 
   private constructor(
     private browser: Browser,
@@ -452,6 +456,7 @@ export class BrowserSession {
         // forever and wedge the whole run() queue (every later tool call blocks).
         title: (await withTimeout(p.title().catch(() => ''), 2000)) ?? '',
         selected: p === this.active,
+        openedBy: this.agentPages.has(p) ? 'agent' : 'human',
       });
     }
     return infos;
@@ -465,6 +470,7 @@ export class BrowserSession {
       this.suppressOpen++;
       try {
         const p = await this.openAppTab();
+        this.agentPages.add(p);
         await this.prepPage(p); // fail-fast passkeys before navigating anywhere
         if (url) await p.goto(url, { waitUntil: 'domcontentloaded' }).catch(() => undefined);
         return p;
@@ -483,6 +489,7 @@ export class BrowserSession {
       url: page.url(),
       title: await page.title().catch(() => ''),
       selected: page === this.active,
+      openedBy: 'agent',
     };
   }
 

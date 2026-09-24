@@ -16,7 +16,11 @@ const asText = (text: string) => ({ content: [{ type: 'text' as const, text }] }
 export function registerTools(server: McpServer, getSession: GetSession): void {
   server.registerTool(
     'list_pages',
-    { description: 'List open browser pages/tabs.', inputSchema: {} },
+    {
+      description:
+        "List open browser tabs. Each has openedBy: 'agent' (you or an earlier agent turn opened it) or 'human'. The human sees every tab as an editor tab, so keep the set small and tidy: before opening anything, reuse an 'agent' tab you are no longer using (navigate_page), and close_page any 'agent' tabs left over from finished work. Never close 'human' tabs unless asked.",
+      inputSchema: {},
+    },
     async () => {
       const s = await getSession();
       const pages = await s.run(() => s.listPages());
@@ -41,7 +45,7 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'new_page',
     {
       description:
-        "Open a new tab, optionally navigating to a URL. Becomes active unless background. Prefer navigate_page on the current tab when you are simply following a link — every new tab becomes a tab in the human's editor. Close tabs you are done with (close_page); call get_editor_layout if you are unsure how crowded their editor already is.",
+        "Open a new tab, optionally navigating to a URL. Becomes active unless background. Every tab you open is a tab in the human's editor, and leaving them behind is the top complaint — so: prefer navigate_page on the current tab when you are simply following a link; reuse a tab you opened earlier instead of opening another (list_pages shows which are yours via openedBy); keep at most one tab per task; and close_page your tabs the moment their work is done. Call get_editor_layout if you are unsure how crowded their editor already is.",
       inputSchema: { url: z.string().optional(), background: z.boolean().optional() },
     },
     async ({ url, background }) => {
@@ -66,7 +70,8 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
   server.registerTool(
     'close_page',
     {
-      description: 'Close a browser tab by pageId. Refuses to close the last remaining tab.',
+      description:
+        "Close a tab by pageId. Use it routinely: when a task ends, close every tab you opened for it (list_pages marks yours with openedBy: 'agent') so the human's editor is left as you found it. Do not close 'human' tabs unless asked. Refuses to close the last remaining tab.",
       inputSchema: { pageId: z.string() },
     },
     async ({ pageId }) => {
