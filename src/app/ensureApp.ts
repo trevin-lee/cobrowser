@@ -11,6 +11,8 @@ type Log = (message: string) => void;
 export const ELECTRON_VERSION = '44.4.5';
 
 export interface EnsureAppOptions {
+  /** Internal: one replacement of an older instance has already been attempted. */
+  retried?: boolean;
   /** The app's bundled entry (dist/app/main.js inside the extension). */
   appMain: string;
   /** Where to keep the downloaded Electron (globalStorage/electron). */
@@ -87,11 +89,17 @@ export async function ensureApp(opts: EnsureAppOptions): Promise<AppState> {
     },
   });
   child.unref();
-  const state = await waitFor(() => {
-    const s = readAppState();
-    return s && s.version === opts.version ? s : undefined;
-  }, 20000);
+  // Whichever instance won the app's single-instance lock is the app now — ours or one another
+  // window spawned in the same moment. Either is fine when it is this version; an older
+  // winner (another window still on an old extension) is told to go, once.
+  const state = await waitFor(() => readAppState(), 20000);
   if (!state) throw new Error(`cobrowser app did not start (no ${STATE_FILE} within 20s)`);
+  if (state.version !== opts.version && !opts.retried) {
+    opts.log(`another window started cobrowser app ${state.version}; replacing it with ${opts.version}.`);
+    try { process.kill(state.pid, 'SIGTERM'); } catch { /* gone */ }
+    await waitFor(() => (readAppState() ? undefined : true), 8000);
+    return ensureApp({ ...opts, retried: true });
+  }
   return state;
 }
 

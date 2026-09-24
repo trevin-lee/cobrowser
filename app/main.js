@@ -44,6 +44,12 @@ const DATA_DIR = process.env.COBROWSER_DATA_DIR
     : path.join(STATE_DIR, 'data'));
 fs.mkdirSync(DATA_DIR, { recursive: true });
 app.setPath('userData', DATA_DIR);
+// One app per data dir. Editor windows race to start the app after a restart (each sees no
+// state file for a moment and spawns its own); the lock, keyed on userData, lets exactly one
+// live. The loser exits before it has a tray, a socket or a state file.
+if (!app.requestSingleInstanceLock()) {
+  app.exit(0);
+}
 app.setName('cobrowser'); // names the Keychain item safeStorage uses ("cobrowser Safe Storage")
 
 // stdio is discarded by the extension that spawns us, so anything worth knowing goes here.
