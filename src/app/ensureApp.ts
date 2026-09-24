@@ -36,17 +36,31 @@ export function electronExecutable(opts: Pick<EnsureAppOptions, 'cacheDir' | 'de
   return fs.existsSync(exe) ? exe : undefined;
 }
 
+/** A short hash of the app bundle on disk — what the running process reports back. */
+export function buildIdOf(appMain: string): string {
+  try {
+    return crypto.createHash('sha1').update(fs.readFileSync(appMain)).digest('hex').slice(0, 12);
+  } catch {
+    return '';
+  }
+}
+
 export async function ensureApp(opts: EnsureAppOptions): Promise<AppState> {
   const running = readAppState();
   if (running) {
     const stale = isOlder(running.version, opts.version);
+    // Same version, different app code (a reinstall while iterating): the process must be
+    // the code that shipped, or a fix in the app is invisible until someone restarts it.
+    const rebuilt = !stale && running.build !== buildIdOf(opts.appMain);
     // Signed for passkeys since it started (Enable Passkeys ran): the unsigned process can't
     // reach the authenticator, so it restarts as the signed one.
     const unsignedButSigned = !running.webauthn && !!readSignedMarker(electronExecutable(opts) ?? '');
-    if (!stale && !unsignedButSigned) return running;
+    if (!stale && !rebuilt && !unsignedButSigned) return running;
     opts.log(stale
       ? `cobrowser app ${running.version} is older than this extension (${opts.version}) — restarting it.`
-      : 'cobrowser app is running unsigned but the browser is now signed for passkeys — restarting it.');
+      : rebuilt
+        ? 'cobrowser app is running an older build of this version — restarting it.'
+        : 'cobrowser app is running unsigned but the browser is now signed for passkeys — restarting it.');
     try {
       process.kill(running.pid, 'SIGTERM');
     } catch {
@@ -67,6 +81,7 @@ export async function ensureApp(opts: EnsureAppOptions): Promise<AppState> {
       ...process.env,
       ELECTRON_RUN_AS_NODE: undefined, // the extension host sets this; the app must be Electron
       COBROWSER_VERSION: opts.version,
+      COBROWSER_BUILD: buildIdOf(opts.appMain),
       COBROWSER_ICON: opts.iconPath ?? '',
       COBROWSER_WEBAUTHN_GROUP: signed?.webauthnGroup ?? '',
     },

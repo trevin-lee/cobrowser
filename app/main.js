@@ -1185,7 +1185,7 @@ app.whenReady().then(async () => {
     fs.mkdirSync(STATE_DIR, { recursive: true });
     fs.writeFileSync(
       STATE_FILE,
-      JSON.stringify({ wsPort: port, token, pid: process.pid, version: VERSION, webauthn: !!WEBAUTHN_GROUP }),
+      JSON.stringify({ wsPort: port, token, pid: process.pid, version: VERSION, build: process.env.COBROWSER_BUILD || '', webauthn: !!WEBAUTHN_GROUP }),
       { mode: 0o600 },
     );
     log(`cobrowser app ${VERSION}: ws://127.0.0.1:${port}, data ${DATA_DIR}`);

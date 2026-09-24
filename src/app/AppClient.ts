@@ -8,6 +8,9 @@ export interface AppState {
   token: string;
   pid: number;
   version: string;
+  /** Hash of the app bundle this process was started from, so a same-version reinstall
+   *  (a dev iteration) still gets the new app code. */
+  build?: string;
   /** The binary is signed for passkeys and the Touch ID authenticator is configured. */
   webauthn?: boolean;
 }
