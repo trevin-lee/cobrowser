@@ -2,7 +2,7 @@
   "name": "cobrowser",
   "displayName": "Cobrowser",
   "description": "An agent-controllable browser inside your editor — rendered offscreen by a companion app, co-driven by you (webview) and your AI agent (MCP).",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "publisher": "trevin-lee",
   "private": true,
   "license": "MIT",
@@ -60,10 +60,6 @@
         "command": "cobrowser.bindFirefoxContainer",
         "title": "Bind Firefox Container to This Workspace",
         "category": "Cobrowser"
-      },
-      {
-        "command": "cobrowser.importProfiles",
-        "title": "Cobrowser: Import Logins from Old Profiles"
       },
       {
         "command": "cobrowser.addLogin",
@@ -236,7 +232,6 @@
     "release": "node scripts/release.mjs"
   },
   "dependencies": {
-    "puppeteer-core": "^24.10.0",
     "ws": "^8.21.1"
   },
   "devDependencies": {

@@ -15,7 +15,7 @@ tsconfig*.json
 .github/**
 scripts/**
 HANDOFF.md
-# NOTE: node_modules is intentionally NOT ignored — puppeteer-core is marked
-# `external` in the esbuild config, so it must ship in the VSIX to be require-able.
+# Everything the extension needs is bundled into dist/, so no node_modules ship.
+node_modules/**
 # The app ships as dist/app/main.js (bundled); its source tree and node_modules do not.
 app/**

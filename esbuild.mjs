@@ -13,15 +13,15 @@ const common = {
 /** @type {import('esbuild').BuildOptions[]} */
 const targets = [
   {
-    // Extension host: Node/CJS. puppeteer-core is kept external (ships in node_modules);
-    // the MCP SDK + zod are bundled so their ESM is transpiled to CJS.
+    // Extension host: Node/CJS. Everything (ws, the MCP SDK, zod) is bundled, so the vsix
+    // needs no node_modules at all.
     ...common,
     entryPoints: ['src/extension.ts'],
     outfile: 'dist/extension.js',
     platform: 'node',
     format: 'cjs',
     target: 'node20',
-    external: ['vscode', 'puppeteer-core'],
+    external: ['vscode'],
   },
   {
     // Daemon: a standalone Node process (spawned detached), so it must be its own bundle

@@ -6,7 +6,6 @@ import WebSocket from 'ws';
 export interface AppState {
   wsPort: number;
   token: string;
-  debugWs: string;
   pid: number;
   version: string;
   /** The binary is signed for passkeys and the Touch ID authenticator is configured. */
@@ -23,8 +22,9 @@ export interface ScreenInfo {
 
 export interface AppTabInfo {
   tabId: string;
-  targetId: string;
   url: string;
+  title: string;
+  /** The tab that opened this one (a site popup / target=_blank), if any. */
   opener?: string;
 }
 
@@ -32,6 +32,43 @@ export interface AppFrame {
   bytes: Uint8Array;
   /** deviceWidth/Height: the page's CSS coordinate space; frameWidth/Height: the bitmap. */
   metadata: { tabId: string; deviceWidth: number; deviceHeight: number; frameWidth?: number; frameHeight?: number };
+}
+
+export type NavigateKind = 'url' | 'back' | 'forward' | 'reload';
+
+export interface NavigateResult {
+  url: string;
+  title: string;
+  error?: string;
+  timedOut?: boolean;
+  /** back/forward with no history in that direction. */
+  noop?: boolean;
+}
+
+export interface ConsoleEntry {
+  seq: number;
+  time: string;
+  level: string;
+  text: string;
+  url?: string;
+  line?: number;
+  source?: string;
+  pageUrl: string;
+}
+
+export interface RequestEntry {
+  seq: number;
+  time: string;
+  method: string;
+  url: string;
+  type?: string;
+  status?: number;
+  statusText?: string;
+  mimeType?: string;
+  error?: string;
+  fromCache?: boolean;
+  durationMs?: number;
+  pageUrl: string;
 }
 
 /** Overridable with COBROWSER_STATE_DIR — the app honours the same variable — so a test can
@@ -54,25 +91,26 @@ type FrameListener = (f: AppFrame) => void;
 /**
  * This editor window's connection to the app, scoped to one workspace. Tabs belong to the
  * workspace inside the app, not to this socket: a reload reconnects and finds them again.
+ *
+ * Everything the editor does to a tab goes over this one socket — frames out, input and
+ * DevTools-protocol commands in. The app speaks the protocol to its own tabs in-process, so
+ * no debugging port is ever opened: nothing else on the machine can attach to the user's
+ * sessions, and the pages are not launched under an automation switch.
  */
 export class AppConnection {
   private ws: WebSocket;
   private nextRequest = 1;
   private pending = new Map<number, (m: Record<string, unknown>) => void>();
   private frameListeners = new Map<string, FrameListener>();
-  /** targetId → tabId for every tab the app has told us about. */
-  private byTarget = new Map<string, string>();
-  readonly debugWs: string;
   readonly version: string;
   onTabOpened?: (t: AppTabInfo) => void;
   onTabClosed?: (tabId: string) => void;
+  onTabUpdated?: (t: AppTabInfo) => void;
   onClose?: () => void;
 
-  private constructor(ws: WebSocket, hello: { debugWs: string; version: string; tabs: AppTabInfo[] }) {
+  private constructor(ws: WebSocket, hello: { version: string; tabs: AppTabInfo[] }) {
     this.ws = ws;
-    this.debugWs = hello.debugWs;
     this.version = hello.version;
-    for (const t of hello.tabs) this.byTarget.set(t.targetId, t.tabId);
     ws.on('message', (data, isBinary) => this.receive(data as Buffer, isBinary));
     ws.on('close', () => this.onClose?.());
     ws.on('error', () => undefined); // surfaced through 'close'
@@ -84,7 +122,7 @@ export class AppConnection {
       ws.once('open', () => resolve());
       ws.once('error', reject);
     });
-    const hello = await new Promise<{ debugWs: string; version: string; tabs: AppTabInfo[] }>((resolve, reject) => {
+    const hello = await new Promise<{ version: string; tabs: AppTabInfo[] }>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('app did not answer hello')), 10000);
       ws.once('message', (data) => {
         clearTimeout(timer);
@@ -115,36 +153,44 @@ export class AppConnection {
   }
 
   async openTab(url: string, width: number, height: number): Promise<AppTabInfo> {
-    const r = (await this.request({ type: 'openTab', url, width, height })) as unknown as AppTabInfo;
-    this.byTarget.set(r.targetId, r.tabId);
-    return r;
+    return (await this.request({ type: 'openTab', url, width, height })) as unknown as AppTabInfo;
   }
 
   async listTabs(): Promise<AppTabInfo[]> {
     const r = await this.request({ type: 'listTabs' });
-    const tabs = r.tabs as AppTabInfo[];
-    for (const t of tabs) this.byTarget.set(t.targetId, t.tabId);
-    return tabs;
-  }
-
-  tabIdFor(targetId: string): string | undefined {
-    return this.byTarget.get(targetId);
-  }
-
-  /**
-   * The tab id for a target that may have just been created: puppeteer's targetcreated can
-   * beat the app's own announcement of the tab, so fall back to asking the app, which answers
-   * only once the tab's target id is known.
-   */
-  async resolveTabId(targetId: string): Promise<string | undefined> {
-    const known = this.byTarget.get(targetId);
-    if (known) return known;
-    await this.listTabs().catch(() => undefined);
-    return this.byTarget.get(targetId);
+    return r.tabs as AppTabInfo[];
   }
 
   closeTab(tabId: string): void {
     this.send({ type: 'closeTab', tabId });
+  }
+
+  /**
+   * One DevTools-protocol command on a tab, executed by the app's in-process debugger.
+   * Input.*, Runtime.evaluate, Page.captureScreenshot, WebAuthn.* — anything the page's
+   * session supports. Throws with the protocol's error message.
+   */
+  async cdp<T = Record<string, unknown>>(tabId: string, method: string, params?: unknown, timeoutMs = 30000): Promise<T> {
+    const r = await this.request({ type: 'cdp', tabId, method, params: params ?? {} }, timeoutMs);
+    if (r.error) throw new Error(String(r.error));
+    return (r.result ?? {}) as T;
+  }
+
+  /** Navigate a tab and wait for the new document's DOM (or an in-page navigation). */
+  async navigate(tabId: string, kind: NavigateKind, url?: string, timeout = 30000): Promise<NavigateResult> {
+    return (await this.request({ type: 'navigate', tabId, kind, url, timeout }, timeout + 5000)) as unknown as NavigateResult;
+  }
+
+  async consoleMessages(tabId: string, since = 0, opts: { limit?: number; level?: string } = {}): Promise<{ entries: ConsoleEntry[]; latest: number }> {
+    return (await this.request({ type: 'console', tabId, since, ...opts })) as unknown as { entries: ConsoleEntry[]; latest: number };
+  }
+
+  async networkRequests(
+    tabId: string,
+    since = 0,
+    opts: { limit?: number; failedOnly?: boolean; urlContains?: string; minStatus?: number } = {},
+  ): Promise<{ entries: RequestEntry[]; latest: number; pending: number }> {
+    return (await this.request({ type: 'network', tabId, since, ...opts })) as unknown as { entries: RequestEntry[]; latest: number; pending: number };
   }
 
   /** Write cookies into a workspace's partition (any workspace — used by the migration). */
@@ -220,12 +266,11 @@ export class AppConnection {
       return;
     }
     if (m.type === 'tab') {
-      const t = m as unknown as AppTabInfo;
-      this.byTarget.set(t.targetId, t.tabId);
-      this.onTabOpened?.(t);
+      this.onTabOpened?.(m as unknown as AppTabInfo);
+    } else if (m.type === 'tabUpdated') {
+      this.onTabUpdated?.(m as unknown as AppTabInfo);
     } else if (m.type === 'tabClosed') {
       const id = String(m.tabId);
-      for (const [target, tab] of this.byTarget) if (tab === id) this.byTarget.delete(target);
       this.frameListeners.delete(id);
       this.onTabClosed?.(id);
     }

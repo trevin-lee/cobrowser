@@ -140,7 +140,7 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'click',
     {
       description:
-        'Click an element by uid (from take_snapshot) OR a CSS selector. Uses a TRUSTED CDP input click that frameworks (React etc.) accept as real input — unlike element.click() from evaluate_script, which fires untrusted events sites may ignore.',
+        'Click an element by uid (from take_snapshot) OR a CSS selector. A real input click (the cursor moves there, presses, releases) that frameworks (React etc.) accept as genuine — unlike element.click() from evaluate_script, which fires untrusted events sites may ignore.',
       inputSchema: { uid: z.string().optional(), selector: z.string().optional(), dblClick: z.boolean().optional() },
     },
     async ({ uid, selector, dblClick }) => {
@@ -221,6 +221,46 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
       const result = await s.run(() => s.evaluateScript(fn, args ?? []));
       // Never hand a filled password back: the vault scrubs its own values out of the text.
       return asText(await s.scrub(typeof result === 'string' ? result : JSON.stringify(result)));
+    },
+  );
+
+  server.registerTool(
+    'list_console_messages',
+    {
+      description:
+        "What the page's console said: console.log/warn/error output, uncaught exceptions, and the browser's own resource-load errors (\"Failed to load resource: … 404\"). THE tool for \"why isn't this site working\": check it after a click or submit that did nothing. Defaults to the active page; pass `level: \"error\"` for errors only, `since` (the `latest` from a prior call) for only newer lines. Each entry carries the pageUrl it was logged on.",
+      inputSchema: {
+        pageId: z.string().optional(),
+        since: z.number().optional(),
+        limit: z.number().optional(),
+        level: z.enum(['error', 'warning', 'all']).optional(),
+      },
+    },
+    async ({ pageId, since, limit, level }) => {
+      const s = await getSession();
+      const r = await s.consoleMessages({ pageId, since, limit, level: level === 'all' ? undefined : level });
+      return asText(await s.scrub(JSON.stringify(r, null, 2)));
+    },
+  );
+
+  server.registerTool(
+    'list_network_requests',
+    {
+      description:
+        "The page's request log: method, URL, HTTP status (or the network error), content type and timing, for documents, XHR/fetch, scripts, images — no bodies or headers. Use it to see what a form submit or API call actually returned (a 401, a 500, a CORS block, a request that never completed — `pending` counts those). Defaults to the active page; `failedOnly` keeps errors and 4xx/5xx; `urlContains` filters by URL; `since` (the `latest` from a prior call) returns only newer requests.",
+      inputSchema: {
+        pageId: z.string().optional(),
+        since: z.number().optional(),
+        limit: z.number().optional(),
+        failedOnly: z.boolean().optional(),
+        urlContains: z.string().optional(),
+        minStatus: z.number().optional(),
+      },
+    },
+    async (opts) => {
+      const s = await getSession();
+      const r = await s.networkRequests(opts);
+      return asText(await s.scrub(JSON.stringify(r, null, 2)));
     },
   );
 

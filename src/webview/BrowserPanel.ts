@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { pickColumn } from './columns';
 import * as fs from 'node:fs';
-import type { CDPSession, Page } from 'puppeteer-core';
+import type { AppPage } from '../browser/AppPage';
 import type { BrowserSession, ElementBox } from '../browser/BrowserSession';
 import type { AppConnection, ScreenInfo } from '../app/AppClient';
 
@@ -12,9 +12,8 @@ import type { AppConnection, ScreenInfo } from '../app/AppClient';
  *  it back up, which is what "not perfectly crisp" was. Raise it for crisp over smooth. */
 const DEFAULT_RENDER_BUDGET_PX = 6_500_000;
 
-// Every page lives in its own headless window (see BrowserSession.createPageInNewWindow),
-// so every visible panel screencasts at full compositor rate simultaneously — no
-// foreground coordination, no screenshot polling for background panels.
+// Every page is its own offscreen window in the app, so every visible panel gets frames
+// at full rate simultaneously — no foreground coordination, no polling for hidden panels.
 
 /**
  * One webview panel per browser page — so each browser tab is a native VS Code
@@ -22,12 +21,10 @@ const DEFAULT_RENDER_BUDGET_PX = 6_500_000;
  * double row). The extension opens one of these per page via the session's
  * page-lifecycle events.
  *
- * Each panel owns its own CDP session to its page: it screencasts that page to
- * a <canvas> and forwards the human's input back, serialized through
- * `session.run()`. Only the foreground page composites (headless), so a panel
- * screencasts only while it is the active editor tab and brings its page to the
- * front when revealed; hidden panels stop streaming and freeze on their last
- * frame.
+ * Each panel paints its page's frames onto a <canvas> and forwards the human's input
+ * to the page as DevTools-protocol Input events, relayed through the app to the tab's own
+ * debugger. A panel streams only while it is on screen; hidden panels stop and freeze on
+ * their last frame.
  */
 export class BrowserPanel {
   /** id (stable page id) -> panel, so lifecycle events can find their panel. */
@@ -170,7 +167,7 @@ export class BrowserPanel {
   static openForPage(
     context: vscode.ExtensionContext,
     session: BrowserSession,
-    page: Page,
+    page: AppPage,
     id: string,
     reveal: boolean,
   ): BrowserPanel {
@@ -226,6 +223,11 @@ export class BrowserPanel {
     }
   }
 
+  /** Re-read every panel's title from its page (titles change without a navigation). */
+  static refreshTitles(): void {
+    for (const p of BrowserPanel.panels.values()) p.updateTitle();
+  }
+
   static closeForId(id: string): void {
     BrowserPanel.panels.get(id)?.panel.dispose();
   }
@@ -235,7 +237,6 @@ export class BrowserPanel {
   }
 
   private disposables: vscode.Disposable[] = [];
-  private cdp: CDPSession | undefined;
   private ready = false;
   private metrics: { cssW: number; cssH: number; dpr: number; screen?: ScreenInfo } = { cssW: 0, cssH: 0, dpr: 1 };
   private origin = '';
@@ -246,7 +247,7 @@ export class BrowserPanel {
     private context: vscode.ExtensionContext,
     private session: BrowserSession,
     private panel: vscode.WebviewPanel,
-    private page: Page,
+    private page: AppPage,
     private id: string,
   ) {
     this.origin = hostOf(page.url());
@@ -274,23 +275,22 @@ export class BrowserPanel {
     );
 
     // Keep the omnibox + tab title in sync with this page's real URL/title.
-    this.page.on('framenavigated', this.onNav);
+    this.page.onNavigated(this.onNav);
 
-    void this.updateTitle();
+    this.updateTitle();
   }
 
-  private onNav = (frame: unknown): void => {
-    if (frame === this.page.mainFrame()) {
-      this.origin = hostOf(this.page.url());
-      void this.panel.webview.postMessage({ type: 'extension.url', url: this.page.url() });
-      void this.updateTitle();
-      void this.applyViewport(); // apply this origin's remembered zoom
-    }
+  private onNav = (): void => {
+    this.origin = hostOf(this.page.url());
+    void this.panel.webview.postMessage({ type: 'extension.url', url: this.page.url() });
+    this.updateTitle();
+    void this.applyViewport(); // apply this origin's remembered zoom
   };
 
-  private async updateTitle(): Promise<void> {
-    const title = (await this.page.title().catch(() => '')) || hostOf(this.page.url()) || 'Browser';
-    this.panel.title = title;
+  /** Called on navigation and by the extension whenever the tab set changes (titles). */
+  updateTitle(): void {
+    const title = this.page.title() || hostOf(this.page.url()) || 'Browser';
+    if (this.panel.title !== title) this.panel.title = title;
   }
 
   /** Post an agent-action highlight box down to this panel's webview. */
@@ -314,13 +314,6 @@ export class BrowserPanel {
     } else {
       this.stopStream();
     }
-  }
-
-  /** A CDP session on the page for trusted input (Input.*) and small page queries. */
-  private async ensureCdp(): Promise<CDPSession> {
-    if (this.cdp) return this.cdp;
-    this.cdp = await this.page.createCDPSession();
-    return this.cdp;
   }
 
   /** Frames come from the app: each paint of the offscreen tab arrives as a JPEG with the
@@ -367,9 +360,8 @@ export class BrowserPanel {
 
   /** Keyboard-shortcut commands act on the active panel. */
   async navigate(kind: 'back' | 'forward' | 'reload'): Promise<void> {
-    await this.session
-      .run(() => (kind === 'back' ? this.page.goBack() : kind === 'forward' ? this.page.goForward() : this.page.reload()).then(() => undefined).catch(() => undefined))
-      .catch(() => undefined);
+    const go = kind === 'back' ? () => this.page.goBack() : kind === 'forward' ? () => this.page.goForward() : () => this.page.reload();
+    await this.session.run(() => go().then(() => undefined).catch(() => undefined)).catch(() => undefined);
   }
 
   close(): void {
@@ -408,15 +400,14 @@ export class BrowserPanel {
             // webview can render a context menu — headless Chrome's native menu is
             // browser chrome and doesn't exist in the screencast.
             const p = (m.params ?? {}) as { x?: number; y?: number; clientX?: number; clientY?: number };
-            const cdp = await this.ensureCdp();
-            const { result } = (await cdp.send('Runtime.evaluate', {
+            const { result } = await this.page.cdp<{ result: { value?: string } }>('Runtime.evaluate', {
               expression: `(() => {
                 const el = document.elementFromPoint(${Number(p.x) || 0}, ${Number(p.y) || 0});
                 const a = el && el.closest ? el.closest('a[href]') : null;
                 return JSON.stringify({ sel: String(window.getSelection() || ''), link: a ? a.href : null });
               })()`,
               returnByValue: true,
-            })) as { result: { value?: string } };
+            });
             const info = JSON.parse(result?.value ?? '{}') as { sel?: string; link?: string | null };
             void this.panel.webview.postMessage({
               type: 'extension.contextmenu',
@@ -429,23 +420,20 @@ export class BrowserPanel {
           case 'extension.copy': {
             // Copy the page's selection to the OS clipboard. The headless browser's own
             // clipboard is sandboxed away from the OS — route through vscode.env.
-            const cdp = await this.ensureCdp();
-            const { result } = (await cdp.send('Runtime.evaluate', {
+            const { result } = await this.page.cdp<{ result: { value?: string } }>('Runtime.evaluate', {
               expression: 'String(window.getSelection() || "")',
               returnByValue: true,
-            })) as { result: { value?: string } };
+            });
             if (result?.value) await vscode.env.clipboard.writeText(result.value);
             break;
           }
           case 'extension.paste': {
             const text = await vscode.env.clipboard.readText();
-            if (text) await (await this.ensureCdp()).send('Input.insertText', { text });
+            if (text) await this.page.cdp('Input.insertText', { text });
             break;
           }
           case 'extension.selectall':
-            await (await this.ensureCdp()).send('Runtime.evaluate', {
-              expression: 'document.execCommand("selectAll")',
-            });
+            await this.page.cdp('Runtime.evaluate', { expression: 'document.execCommand("selectAll")' });
             break;
           case 'extension.openlink': {
             const url = (m.params as { url?: string } | undefined)?.url;
@@ -477,23 +465,17 @@ export class BrowserPanel {
             break;
           }
           case 'extension.back':
-            await this.session.run(() => this.page.goBack().then(() => undefined).catch(() => undefined));
+            await this.navigate('back');
             break;
           case 'extension.forward':
-            await this.session.run(() =>
-              this.page.goForward().then(() => undefined).catch(() => undefined),
-            );
+            await this.navigate('forward');
             break;
           case 'extension.reload':
-            await this.session.run(() => this.page.reload().then(() => undefined));
+            await this.navigate('reload');
             break;
           case 'extension.navigate': {
             const p = (m.params ?? {}) as { url?: string };
-            if (p.url) {
-              await this.session.run(() =>
-                this.page.goto(p.url!, { waitUntil: 'domcontentloaded' }).then(() => undefined),
-              );
-            }
+            if (p.url) await this.session.run(() => this.page.goto(p.url!).then(() => undefined));
             break;
           }
         }
@@ -503,18 +485,12 @@ export class BrowserPanel {
       return;
     }
 
-    // CDP passthrough (Input.*). Sent DIRECTLY, not through session.run(): human input must
-    // never queue behind a slow agent action (navigate / waitFor) — that head-of-line blocking
-    // was the main "laggy" feel. Input events are independent CDP calls, safe to interleave.
-    // The session is created on first use: the screencast used to create it as a side
-    // effect, and without that every click was silently dropped.
-    const cdp = await this.ensureCdp().catch(() => undefined);
-    if (!cdp) return;
+    // Protocol passthrough (Input.*). Sent DIRECTLY, not through session.run(): human input
+    // must never queue behind a slow agent action (navigate / waitFor) — that head-of-line
+    // blocking was the main "laggy" feel. Input events are independent calls, safe to interleave.
+    if (!/^Input\./.test(m.type)) return; // the webview drives input only
     try {
-      const result = await (cdp.send as (method: string, params?: unknown) => Promise<unknown>)(
-        m.type,
-        m.params,
-      );
+      const result = await this.page.cdp(m.type, m.params);
       if (m.callbackId != null) {
         this.panel.webview.postMessage({ callbackId: m.callbackId, result });
       }
@@ -584,11 +560,10 @@ export class BrowserPanel {
   dispose(): void {
     BrowserPanel.panels.delete(this.id);
     this.stopStream();
-    this.page.off('framenavigated', this.onNav);
-    this.cdp?.detach().catch(() => undefined);
+    this.page.offNavigated(this.onNav);
     // The human closed this editor tab → close the underlying browser page. But during a
-    // session teardown (window reload), leave the pages open so browser.close() saves them
-    // and --restore-last-session brings them back.
+    // session teardown (window reload), leave the pages open in the app so the reconnect
+    // finds them again.
     if (!this.session.isDisposing) {
       void this.session.run(() => this.session.closePage(this.id)).catch(() => undefined);
     }

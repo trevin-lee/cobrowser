@@ -1,14 +1,18 @@
-// cobrowser browser service. Owns every workspace's browser tabs as OFFSCREEN webContents and
-// streams them to the editor; the editor's puppeteer connects to this process's debugging
-// port and drives the same tabs, so the MCP tools are unchanged.
+// cobrowser browser service. Owns every workspace's browser tabs as OFFSCREEN webContents,
+// streams their frames to the editor, and runs the editor's DevTools-protocol commands on
+// each tab's own in-process debugger — no remote debugging port is ever opened.
 //
 // Offscreen means rendered into GPU memory with no OS window: nothing for macOS to hide,
 // minimize or clamp, which is what stalled every window-based design. The process outlives
 // editor windows, so a reload no longer restarts the browser or drops session cookies.
 //
 // Wire protocol, one WebSocket per editor window (authenticated by the token in app.json):
-//   -> {type:'hello', workspace}                       <- {type:'hello', debugWs, tabs:[...]}
-//   -> {type:'openTab', url, width, height}            <- {type:'tab', tabId, targetId, url}
+//   -> {type:'hello', workspace}                       <- {type:'hello', version, tabs:[...]}
+//   -> {type:'cdp', tabId, method, params}              <- {result} | {error}   (the tab's debugger)
+//   -> {type:'navigate', tabId, kind, url, timeout}     <- {url, title, error?, timedOut?}
+//   -> {type:'console'|'network', tabId, since, ...}     <- {entries, latest}
+//   <- {type:'tabUpdated', tabId, url, title} on navigation / title change
+//   -> {type:'openTab', url, width, height}            <- {type:'tab', tabId, url, title}
 //   -> {type:'closeTab'|'resize'|'subscribe'|'unsubscribe', tabId, ...}
 //   -> {type:'closeAll'}                               (this workspace's tabs)
 //   <- binary frame  [u32 metaLen][meta JSON][jpeg]    meta.tabId says which tab
@@ -21,6 +25,8 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { parseSite, siteMatches, siteLabel } = require('./site.js');
 const identity = require('./identity.js');
+const { TabLog } = require('./capture.js');
+const { checkParams } = require('./protocolGuard.js');
 
 // Overridable so tests can run a second instance beside the real one without clobbering its state.
 const STATE_DIR = process.env.COBROWSER_STATE_DIR || path.join(os.homedir(), '.cobrowser');
@@ -61,8 +67,9 @@ if (WEBAUTHN_GROUP && typeof app.configureWebAuthn === 'function') {
   } catch (e) { console.error('configureWebAuthn failed:', e.message); }
 }
 
-// Port 0: Chromium picks a free port and writes DevToolsActivePort into userData.
-app.commandLine.appendSwitch('remote-debugging-port', '0');
+// No remote debugging port. The editor drives tabs through THIS process's debugger (the
+// `cdp` message below), so nothing else on the machine can attach to the user's sessions
+// and the pages are not launched under an automation switch.
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 if (process.platform === 'darwin') app.dock?.hide(); // menu-bar app, not a Dock app
 
@@ -605,11 +612,13 @@ const workspaces = new Map(); // workspace path -> Workspace
 let nextTabId = 1;
 
 class Tab {
-  constructor(workspace, { url, width, height }) {
+  constructor(workspace, opts) {
+    const { url, width, height } = opts;
     this.workspace = workspace;
     this.id = `t${nextTabId++}`;
     this.subscribers = new Set(); // sockets receiving frames
-    this.targetId = undefined;
+    this.opener = opts.opener;
+    this.log = new TabLog();
     /** CSS size the panel wants, the render scale (device pixels per CSS px), and the
      *  per-site zoom. The window is css*scale pixels wide and the page is zoomed by
      *  scale*zoom, so it lays out at css/zoom CSS px and rasterizes at `scale` px per CSS px.
@@ -630,34 +639,91 @@ class Tab {
     });
     const wc = this.win.webContents;
     wc.setFrameRate(FRAME_RATE);
-    wc.debugger.attach('1.3');
-    // The client hints (Sec-CH-UA*, navigator.userAgentData) have no session-level API;
-    // they ride on the page's own debugger session, together with the UA it must match.
-    wc.debugger.sendCommand('Emulation.setUserAgentOverride', { userAgent: USER_AGENT, acceptLanguage: ACCEPT_LANGUAGES, platform: 'MacIntel', userAgentMetadata: UA_METADATA }).catch((e) => log(`identity: ${e.message}`));
+    // Everything the tab's debugger sees goes into the tab's log (console + requests).
+    wc.debugger.on('message', (_e, method, params) => this.log.onEvent(method, params, wc.getURL()));
+    // A DevTools window would take the session away from us; refuse it. Everything DevTools
+    // shows is available through the log and the `cdp` channel anyway.
+    wc.on('devtools-opened', () => { log(`tab ${this.id}: DevTools refused`); wc.closeDevTools(); });
+    // Renderer crash / process swap / anything else that drops the session: come back.
+    wc.debugger.on('detach', (_e, reason) => {
+      if (wc.isDestroyed()) return;
+      log(`tab ${this.id}: debugger detached (${reason}); reattaching`);
+      setTimeout(() => { if (!wc.isDestroyed()) this.attachDebugger(); }, 150);
+    });
+    this.ready = this.attachDebugger();
     wc.on('paint', (_e, _dirty, image) => this.onPaint(image));
     // Chromium forgets the zoom factor on cross-origin navigation; the panel's scale must not.
     wc.on('did-navigate', () => this.applyZoom());
-    // An offscreen page is never focused as far as Chromium knows, which breaks
-    // navigator.clipboard.writeText ("Document is not focused") and anything else gated on
-    // focus. Emulate it: the panel IS what the human is looking at.
-    wc.debugger.sendCommand('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => undefined);
+    // Keep the editor's URL bar, tab title and activity log in step with the page.
+    const announce = () => workspace.broadcast({ type: 'tabUpdated', ...this.info() });
+    wc.on('did-navigate', announce);
+    wc.on('did-navigate-in-page', (_e, _u, isMain) => { if (isMain) announce(); });
+    wc.on('page-title-updated', announce);
     // A page opening a window (target=_blank, window.open) gets a real tab of its own, which
     // the editor adopts through puppeteer's targetcreated exactly like a Chrome popup.
     wc.setWindowOpenHandler(({ url: u }) => {
       const [w, h] = this.win.getContentSize();
-      const t = workspace.openTab({ url: u, width: w, height: h });
-      // The target id arrives asynchronously; announcing before it is known gave the editor a
-      // tab with no target, so every target=_blank link looked like a dead click.
-      void t.ready.then(() => workspace.broadcast({ type: 'tab', ...t.info(), url: u, opener: this.id }));
+      const t = workspace.openTab({ url: u, width: w, height: h, opener: this.id });
+      void t.ready.then(() => workspace.broadcast({ type: 'tab', ...t.info(), url: u }));
       return { action: 'deny' };
     });
     wc.on('destroyed', () => workspace.onTabGone(this));
     this.win.on('closed', () => workspace.onTabGone(this));
-    this.ready = wc.debugger.sendCommand('Target.getTargetInfo').then((r) => {
-      this.targetId = r.targetInfo.targetId;
-      return this.targetId;
-    });
     void wc.loadURL(url || 'about:blank');
+  }
+
+  /** Attach the in-process debugger and put every per-session override in place: identity,
+   *  focus emulation, the domains the log listens to, and the screen the pane sits on. */
+  async attachDebugger() {
+    const wc = this.win.webContents;
+    try {
+      if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
+    } catch (e) { log(`tab ${this.id}: debugger attach failed: ${e.message}`); return; }
+    const send = (method, params) => wc.debugger.sendCommand(method, params).catch((e) => log(`tab ${this.id}: ${method}: ${e.message}`));
+    // The client hints (Sec-CH-UA*, navigator.userAgentData) have no session-level API;
+    // they ride on the page's own debugger session, together with the UA it must match.
+    await send('Emulation.setUserAgentOverride', { userAgent: USER_AGENT, acceptLanguage: ACCEPT_LANGUAGES, platform: 'MacIntel', userAgentMetadata: UA_METADATA });
+    // An offscreen page is never focused as far as Chromium knows, which breaks
+    // navigator.clipboard.writeText ("Document is not focused") and anything else gated on
+    // focus. Emulate it: the panel IS what the human is looking at.
+    await send('Emulation.setFocusEmulationEnabled', { enabled: true });
+    await send('Runtime.enable', {});
+    await send('Log.enable', {});
+    await send('Network.enable', {});
+    const screenKey = this.screenKey; this.screenKey = undefined;
+    if (this.lastScreen) this.applyScreen(this.lastScreen); else this.screenKey = screenKey;
+  }
+
+  /** Navigate and settle: resolves once the new document's DOM is ready (or an in-page
+   *  navigation happened), with the load error if there was one, or timedOut. */
+  navigate(kind, url, timeout = 30000) {
+    const wc = this.win.webContents;
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (extra) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        wc.off('dom-ready', ok); wc.off('did-navigate-in-page', inPage); wc.off('did-fail-load', fail);
+        resolve({ url: wc.isDestroyed() ? '' : wc.getURL(), title: wc.isDestroyed() ? '' : wc.getTitle(), ...extra });
+      };
+      const ok = () => finish({});
+      const inPage = (_e, _u, isMain) => { if (isMain) finish({}); };
+      // -3 is ERR_ABORTED: a navigation superseded by another, or a download — not a failure.
+      const fail = (_e, code, desc, _u, isMain) => { if (isMain && code !== -3) finish({ error: `${desc || 'load failed'} (${code})` }); };
+      wc.on('dom-ready', ok); wc.on('did-navigate-in-page', inPage); wc.on('did-fail-load', fail);
+      const timer = setTimeout(() => finish({ timedOut: true }), timeout);
+      try {
+        if (kind === 'url') wc.loadURL(url).catch(() => undefined); // failures arrive as did-fail-load
+        else if (kind === 'reload') wc.reload();
+        else {
+          const h = wc.navigationHistory;
+          const can = kind === 'back' ? h.canGoBack() : h.canGoForward();
+          if (!can) return finish({ noop: true });
+          if (kind === 'back') h.goBack(); else h.goForward();
+        }
+      } catch (e) { finish({ error: e.message }); }
+    });
   }
 
   onPaint(image) {
@@ -697,6 +763,7 @@ class Tab {
    *  simply untrue. Viewport fields stay 0 = untouched; only the screen is described. */
   applyScreen(screen) {
     if (!screen || !(screen.width > 0 && screen.height > 0)) return;
+    this.lastScreen = screen;
     const key = `${screen.width}x${screen.height}@${screen.x | 0},${screen.y | 0}`;
     if (key === this.screenKey) return;
     this.screenKey = key;
@@ -718,7 +785,8 @@ class Tab {
   }
 
   info() {
-    return { tabId: this.id, targetId: this.targetId, url: this.win.webContents.getURL() };
+    const wc = this.win.webContents;
+    return { tabId: this.id, url: wc.isDestroyed() ? '' : wc.getURL(), title: wc.isDestroyed() ? '' : wc.getTitle(), ...(this.opener ? { opener: this.opener } : {}) };
   }
 
   close() {
@@ -801,7 +869,7 @@ async function handle(ws, state, m) {
     rememberWorkspace(m.workspace);
     const tabs = [];
     for (const t of state.workspace.tabs.values()) { await t.ready; tabs.push(t.info()); }
-    ws.send(JSON.stringify({ type: 'hello', debugWs: debugWsEndpoint, version: VERSION, tabs }));
+    ws.send(JSON.stringify({ type: 'hello', version: VERSION, tabs }));
     return;
   }
   if (m.type === 'importCookies') {
@@ -860,6 +928,44 @@ async function handle(ws, state, m) {
       ws.send(JSON.stringify({ type: 'tabs', tabs, requestId: m.requestId }));
       return;
     }
+    case 'cdp': {
+      const t = w.tabs.get(m.tabId);
+      const reply = (obj) => ws.send(JSON.stringify({ ...obj, requestId: m.requestId }));
+      if (!t || t.win.isDestroyed()) return reply({ error: 'no such tab in this workspace' });
+      // Wrong-typed parameters abort the whole process inside Electron's deserializer (see
+      // protocolGuard.js), so the hot-path commands are type-checked here first.
+      const bad = checkParams(m.method, m.params);
+      if (bad) { log(`tab ${t.id}: refused ${bad}`); return reply({ error: bad }); }
+      // A command the session never answers must not hang the caller forever.
+      let timer;
+      const timeout = new Promise((_r, rej) => { timer = setTimeout(() => rej(new Error(`${m.method} did not answer within 20s`)), 20000); });
+      let timedOut = false;
+      try { reply({ result: await Promise.race([t.win.webContents.debugger.sendCommand(m.method, m.params || {}), timeout.catch((e) => { timedOut = true; throw e; })]) }); }
+      catch (e) { log(`tab ${t.id}: ${m.method}: ${e.message}`); reply({ error: e.message || String(e) }); }
+      finally { clearTimeout(timer); }
+      // Best effort for a session that stopped answering: detaching fires 'detach', which
+      // reattaches a fresh one.
+      if (timedOut && !t.win.isDestroyed()) { try { t.win.webContents.debugger.detach(); } catch { /* already gone */ } }
+      return;
+    }
+    case 'navigate': {
+      const t = w.tabs.get(m.tabId);
+      const reply = (obj) => ws.send(JSON.stringify({ ...obj, requestId: m.requestId }));
+      if (!t || t.win.isDestroyed()) return reply({ url: '', title: '', error: 'no such tab in this workspace' });
+      return reply(await t.navigate(m.kind, m.url, Number(m.timeout) || 30000));
+    }
+    case 'console': {
+      const t = w.tabs.get(m.tabId);
+      const reply = (obj) => ws.send(JSON.stringify({ ...obj, requestId: m.requestId }));
+      if (!t) return reply({ entries: [], latest: 0, error: 'no such tab' });
+      return reply(t.log.consoleSince(Number(m.since) || 0, { limit: m.limit, level: m.level }));
+    }
+    case 'network': {
+      const t = w.tabs.get(m.tabId);
+      const reply = (obj) => ws.send(JSON.stringify({ ...obj, requestId: m.requestId }));
+      if (!t) return reply({ entries: [], latest: 0, pending: 0, error: 'no such tab' });
+      return reply(t.log.requestsSince(Number(m.since) || 0, { limit: m.limit, failedOnly: !!m.failedOnly, urlContains: m.urlContains, minStatus: m.minStatus }));
+    }
     case 'closeTab': return void w.tabs.get(m.tabId)?.close();
     case 'closeAll': return void w.closeAll();
     case 'resize': return void w.tabs.get(m.tabId)?.resize(m.width, m.height, m.scale, m.zoom, m.screen);
@@ -872,25 +978,6 @@ async function handle(ws, state, m) {
     }
     case 'unsubscribe': return void w.tabs.get(m.tabId)?.subscribers.delete(ws);
   }
-}
-
-let debugWsEndpoint = '';
-
-function readDebugEndpoint() {
-  // Written by Chromium once the port is bound: "<port>\n<browser ws path>".
-  const f = path.join(app.getPath('userData'), 'DevToolsActivePort');
-  const deadline = Date.now() + 10000;
-  return new Promise((resolve, reject) => {
-    const tick = () => {
-      try {
-        const [port, p] = fs.readFileSync(f, 'utf8').trim().split('\n');
-        if (port && p) return resolve(`ws://127.0.0.1:${port}${p}`);
-      } catch { /* not yet */ }
-      if (Date.now() > deadline) return reject(new Error('DevToolsActivePort never appeared'));
-      setTimeout(tick, 100);
-    };
-    tick();
-  });
 }
 
 function makeTray() {
@@ -926,7 +1013,6 @@ function makeTray() {
 }
 
 app.whenReady().then(async () => {
-  debugWsEndpoint = await readDebugEndpoint();
   const token = crypto.randomBytes(24).toString('hex');
   const wss = new WebSocketServer({ host: '127.0.0.1', port: 0 });
   wss.on('connection', (ws, req) => {
@@ -946,10 +1032,10 @@ app.whenReady().then(async () => {
     fs.mkdirSync(STATE_DIR, { recursive: true });
     fs.writeFileSync(
       STATE_FILE,
-      JSON.stringify({ wsPort: port, token, debugWs: debugWsEndpoint, pid: process.pid, version: VERSION, webauthn: !!WEBAUTHN_GROUP }),
+      JSON.stringify({ wsPort: port, token, pid: process.pid, version: VERSION, webauthn: !!WEBAUTHN_GROUP }),
       { mode: 0o600 },
     );
-    log(`cobrowser app ${VERSION}: ws://127.0.0.1:${port}, debug ${debugWsEndpoint}, data ${DATA_DIR}`);
+    log(`cobrowser app ${VERSION}: ws://127.0.0.1:${port}, data ${DATA_DIR}`);
   });
   try {
     globalThis.tray = makeTray(); // keep a reference or the menu-bar item is collected

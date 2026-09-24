@@ -31,9 +31,9 @@ No browser setup required — the companion app (a pinned Electron, ~120 MB) dow
 ┌──────── cobrowser app (Electron, menu-bar icon; one per machine) ────────┐
 │  workspace A ─ partition persist:A ─ tab ─ tab      (offscreen webContents)│
 │  workspace B ─ partition persist:B ─ tab                                   │
-│  paints → JPEG frames over a local WebSocket   ·   Chromium debugging port │
+│  paints → JPEG frames over a local WebSocket   ·   protocol relay          │
 └───────────────┬──────────────────────────────────────────┬────────────────┘
-                │ frames / resize / open / close            │ CDP (puppeteer)
+                │ frames / resize / open / close            │ CDP over the same socket
 ┌───────────────┴──────────── extension host (per editor window) ───────────┐
 │  BrowserPanel (webview host)             BrowserSession + MCP tools        │
 │  postMessage ↔ canvas, forwards input    run() FIFO serializes all actions │
@@ -42,7 +42,7 @@ No browser setup required — the companion app (a pinned Electron, ~120 MB) dow
      webview <canvas> — you click/type                 agent (Claude Code / …)
 ```
 
-**The app owns the browsers; the editor is a client.** Tabs are offscreen webContents: rendered into GPU memory with no OS window, so nothing can hide, minimize or stall them, and they keep painting while you work elsewhere. The app outlives editor windows — a reload reconnects and finds the tabs where they were, and session cookies survive. The extension's puppeteer attaches to the app's debugging port, so the MCP tools and the panel's trusted input drive the very same tabs. Everything funnels through `run()` so agent and human actions never interleave mid-action.
+**The app owns the browsers; the editor is a client.** Tabs are offscreen webContents: rendered into GPU memory with no OS window, so nothing can hide, minimize or stall them, and they keep painting while you work elsewhere. The app outlives editor windows — a reload reconnects and finds the tabs where they were, and session cookies survive. The extension sends DevTools-protocol commands over the same socket and the app runs them on each tab's in-process debugger, so the MCP tools and the panel's input are real input to the very same tabs — with no debugging port open on the machine and no automation switch on the process. Everything funnels through `run()` so agent and human actions never interleave mid-action.
 
 Electron is pinned (`ELECTRON_VERSION`), so the app's Chromium is the browser version for every install — no dependence on what happens to be in `/Applications`.
 
@@ -81,7 +81,7 @@ Every tab is an editor tab in a dedicated pane, streamed from the app at up to 6
 
 ### How it identifies itself
 
-Cobrowser says what it is. The user agent is the standard reduced Chromium UA with a `Cobrowser/<version>` token where Edge and Opera put theirs, the client hints name Chromium and Cobrowser (never Google Chrome), Accept-Language comes from your macOS language list, and the page's `screen` is the real display the pane sits on rather than a fake screen the size of the viewport. Sites asking for a permission (camera, location, notifications, clipboard read) get a native Allow/Block dialog, remembered per site in `permissions.json`; until you answer, they have nothing. One thing is deliberately left as is: `navigator.webdriver` reads true, because the agent really does drive this browser over the DevTools protocol. Sites that block on that flag are making a policy choice, and Cobrowser does not hide from it; sign in there by hand, or work through the Firefox/Chrome bridge in your own browser.
+Cobrowser says what it is. The user agent is the standard reduced Chromium UA with a `Cobrowser/<version>` token where Edge and Opera put theirs, the client hints name Chromium and Cobrowser (never Google Chrome), Accept-Language comes from your macOS language list, and the page's `screen` is the real display the pane sits on rather than a fake screen the size of the viewport. Sites asking for a permission (camera, location, notifications, clipboard read) get a native Allow/Block dialog, remembered per site in `permissions.json`; until you answer, they have nothing. `navigator.webdriver` reads false, as it does in any Electron app: nothing is overridden, the process is simply not launched with a debugging port. The agent can read the page's console and request log (`list_console_messages`, `list_network_requests`); a DevTools window is refused because it would take the tab's debugger session away from the app.
 
 ### Passkeys
 
