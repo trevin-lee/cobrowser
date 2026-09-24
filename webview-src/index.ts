@@ -535,11 +535,17 @@ function reportViewport(): void {
   // Don't push a degenerate viewport before the panel is laid out.
   if (cssW < 50 || cssH < 50) return;
   const dpr = window.devicePixelRatio || 1;
-  const key = `${cssW}x${cssH}@${dpr}`;
+  // The real display this pane is on, and where the editor window sits on it: the page
+  // reports these as its screen instead of a fake screen the size of the viewport.
+  // screenX/Y are desktop-global; the page's screen position is relative to ITS display, whose
+  // origin Chromium exposes as availLeft/availTop (non-zero on a second monitor).
+  const disp = screen as Screen & { availLeft?: number; availTop?: number };
+  const scr = { width: screen.width, height: screen.height, x: window.screenX - (disp.availLeft ?? 0), y: window.screenY - (disp.availTop ?? 0) };
+  const key = `${cssW}x${cssH}@${dpr}#${scr.width}x${scr.height}`;
   if (key === lastVp) return;
   lastVp = key;
   // The host multiplies by dpr and divides by the per-site zoom.
-  fire('extension.viewport', { cssW, cssH, dpr });
+  fire('extension.viewport', { cssW, cssH, dpr, screen: scr });
 }
 // Fires once the stage has a real size, and on every panel resize.
 new ResizeObserver(() => {

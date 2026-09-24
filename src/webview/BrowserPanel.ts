@@ -3,7 +3,7 @@ import { pickColumn } from './columns';
 import * as fs from 'node:fs';
 import type { CDPSession, Page } from 'puppeteer-core';
 import type { BrowserSession, ElementBox } from '../browser/BrowserSession';
-import type { AppConnection } from '../app/AppClient';
+import type { AppConnection, ScreenInfo } from '../app/AppClient';
 
 /** Default ceiling on rendered pixels per frame (cobrowser.renderBudgetMegapixels). Measured
  *  on an M4 Pro: the app's JPEG encode holds 24fps at 8.2Mpx (a full-height retina laptop
@@ -237,7 +237,7 @@ export class BrowserPanel {
   private disposables: vscode.Disposable[] = [];
   private cdp: CDPSession | undefined;
   private ready = false;
-  private metrics = { cssW: 0, cssH: 0, dpr: 1 };
+  private metrics: { cssW: number; cssH: number; dpr: number; screen?: ScreenInfo } = { cssW: 0, cssH: 0, dpr: 1 };
   private origin = '';
   private appliedKey = '';
   private streaming = false;
@@ -345,7 +345,7 @@ export class BrowserPanel {
   /** Size the page to the panel in DEVICE pixels (crisp text on retina), divided by the
    *  per-site zoom (persisted per origin). The app renders exactly that size at scale 1. */
   private async applyViewport(): Promise<void> {
-    const { cssW, cssH } = this.metrics;
+    const { cssW, cssH, screen } = this.metrics;
     if (cssW < 50 || cssH < 50) return;
     const zoom = this.getZoom();
     // Render at renderScale device pixels per CSS px — native crispness on retina, a
@@ -355,10 +355,10 @@ export class BrowserPanel {
     if (area > BrowserPanel.renderBudgetPx) scale = Math.max(1, Math.sqrt(BrowserPanel.renderBudgetPx / (cssW * cssH)));
     scale = Math.round(scale * 100) / 100;
     void this.panel.webview.postMessage({ type: 'extension.zoomlabel', zoom });
-    const key = `${cssW}x${cssH}@${scale}z${zoom}`;
+    const key = `${cssW}x${cssH}@${scale}z${zoom}#${screen?.width ?? 0}x${screen?.height ?? 0}`;
     if (key === this.appliedKey) return;
     try {
-      await this.session.run(() => this.session.setViewport(this.page, cssW, cssH, scale, zoom));
+      await this.session.run(() => this.session.setViewport(this.page, cssW, cssH, scale, zoom, screen));
       this.appliedKey = key; // only after success, so a transient failure retries
     } catch {
       this.appliedKey = '';
@@ -460,9 +460,9 @@ export class BrowserPanel {
             break;
           }
           case 'extension.viewport': {
-            const p = (m.params ?? {}) as { cssW?: number; cssH?: number; dpr?: number };
+            const p = (m.params ?? {}) as { cssW?: number; cssH?: number; dpr?: number; screen?: ScreenInfo };
             if (p.cssW && p.cssH) {
-              this.metrics = { cssW: p.cssW, cssH: p.cssH, dpr: p.dpr ?? 1 };
+              this.metrics = { cssW: p.cssW, cssH: p.cssH, dpr: p.dpr ?? 1, screen: p.screen };
               await this.applyViewport();
             }
             break;

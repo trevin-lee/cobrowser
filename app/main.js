@@ -20,6 +20,7 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { parseSite, siteMatches, siteLabel } = require('./site.js');
+const identity = require('./identity.js');
 
 // Overridable so tests can run a second instance beside the real one without clobbering its state.
 const STATE_DIR = process.env.COBROWSER_STATE_DIR || path.join(os.homedir(), '.cobrowser');
@@ -65,11 +66,52 @@ app.commandLine.appendSwitch('remote-debugging-port', '0');
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 if (process.platform === 'darwin') app.dock?.hide(); // menu-bar app, not a Dock app
 
-/** Chrome's UA for this build, without the Electron token that would otherwise be in it. */
-const CHROME_UA = (() => {
-  const chrome = process.versions.chrome.split('.')[0];
-  return `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chrome}.0.0.0 Safari/537.36`;
-})();
+// ---------------------------------------------------------------------------------------
+// Identity: a Chromium browser named Cobrowser, used by a human. The UA, the client hints
+// and Accept-Language all say so, in the shape every other Chromium browser uses. It is
+// rendered offscreen only because that is how it gets into an editor pane; the screen it
+// reports is the real display the pane sits on (sent down with each resize).
+// ---------------------------------------------------------------------------------------
+const CHROME_FULL = process.versions.chrome;
+const USER_AGENT = identity.userAgent(CHROME_FULL, VERSION);
+const ACCEPT_LANGUAGES = identity.acceptLanguages(app.getPreferredSystemLanguages ? app.getPreferredSystemLanguages() : ['en-US']);
+const UA_METADATA = identity.metadata({ chromeVersion: CHROME_FULL, appVersion: VERSION, osVersion: process.getSystemVersion(), arch: process.arch });
+
+// Site permissions: a real browser asks. Decisions are remembered per origin + permission;
+// until asked, a site has nothing (Notification.permission reads "denied", not "granted").
+const PERMISSIONS_FILE = path.join(DATA_DIR, 'permissions.json');
+const AUTO_ALLOW = new Set(['fullscreen', 'pointerLock', 'clipboard-sanitized-write', 'keyboardLock', 'background-sync']);
+const PERMISSION_VERB = { media: 'use your camera or microphone', geolocation: 'know your location', notifications: 'show notifications', midi: 'use MIDI devices', midiSysex: 'use MIDI devices', 'clipboard-read': 'read your clipboard', 'display-capture': 'capture your screen', 'idle-detection': 'know when you are idle', openExternal: 'open another application', hid: 'use a HID device', serial: 'use a serial port', usb: 'use a USB device', 'window-management': 'manage windows', 'speaker-selection': 'choose an audio output', 'storage-access': 'use its cookies while embedded', 'top-level-storage-access': 'use its cookies while embedded', 'deprecated-sync-clipboard-read': 'read your clipboard' };
+let permissions = null;
+function loadPermissions() {
+  if (!permissions) { try { permissions = JSON.parse(fs.readFileSync(PERMISSIONS_FILE, 'utf8')); } catch { permissions = {}; } }
+  return permissions;
+}
+function permissionKey(origin, permission, details) {
+  const kind = details?.mediaTypes?.slice().sort().join('+') || details?.mediaType || '';
+  return `${origin}|${permission}${kind ? ':' + kind : ''}`;
+}
+function permissionDecision(origin, permission, details) {
+  return loadPermissions()[permissionKey(origin, permission, details)];
+}
+function rememberPermission(origin, permission, details, allowed) {
+  loadPermissions()[permissionKey(origin, permission, details)] = allowed;
+  try { fs.writeFileSync(PERMISSIONS_FILE, JSON.stringify(permissions, null, 2)); } catch { /* best effort */ }
+}
+const pendingPermission = new Map(); // key -> Promise<boolean>, so one dialog serves parallel asks
+function askPermission(origin, permission, details) {
+  const key = permissionKey(origin, permission, details);
+  if (pendingPermission.has(key)) return pendingPermission.get(key);
+  const kind = details?.mediaTypes ? details.mediaTypes.join(' and ') : '';
+  const verb = permission === 'media' && kind ? `use your ${kind.replace('video', 'camera').replace('audio', 'microphone')}` : PERMISSION_VERB[permission] || `use "${permission}"`;
+  let host = origin; try { host = new URL(origin).host; } catch { /* keep */ }
+  const p = dialog.showMessageBox({ type: 'question', message: `${host} wants to ${verb}`, detail: 'cobrowser remembers this choice for the site.', buttons: ['Allow', 'Block'], defaultId: 1, cancelId: 1 })
+    .then(({ response }) => { const ok = response === 0; rememberPermission(origin, permission, details, ok); return ok; })
+    .catch(() => false)
+    .finally(() => pendingPermission.delete(key));
+  pendingPermission.set(key, p);
+  return p;
+}
 
 // ---------------------------------------------------------------------------------------
 // Vault: logins the agent can USE without ever SEEING. Encrypted at rest through the OS
@@ -589,6 +631,9 @@ class Tab {
     const wc = this.win.webContents;
     wc.setFrameRate(FRAME_RATE);
     wc.debugger.attach('1.3');
+    // The client hints (Sec-CH-UA*, navigator.userAgentData) have no session-level API;
+    // they ride on the page's own debugger session, together with the UA it must match.
+    wc.debugger.sendCommand('Emulation.setUserAgentOverride', { userAgent: USER_AGENT, acceptLanguage: ACCEPT_LANGUAGES, platform: 'MacIntel', userAgentMetadata: UA_METADATA }).catch((e) => log(`identity: ${e.message}`));
     wc.on('paint', (_e, _dirty, image) => this.onPaint(image));
     // Chromium forgets the zoom factor on cross-origin navigation; the panel's scale must not.
     wc.on('did-navigate', () => this.applyZoom());
@@ -638,12 +683,31 @@ class Tab {
     }
   }
 
-  resize(cssW, cssH, scale = 1, zoom = 1) {
+  resize(cssW, cssH, scale = 1, zoom = 1, screen) {
     this.layout = { cssW: Math.max(50, Math.round(cssW)), cssH: Math.max(50, Math.round(cssH)), scale: Math.max(1, Number(scale) || 1), zoom: Math.max(0.25, Number(zoom) || 1) };
     const w = Math.round(this.layout.cssW * this.layout.scale), h = Math.round(this.layout.cssH * this.layout.scale);
     const [cw, ch] = this.win.getContentSize();
     if (cw !== w || ch !== h) this.win.setContentSize(w, h);
     this.applyZoom();
+    this.applyScreen(screen);
+  }
+
+  /** Report the display the pane is actually on. Offscreen, Chromium would otherwise
+   *  claim a "screen" exactly the size of the viewport at 0,0 — a headless signature and
+   *  simply untrue. Viewport fields stay 0 = untouched; only the screen is described. */
+  applyScreen(screen) {
+    if (!screen || !(screen.width > 0 && screen.height > 0)) return;
+    const key = `${screen.width}x${screen.height}@${screen.x | 0},${screen.y | 0}`;
+    if (key === this.screenKey) return;
+    this.screenKey = key;
+    this.win.webContents.debugger.sendCommand('Emulation.setDeviceMetricsOverride', {
+      width: 0, height: 0, deviceScaleFactor: 0, mobile: false,
+      screenWidth: Math.round(screen.width), screenHeight: Math.round(screen.height),
+      // Chromium rejects a position off the screen ("View position should be on the screen"),
+      // which dropped the whole override; keep it on the display.
+      positionX: Math.min(Math.max(0, Math.round(screen.x || 0)), Math.round(screen.width)),
+      positionY: Math.min(Math.max(0, Math.round(screen.y || 0)), Math.round(screen.height)),
+    }).catch((e) => log(`screen: ${e.message}`));
   }
 
   applyZoom() {
@@ -670,7 +734,19 @@ class Workspace {
     this.tabs = new Map();
     this.sockets = new Set();
     const ses = session.fromPartition(this.partition);
-    ses.setUserAgent(CHROME_UA);
+    ses.setUserAgent(USER_AGENT, ACCEPT_LANGUAGES);
+    ses.setPermissionCheckHandler((_wc, permission, origin, details) => {
+      if (AUTO_ALLOW.has(permission)) return true;
+      return permissionDecision(origin, permission, details) === true;
+    });
+    ses.setPermissionRequestHandler((wc, permission, callback, details) => {
+      if (AUTO_ALLOW.has(permission)) return callback(true);
+      const origin = details?.requestingUrl ? new URL(details.requestingUrl).origin : (wc && !wc.isDestroyed() ? new URL(wc.getURL()).origin : '');
+      if (!origin || origin === 'null') return callback(false);
+      const decided = permissionDecision(origin, permission, details);
+      if (typeof decided === 'boolean') return callback(decided);
+      askPermission(origin, permission, details).then(callback, () => callback(false));
+    });
     // Several passkeys for one site: without a listener Chromium cancels the request. The
     // page is offscreen, so ask with a native dialog instead of in-page UI.
     try {
@@ -786,7 +862,7 @@ async function handle(ws, state, m) {
     }
     case 'closeTab': return void w.tabs.get(m.tabId)?.close();
     case 'closeAll': return void w.closeAll();
-    case 'resize': return void w.tabs.get(m.tabId)?.resize(m.width, m.height, m.scale, m.zoom);
+    case 'resize': return void w.tabs.get(m.tabId)?.resize(m.width, m.height, m.scale, m.zoom, m.screen);
     case 'subscribe': {
       const t = w.tabs.get(m.tabId);
       if (!t) return;

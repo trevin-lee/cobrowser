@@ -13,6 +13,14 @@ export interface AppState {
   webauthn?: boolean;
 }
 
+/** The real display the panel is on, in CSS px, so the page can describe its screen truthfully. */
+export interface ScreenInfo {
+  width: number;
+  height: number;
+  x: number;
+  y: number;
+}
+
 export interface AppTabInfo {
   tabId: string;
   targetId: string;
@@ -180,8 +188,8 @@ export class AppConnection {
 
   /** Lay the page out at cssW x cssH CSS px (divided by `zoom`), rasterized at `scale` device
    *  pixels per CSS px — the frame comes back css*scale pixels wide. */
-  resize(tabId: string, width: number, height: number, scale = 1, zoom = 1): void {
-    this.send({ type: 'resize', tabId, width, height, scale, zoom });
+  resize(tabId: string, width: number, height: number, scale = 1, zoom = 1, screen?: ScreenInfo): void {
+    this.send({ type: 'resize', tabId, width, height, scale, zoom, screen });
   }
 
   subscribe(tabId: string, listener: FrameListener): void {

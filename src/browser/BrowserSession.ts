@@ -1,8 +1,6 @@
 import * as puppeteer from 'puppeteer-core';
 import type { Browser, Page, ElementHandle, CDPSession } from 'puppeteer-core';
-import { browserIdentity, identityMetadata } from './identity';
-import type { AppConnection } from '../app/AppClient';
-import type { BrowserIdentity } from './identity';
+import type { AppConnection, ScreenInfo } from '../app/AppClient';
 import { snapshotScript } from './snapshot';
 
 export interface PageInfo {
@@ -58,12 +56,10 @@ export class BrowserSession {
   private ids = new Map<Page, string>();
   private idSeq = 0;
 
-  /** Per-page CDP session holding this page's session-scoped overrides: the UA +
-   *  client-hint identity, and a virtual WebAuthn authenticator so passkey prompts fail
-   *  fast to a password fallback instead of hanging on an OS prompt that headless
-   *  Chromium can never show. Kept alive for the page's lifetime — BOTH overrides are
-   *  bound to the session and revert the moment it detaches (measured: detaching after
-   *  setUserAgentOverride put the headless client hints straight back). */
+  /** Per-page CDP session holding the virtual WebAuthn authenticator that makes passkey
+   *  prompts fail fast to a password fallback (unsigned app only). Kept alive for the
+   *  page's lifetime — the override is bound to the session and reverts on detach.
+   *  Identity (UA, client hints, languages, screen) is the app's business, not ours. */
   private authSessions = new Map<Page, CDPSession>();
 
   /** Soft advisory flag; the FIFO queue is the real serialization mechanism. */
@@ -85,8 +81,6 @@ export class BrowserSession {
   private pageClosedCb?: PageClosedListener;
   private pageRevealCb?: (id: string) => void;
   private pagesChangedCb?: () => void;
-  /** How this browser presents itself to sites (UA + client hints). */
-  private identity?: BrowserIdentity;
   private highlightCb?: (id: string, box: ElementBox) => void;
 
   /** The app's tab id for each page — what frames, resizes and closes are addressed by. */
@@ -125,7 +119,6 @@ export class BrowserSession {
     autoFallbackPasskeys: boolean,
   ): Promise<BrowserSession> {
     const session = new BrowserSession(browser, app, autoFallbackPasskeys);
-    session.identity = await browserIdentity(await withTimeout(browser.version(), 2000));
 
     // Adopt the workspace's existing tabs (a reload finds them right where it left them).
     const pages = (await browser.pages()).filter((p) => session.adopt(p));
@@ -273,50 +266,14 @@ export class BrowserSession {
    * The CDP session is kept in `authSessions` for the page's lifetime — the
    * virtual authenticator is bound to it and would vanish if it detached.
    */
-  /**
-   * Describe ourselves accurately: this IS an ordinary Chrome rendering real pages for
-   * a human, but headless defaults advertise otherwise — the UA literally contains
-   * "HeadlessChrome" and the client-hint brands say unbranded "Chromium". Sites match
-   * those strings and serve CAPTCHA walls instead of content. Rewrite both to the plain
-   * Chrome equivalent of the SAME build (version taken from the real UA, never invented),
-   * so the only thing that changes is the false "I am headless" claim.
-   */
-  private async fixUserAgent(cdp: CDPSession): Promise<void> {
-    const id = this.identity;
-    if (!id) return;
-    try {
-      // ONE call carrying all three. Sending them separately does not merge — a second
-      // setUserAgentOverride without userAgentMetadata WIPES the brands (measured:
-      // navigator.userAgentData.brands came back empty), which is far more anomalous
-      // than the headless brands it replaced.
-      await withTimeout(
-        cdp.send('Network.setUserAgentOverride', {
-          userAgent: id.ua,
-          // Headless derives navigator.languages from --lang and yields just ["en-US"];
-          // real Chrome sends ["en-US","en"]. No launch flag fixes this (--accept-lang
-          // changes only the header), so it rides along here.
-          acceptLanguage: 'en-US,en',
-          userAgentMetadata: identityMetadata(id),
-        }),
-        3000,
-      );
-    } catch {
-      /* override unsupported — the --user-agent launch flag still covers the UA string */
-    }
-  }
-
   private async prepPage(page: Page): Promise<void> {
     if (this.authSessions.has(page)) return;
     // Every await is timeout-bounded: a hung/unresponsive page must never block session
     // startup or tab adoption on this best-effort setup.
     const cdp = await withTimeout(page.createCDPSession(), 3000).catch(() => undefined);
     if (!cdp) return;
-    // Held for the page's lifetime: the identity override lives on this session.
+    // Held for the page's lifetime: the authenticator lives on this session.
     this.authSessions.set(page, cdp);
-    // AWAITED, not fire-and-forget: newPage() calls prepPage before goto() precisely so
-    // the identity is in place for the first request. Voiding it let the navigation win
-    // the race and ship the headless client hints.
-    await this.fixUserAgent(cdp);
     if (!this.autoFallbackPasskeys) return;
     try {
       await withTimeout(cdp.send('WebAuthn.enable'), 3000);
@@ -336,8 +293,7 @@ export class BrowserSession {
         3000,
       );
     } catch {
-      // Keep the session in the map even so: passkeys are best-effort, but the identity
-      // override on this same session is not, and it dies if the session is dropped.
+      // Keep the session in the map even so, so a retry is not attempted per call.
       /* WebAuthn domain unsupported or page already gone — leave passkeys as-is */
     }
   }
@@ -407,10 +363,10 @@ export class BrowserSession {
   /** Size a page to its panel in device pixels. Offscreen rendering paints exactly the
    *  window's content size at scale 1, so the frame IS the viewport — no emulation, and no
    *  phantom screen to reconcile with it. */
-  async setViewport(page: Page, cssW: number, cssH: number, scale = 1, zoom = 1): Promise<void> {
+  async setViewport(page: Page, cssW: number, cssH: number, scale = 1, zoom = 1, screen?: ScreenInfo): Promise<void> {
     if (cssW < 1 || cssH < 1) return;
     const tabId = this.tabIds.get(page);
-    if (tabId) this.app.resize(tabId, cssW, cssH, scale, zoom);
+    if (tabId) this.app.resize(tabId, cssW, cssH, scale, zoom, screen);
   }
 
   /** Serialize every browser action (agent + human) through one FIFO queue. */
