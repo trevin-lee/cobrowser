@@ -8,8 +8,9 @@ import { SessionTreeProvider } from './webview/SessionTreeProvider';
 import { writeClientConfigs } from './clients/writeClientConfigs';
 import { daemonToken, deregister, ensureDaemon, register } from './daemon/client';
 import { DEFAULT_DAEMON_PORT, DEV_DAEMON_PORT, bridgeEndpointUrl } from './daemon/protocol';
-import { AppConnection } from './app/AppClient';
-import { ensureApp } from './app/ensureApp';
+import { AppConnection, readAppState } from './app/AppClient';
+import { ensureApp, electronExecutable } from './app/ensureApp';
+import { signElectronForPasskeys } from './app/signApp';
 import { findLegacyChrome, findOldProfiles, readCookies, toElectronCookie } from './app/importProfiles';
 import { registerEndpoint, unregisterEndpoint } from './firefox/managedManifest';
 import { listFirefoxContainers } from './firefox/containers';
@@ -253,7 +254,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         const { conn, tabs } = await AppConnection.connect(state, workspaceId);
         BrowserPanel.app = conn;
         conn.onClose = () => log('App connection closed.');
-        const s = await BrowserSession.connectApp(conn, passkeyFallbackFor(cfg));
+        // A signed app has a real Touch ID authenticator; the fail-fast virtual one would
+        // replace it with a forced password fallback.
+        const s = await BrowserSession.connectApp(conn, state.webauthn ? false : passkeyFallbackFor(cfg));
         log(`Connected to the cobrowser app ${state.version} (${tabs.length} tab(s) already open for this workspace).`);
         const wired = await wire(s);
         if (tabs.length) BrowserPanel.disposeUnclaimedRestored(); // pages adopted their shells in wire()
@@ -432,6 +435,27 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           ? `Cobrowser: bound to Chrome tab group "${next.trim()}". If the extension is not connected yet, run "Cobrowser: Copy Bridge URL" and paste it into its popup.`
           : 'Cobrowser: Chrome tab group unbound for this workspace.',
       );
+    }),
+    vscode.commands.registerCommand('cobrowser.enablePasskeys', async () => {
+      // Sign the downloaded browser so Chromium's Touch ID authenticator can store passkeys.
+      const cacheDir = path.join(context.globalStorageUri.fsPath, 'electron');
+      const devElectron = path.join(context.extensionUri.fsPath, 'app', 'node_modules', 'electron', 'dist', 'Electron.app', 'Contents', 'MacOS', 'Electron');
+      const exe = electronExecutable({ cacheDir, devElectron });
+      if (!exe) {
+        void vscode.window.showErrorMessage('Cobrowser: the browser has not been downloaded yet — open a panel first, then run this again.');
+        return;
+      }
+      try {
+        const marker = await vscode.window.withProgress(
+          { location: vscode.ProgressLocation.Notification, title: 'Cobrowser: signing the browser for passkeys' },
+          () => Promise.resolve(signElectronForPasskeys(exe, log)),
+        );
+        await disposeSession(context); // the running app is the unsigned binary; quit it
+        try { const st = readAppState(); if (st) process.kill(st.pid, 'SIGTERM'); } catch { /* not running */ }
+        void vscode.window.showInformationMessage(`Cobrowser: passkeys enabled (${marker.identity.replace(/:.*/, '')}). The browser restarts signed the next time a panel opens.`);
+      } catch (err) {
+        void vscode.window.showErrorMessage(`Cobrowser: could not enable passkeys — ${String((err as Error).message ?? err)}`);
+      }
     }),
     vscode.commands.registerCommand('cobrowser.importProfiles', async () => {
       // Bring logins over from the per-workspace Chrome profiles of the pre-app releases.

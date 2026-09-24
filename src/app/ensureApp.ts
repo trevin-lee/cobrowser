@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import { spawn, execFileSync } from 'node:child_process';
 import { readAppState, STATE_FILE, type AppState } from './AppClient';
+import { readSignedMarker } from './signApp';
 
 type Log = (message: string) => void;
 
@@ -27,11 +28,25 @@ export interface EnsureAppOptions {
  * asked to quit and replaced: two versions taking turns would knock every window's agent
  * offline on each swap, so the newer build always wins and an older one never downgrades.
  */
+/** The Electron executable ensureApp would use, without starting anything. */
+export function electronExecutable(opts: Pick<EnsureAppOptions, 'cacheDir' | 'devElectron'>): string | undefined {
+  if (opts.devElectron && fs.existsSync(opts.devElectron)) return opts.devElectron;
+  const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
+  const exe = path.join(opts.cacheDir, `electron-v${ELECTRON_VERSION}-darwin-${arch}`, 'Electron.app', 'Contents', 'MacOS', 'Electron');
+  return fs.existsSync(exe) ? exe : undefined;
+}
+
 export async function ensureApp(opts: EnsureAppOptions): Promise<AppState> {
   const running = readAppState();
   if (running) {
-    if (!isOlder(running.version, opts.version)) return running;
-    opts.log(`cobrowser app ${running.version} is older than this extension (${opts.version}) — restarting it.`);
+    const stale = isOlder(running.version, opts.version);
+    // Signed for passkeys since it started (Enable Passkeys ran): the unsigned process can't
+    // reach the authenticator, so it restarts as the signed one.
+    const unsignedButSigned = !running.webauthn && !!readSignedMarker(electronExecutable(opts) ?? '');
+    if (!stale && !unsignedButSigned) return running;
+    opts.log(stale
+      ? `cobrowser app ${running.version} is older than this extension (${opts.version}) — restarting it.`
+      : 'cobrowser app is running unsigned but the browser is now signed for passkeys — restarting it.');
     try {
       process.kill(running.pid, 'SIGTERM');
     } catch {
@@ -43,7 +58,8 @@ export async function ensureApp(opts: EnsureAppOptions): Promise<AppState> {
     ? opts.devElectron
     : await ensureElectron(opts);
   if (!fs.existsSync(opts.appMain)) throw new Error(`cobrowser app bundle missing: ${opts.appMain}`);
-  opts.log(`Starting cobrowser app ${opts.version} (${electron}).`);
+  const signed = readSignedMarker(electron);
+  opts.log(`Starting cobrowser app ${opts.version} (${electron})${signed ? ' — signed, passkeys on' : ''}.`);
   const child = spawn(electron, [opts.appMain], {
     detached: true,
     stdio: 'ignore',
@@ -52,6 +68,7 @@ export async function ensureApp(opts: EnsureAppOptions): Promise<AppState> {
       ELECTRON_RUN_AS_NODE: undefined, // the extension host sets this; the app must be Electron
       COBROWSER_VERSION: opts.version,
       COBROWSER_ICON: opts.iconPath ?? '',
+      COBROWSER_WEBAUTHN_GROUP: signed?.webauthnGroup ?? '',
     },
   });
   child.unref();

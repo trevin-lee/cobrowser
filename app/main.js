@@ -49,6 +49,16 @@ function log(...parts) {
 process.on('uncaughtException', (e) => log('uncaughtException', e));
 process.on('unhandledRejection', (e) => log('unhandledRejection', e));
 
+// Passkeys: only meaningful when the binary was signed with the matching keychain-access-
+// groups entitlement (see the extension's signApp.ts); the group arrives from that step.
+// Unsigned, the extension keeps its fail-fast virtual authenticator instead.
+const WEBAUTHN_GROUP = process.env.COBROWSER_WEBAUTHN_GROUP || '';
+if (WEBAUTHN_GROUP && typeof app.configureWebAuthn === 'function') {
+  try {
+    app.configureWebAuthn({ touchID: { keychainAccessGroup: WEBAUTHN_GROUP, promptReason: 'sign in with a passkey' } });
+  } catch (e) { console.error('configureWebAuthn failed:', e.message); }
+}
+
 // Port 0: Chromium picks a free port and writes DevToolsActivePort into userData.
 app.commandLine.appendSwitch('remote-debugging-port', '0');
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
@@ -658,6 +668,18 @@ class Workspace {
     this.sockets = new Set();
     const ses = session.fromPartition(this.partition);
     ses.setUserAgent(CHROME_UA);
+    // Several passkeys for one site: without a listener Chromium cancels the request. The
+    // page is offscreen, so ask with a native dialog instead of in-page UI.
+    try {
+      ses.on('select-webauthn-account', (_event, details, callback) => {
+        const accounts = details.accounts || details.credentials || [];
+        if (accounts.length === 1) return callback(accounts[0].id ?? accounts[0].credentialId ?? accounts[0]);
+        const names = accounts.map((a) => a.userName || a.displayName || a.name || String(a.id ?? ''));
+        dialog.showMessageBox({ type: 'question', message: 'Which passkey?', detail: details.relyingPartyId || '', buttons: [...names, 'Cancel'], cancelId: names.length })
+          .then(({ response }) => callback(response < names.length ? (accounts[response].id ?? accounts[response].credentialId ?? accounts[response]) : undefined))
+          .catch(() => callback(undefined));
+      });
+    } catch { /* older Electron without the event */ }
   }
 
   openTab(opts) {
@@ -845,7 +867,7 @@ app.whenReady().then(async () => {
     fs.mkdirSync(STATE_DIR, { recursive: true });
     fs.writeFileSync(
       STATE_FILE,
-      JSON.stringify({ wsPort: port, token, debugWs: debugWsEndpoint, pid: process.pid, version: VERSION }),
+      JSON.stringify({ wsPort: port, token, debugWs: debugWsEndpoint, pid: process.pid, version: VERSION, webauthn: !!WEBAUTHN_GROUP }),
       { mode: 0o600 },
     );
     log(`cobrowser app ${VERSION}: ws://127.0.0.1:${port}, debug ${debugWsEndpoint}, data ${DATA_DIR}`);

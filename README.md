@@ -77,7 +77,11 @@ removed on first run.
 
 ## Where you watch it
 
-Every tab is an editor tab in a dedicated pane, streamed from the app at up to 60 fps. There is no OS window to show — the page is rendered offscreen — so prompts that need one (Touch ID, an extension's toolbar popup) cannot appear; passkeys fail fast to a password by default (`cobrowser.autoFallbackPasskeys`).
+Every tab is an editor tab in a dedicated pane, streamed from the app at up to 60 fps. There is no OS window to show — the page is rendered offscreen — so prompts that need one (an extension's toolbar popup) cannot appear. Passkeys fail fast to a password by default (`cobrowser.autoFallbackPasskeys`) until you enable them.
+
+### Passkeys
+
+Run **Cobrowser: Enable Passkeys (Sign the Browser)** once. Chromium's Touch ID authenticator only works in an app signed with a `keychain-access-groups` entitlement, and Apple only grants that entitlement through a provisioning profile, so the command re-signs the downloaded browser as `dev.trevin.cobrowser` with your Apple Development identity. It builds a stub Xcode project and lets `xcodebuild -allowProvisioningUpdates` mint the profile, which needs Xcode with an Apple ID signed in (Xcode → Settings → Accounts). After that the Touch ID sheet is a system dialog, so it appears even though the page renders offscreen; passkeys are stored in iCloud Keychain under your team's group. The browser restarts signed the next time a panel opens. A Developer ID certificate is used instead when present.
 
 The menu-bar icon lists each workspace and its tab count, and quits the app. Quitting closes every workspace's tabs; the next panel or tool call starts it again.
 

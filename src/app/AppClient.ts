@@ -9,6 +9,8 @@ export interface AppState {
   debugWs: string;
   pid: number;
   version: string;
+  /** The binary is signed for passkeys and the Touch ID authenticator is configured. */
+  webauthn?: boolean;
 }
 
 export interface AppTabInfo {

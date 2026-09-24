@@ -97,6 +97,10 @@
       {
         "command": "cobrowser.forward",
         "title": "Cobrowser: Forward"
+      },
+      {
+        "command": "cobrowser.enablePasskeys",
+        "title": "Cobrowser: Enable Passkeys (Sign the Browser)"
       }
     ],
     "menus": {
@@ -148,7 +152,7 @@
         "cobrowser.autoFallbackPasskeys": {
           "type": "boolean",
           "default": true,
-          "description": "Install a virtual WebAuthn authenticator so passkey prompts fail fast to a password fallback. The browser renders offscreen, so a real passkey ceremony has no window to show the OS prompt in and would hang."
+          "description": "Install a virtual WebAuthn authenticator so passkey prompts fail fast to a password fallback. Ignored once the browser is signed for passkeys (Cobrowser: Enable Passkeys), which gives it the real Touch ID authenticator."
         },
         "cobrowser.firefoxContainer": {
           "type": "string",
