@@ -682,6 +682,9 @@ ipcMain.handle('vault:importCsv', async (_e, { scope } = {}) => {
 });
 ipcMain.handle('vault:lock', () => lockVault());
 
+/** The page's own frame in Tab.frameOwners (the page has no session id). */
+const ROOT_FRAME = '(page)';
+
 const workspaces = new Map(); // workspace path -> Workspace
 let nextTabId = 1;
 
@@ -693,6 +696,18 @@ class Tab {
     this.subscribers = new Set(); // sockets receiving frames
     this.opener = opts.opener;
     this.log = new TabLog();
+    /** Out-of-process iframe sessions, by frame id (see routePoint). */
+    this.frameSessions = new Map();
+    /** For each frame session (ROOT for the page): its out-of-process child frames, by the
+     *  backend node id of the <iframe> element that owns each. */
+    this.frameOwners = new Map();
+    /** The human's input, waiting to be routed. See queueHuman. */
+    this.inputQueue = [];
+    this.inputPumping = false;
+    /** The frame session keys and text go to (where the last click landed), and the one the
+     *  pointer is over, so it can be told when the pointer leaves. undefined = the page. */
+    this.inputSession = undefined;
+    this.hoverSession = undefined;
     /** CSS size the panel wants, the render scale (device pixels per CSS px), and the
      *  per-site zoom. The window is css*scale pixels wide and the page is zoomed by
      *  scale*zoom, so it lays out at css/zoom CSS px and rasterizes at `scale` px per CSS px.
@@ -713,8 +728,15 @@ class Tab {
     });
     const wc = this.win.webContents;
     wc.setFrameRate(FRAME_RATE);
-    // Everything the tab's debugger sees goes into the tab's log (console + requests).
-    wc.debugger.on('message', (_e, method, params) => this.log.onEvent(method, params, wc.getURL()));
+    // Everything the tab's debugger sees goes into the tab's log (console + requests), from
+    // the page and from its out-of-process frames alike.
+    wc.debugger.on('message', (_e, method, params, sessionId) => {
+      if (method === 'Target.attachedToTarget') return this.onFrameAttached(params, sessionId);
+      if (method === 'Target.detachedFromTarget') return this.onFrameDetached(params);
+      // Request ids are per renderer; keep a frame's apart from the page's.
+      const p = sessionId && params && params.requestId ? { ...params, requestId: `${sessionId}:${params.requestId}` } : params;
+      this.log.onEvent(method, p, wc.getURL());
+    });
     // A DevTools window would take the session away from us; refuse it. Everything DevTools
     // shows is available through the log and the `cdp` channel anyway.
     wc.on('devtools-opened', () => { log(`tab ${this.id}: DevTools refused`); wc.closeDevTools(); });
@@ -764,6 +786,15 @@ class Tab {
     await send('Runtime.enable', {});
     await send('Log.enable', {});
     await send('Network.enable', {});
+    // Cross-origin iframes (video players, embeds, sign-in widgets) run in their own renderer
+    // process, and offscreen, input sent to the page never reaches them (measured: a click on
+    // a button in one is lost; same-origin iframes are fine). Attach to each one as its own
+    // session so human input can be delivered to it directly — see routePoint.
+    this.frameSessions.clear();
+    this.frameOwners.clear();
+    this.inputSession = this.hoverSession = undefined;
+    await send('DOM.enable', {});
+    await send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true });
     const screenKey = this.screenKey; this.screenKey = undefined;
     if (this.lastScreen) this.applyScreen(this.lastScreen); else this.screenKey = screenKey;
   }
@@ -865,7 +896,8 @@ class Tab {
    * popup pixels, and keyboard selection is dead too). So the app shows a native menu at
    * the cursor itself and applies the choice to the page. x/y are page CSS px.
    */
-  async selectAt(x, y) {
+  async selectAt(x, y, sessionId) {
+    this.selectSession = sessionId;
     const { result } = await this.win.webContents.debugger.sendCommand('Runtime.evaluate', {
       expression: `(() => {
         const el = document.elementFromPoint(${Number(x) || 0}, ${Number(y) || 0});
@@ -884,7 +916,7 @@ class Tab {
         return { items, rect: { left: r.left, top: r.top, right: r.right, bottom: r.bottom } };
       })()`,
       returnByValue: true,
-    });
+    }, sessionId);
     return result.value || null;
   }
 
@@ -893,7 +925,149 @@ class Tab {
     return this.win.webContents.debugger.sendCommand('Runtime.evaluate', {
       expression: `(() => { const s = window.__cobrowserSelect; if (!s) return false; s.selectedIndex = ${Number(index)}; s.dispatchEvent(new Event('input', { bubbles: true })); s.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`,
       returnByValue: true,
-    }).catch(() => undefined);
+    }, this.selectSession).catch(() => undefined);
+  }
+
+  /** A new out-of-process frame: remember its session, which <iframe> element in its parent
+   *  owns it (so routing can recognise it with one lookup), and give it what the page has. */
+  onFrameAttached({ sessionId, targetInfo }, parentSessionId) {
+    if (!targetInfo || targetInfo.type !== 'iframe') return;
+    this.frameSessions.set(targetInfo.targetId, sessionId);
+    const dbg = this.win.webContents.debugger;
+    const parentKey = parentSessionId || ROOT_FRAME;
+    // The page's own session arrives as '' in the message event, which sendCommand rejects.
+    dbg.sendCommand('DOM.getFrameOwner', { frameId: targetInfo.targetId }, parentSessionId || undefined).then((r) => {
+      if (!this.frameSessions.has(targetInfo.targetId)) return; // gone already
+      if (!this.frameOwners.has(parentKey)) this.frameOwners.set(parentKey, new Map());
+      this.frameOwners.get(parentKey).set(r.backendNodeId, sessionId);
+    }).catch((e) => log(`tab ${this.id}: no owner for frame ${targetInfo.url}: ${e.message}`));
+    const send = (method, params) => dbg.sendCommand(method, params, sessionId).catch(() => undefined);
+    void send('Emulation.setUserAgentOverride', { userAgent: USER_AGENT, acceptLanguage: ACCEPT_LANGUAGES, platform: 'MacIntel', userAgentMetadata: UA_METADATA });
+    void send('Emulation.setFocusEmulationEnabled', { enabled: true });
+    void send('Runtime.enable', {});
+    void send('Log.enable', {});
+    void send('Network.enable', {});
+    void send('DOM.enable', {});
+    // Frames inside frames (an LMS page embedding a tool embedding a player) get the same.
+    void send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true });
+  }
+
+  onFrameDetached({ sessionId }) {
+    for (const [frameId, s] of this.frameSessions) if (s === sessionId) this.frameSessions.delete(frameId);
+    this.frameOwners.delete(sessionId);
+    for (const owners of this.frameOwners.values()) for (const [node, s] of owners) if (s === sessionId) owners.delete(node);
+    if (this.inputSession === sessionId) this.inputSession = undefined;
+    if (this.hoverSession === sessionId) this.hoverSession = undefined;
+  }
+
+  /**
+   * Which frame a page point is in, and the point in that frame's coordinates. Walks down
+   * through out-of-process iframes: the node under the point is the <iframe> element when the
+   * point is over one, and its content box gives the offset into the frame. Cost: nothing on
+   * a frame that embeds no out-of-process frames; one lookup when the point is not over one
+   * of them; two per level when it is.
+   */
+  async routePoint(x, y) {
+    if (this.frameSessions.size === 0) return { sessionId: undefined, x, y };
+    const dbg = this.win.webContents.debugger;
+    let sessionId, lx = x, ly = y;
+    for (let depth = 0; depth < 6; depth++) {
+      const owners = this.frameOwners.get(sessionId || ROOT_FRAME);
+      if (!owners || owners.size === 0) break;
+      const loc = await dbg.sendCommand('DOM.getNodeForLocation', { x: Math.round(lx), y: Math.round(ly), includeUserAgentShadowDOM: false, ignorePointerEventsNone: true }, sessionId).catch(() => null);
+      if (!loc) break;
+      const child = owners.get(loc.backendNodeId);
+      if (!child) break;
+      const box = await dbg.sendCommand('DOM.getBoxModel', { backendNodeId: loc.backendNodeId }, sessionId).catch(() => null);
+      if (!box) break;
+      lx -= box.model.content[0];
+      ly -= box.model.content[1];
+      sessionId = child;
+    }
+    return { sessionId, x: lx, y: ly };
+  }
+
+  /**
+   * The human's input, in order. Only the ROUTING is serialized; the dispatch is not waited
+   * for, because the debugger already runs commands in the order they are sent, and Chromium
+   * acknowledges a scroll only once per rendered frame — waiting for each acknowledgement
+   * before sending the next backed trackpad scrolling up by over a second (measured).
+   *
+   * While an event is being routed, scroll and move events that arrive behind it are merged
+   * into one (deltas summed, latest position kept), the way browsers coalesce input, so a
+   * slow lookup on a busy page never builds a queue.
+   */
+  queueHuman(method, params) {
+    return new Promise((resolve, reject) => {
+      const last = this.inputQueue[this.inputQueue.length - 1];
+      const mouse = method === 'Input.dispatchMouseEvent';
+      if (last && mouse && last.method === method && last.params.type === params.type && (last.params.modifiers || 0) === (params.modifiers || 0)) {
+        if (params.type === 'mouseWheel') {
+          last.params = { ...params, deltaX: (last.params.deltaX || 0) + (params.deltaX || 0), deltaY: (last.params.deltaY || 0) + (params.deltaY || 0) };
+          last.waiters.push({ resolve, reject });
+          return;
+        }
+        if (params.type === 'mouseMoved' && (last.params.buttons || 0) === (params.buttons || 0)) {
+          last.params = params;
+          last.waiters.push({ resolve, reject });
+          return;
+        }
+      }
+      this.inputQueue.push({ method, params, waiters: [{ resolve, reject }] });
+      void this.pumpHuman();
+    });
+  }
+
+  async pumpHuman() {
+    if (this.inputPumping) return;
+    this.inputPumping = true;
+    try {
+      while (this.inputQueue.length) {
+        const item = this.inputQueue.shift();
+        let dispatched;
+        try { ({ dispatched } = await this.routeHuman(item.method, item.params)); }
+        catch (e) { dispatched = Promise.reject(e); }
+        // Settle the callers when the page has the event, without holding up the next one.
+        dispatched.then((r) => item.waiters.forEach((w) => w.resolve(r)), (e) => item.waiters.forEach((w) => w.reject(e)));
+      }
+    } finally {
+      this.inputPumping = false;
+    }
+  }
+
+  /**
+   * Route one human event and send it; resolves once it has been SENT, with the dispatch
+   * wrapped in an object — an async function returning a bare promise would wait for it. Mouse events go to the frame under the pointer; keys and text go to the frame
+   * last clicked, which is where focus is. A click on a native <select> opens the app's menu
+   * instead (see selectAt). Agent input never comes here.
+   */
+  async routeHuman(method, params) {
+    const dbg = this.win.webContents.debugger;
+    if (method === 'Input.dispatchMouseEvent') {
+      const r = await this.routePoint(params.x, params.y);
+      if (params.button === 'left' && params.type === 'mousePressed') {
+        const sel = await this.selectAt(r.x, r.y, r.sessionId).catch(() => null);
+        if (sel) { this.swallowRelease = true; this.popupSelect(sel, { x: r.x, y: r.y }); return { dispatched: Promise.resolve({ selectMenu: true }) }; }
+      } else if (params.button === 'left' && params.type === 'mouseReleased' && this.swallowRelease) {
+        this.swallowRelease = false;
+        return { dispatched: Promise.resolve({ selectMenu: true }) };
+      }
+      if (params.type === 'mousePressed') this.inputSession = r.sessionId;
+      // Leaving a frame: tell it, so its hover state (a player's controls) clears.
+      if (this.hoverSession !== r.sessionId) {
+        if (this.hoverSession !== undefined) dbg.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x: -1, y: -1, button: 'none' }, this.hoverSession).catch(() => undefined);
+        this.hoverSession = r.sessionId;
+      }
+      return { dispatched: dbg.sendCommand(method, { ...params, x: r.x, y: r.y }, r.sessionId) };
+    }
+    const target = this.inputSession;
+    return {
+      dispatched: dbg.sendCommand(method, params, target).catch((e) => {
+        if (target === undefined) throw e;
+        if (this.inputSession === target) this.inputSession = undefined; // that frame went away; the page has focus now
+        return dbg.sendCommand(method, params);
+      }),
+    };
   }
 
   /** The native menu for a select — the same NSMenu Chrome on macOS uses — anchored the way
@@ -1083,17 +1257,11 @@ async function handle(ws, state, m) {
       // protocolGuard.js), so the hot-path commands are type-checked here first.
       const bad = checkParams(m.method, m.params);
       if (bad) { log(`tab ${t.id}: refused ${bad}`); return reply({ error: bad }); }
-      // A HUMAN click on a native <select> gets a native menu instead (see Tab.selectAt).
-      // The press is swallowed so Chromium does not try to open the popup it cannot show,
-      // and so is the release that follows. Agent input is never intercepted.
-      if (m.human && m.method === 'Input.dispatchMouseEvent' && m.params.button === 'left') {
-        if (m.params.type === 'mousePressed') {
-          const sel = await t.selectAt(m.params.x, m.params.y).catch(() => null);
-          if (sel) { t.swallowRelease = true; reply({ result: { selectMenu: true } }); t.popupSelect(sel, { x: m.params.x, y: m.params.y }); return; }
-        } else if (m.params.type === 'mouseReleased' && t.swallowRelease) {
-          t.swallowRelease = false;
-          return reply({ result: { selectMenu: true } });
-        }
+      // The human's input is routed into out-of-process frames and native <select>s, in
+      // order, without waiting on each dispatch (see Tab.queueHuman).
+      if (m.human && /^Input\./.test(m.method)) {
+        try { reply({ result: await t.queueHuman(m.method, m.params || {}) }); } catch (e) { reply({ error: e.message || String(e) }); }
+        return;
       }
       // A command the session never answers must not hang the caller forever.
       let timer;
