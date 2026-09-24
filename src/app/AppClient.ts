@@ -170,8 +170,8 @@ export class AppConnection {
    * Input.*, Runtime.evaluate, Page.captureScreenshot, WebAuthn.* — anything the page's
    * session supports. Throws with the protocol's error message.
    */
-  async cdp<T = Record<string, unknown>>(tabId: string, method: string, params?: unknown, timeoutMs = 30000): Promise<T> {
-    const r = await this.request({ type: 'cdp', tabId, method, params: params ?? {} }, timeoutMs);
+  async cdp<T = Record<string, unknown>>(tabId: string, method: string, params?: unknown, timeoutMs = 30000, opts: { human?: boolean } = {}): Promise<T> {
+    const r = await this.request({ type: 'cdp', tabId, method, params: params ?? {}, ...(opts.human ? { human: true } : {}) }, timeoutMs);
     if (r.error) throw new Error(String(r.error));
     return (r.result ?? {}) as T;
   }

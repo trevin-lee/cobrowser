@@ -154,7 +154,7 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'fill',
     {
       description:
-        'Set the value of an input/textarea by uid (from take_snapshot) OR a CSS selector, using trusted keystrokes.',
+        "Set the value of an input/textarea by uid (from take_snapshot) OR a CSS selector, using real keystrokes. For a <select>, pass the OPTION'S VISIBLE TEXT (or its value): it is chosen and the input/change events fired, since a dropdown cannot open in an offscreen page.",
       inputSchema: { uid: z.string().optional(), selector: z.string().optional(), value: z.string() },
     },
     async ({ uid, selector, value }) => {

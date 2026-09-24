@@ -504,6 +504,32 @@ export class BrowserSession {
 
   async fill(opts: Target & { value: string }): Promise<void> {
     this.markAgent();
+    // A <select> has no keyboard path in an offscreen page (its popup cannot show): choose
+    // the option by visible text or value and fire the events frameworks listen for.
+    const selector = this.selectorFor(opts);
+    const picked = await this.current().evaluate<string | null | false>(
+      (sel: string, want: string) => {
+        const s = document.querySelector(sel);
+        if (!s || s.tagName !== 'SELECT') return false;
+        const el = s as HTMLSelectElement;
+        el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' as ScrollBehavior });
+        const opts = [...el.options];
+        const norm = (t: string) => t.trim().toLowerCase();
+        const o = opts.find((x) => x.text.trim() === want) ?? opts.find((x) => x.value === want) ?? opts.find((x) => norm(x.text) === norm(want)) ?? opts.find((x) => norm(x.text).includes(norm(want)));
+        if (!o) return null;
+        el.selectedIndex = o.index;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        return o.text;
+      },
+      selector,
+      opts.value,
+    );
+    if (picked === null) throw new Error(`no option matches "${opts.value}" in that <select> — take_snapshot lists its options`);
+    if (typeof picked === 'string') {
+      this.emitHighlight(await this.locate(opts));
+      return;
+    }
     // Focus with a real click, select whatever is there, then type over it: the page sees
     // exactly the events a person produces, so React-style controlled inputs update.
     await this.click(opts);

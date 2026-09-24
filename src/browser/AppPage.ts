@@ -57,6 +57,12 @@ export class AppPage {
     return this.app.cdp<T>(this.tabId, method, params, timeoutMs);
   }
 
+  /** The human's own input from the panel. Marked so the app can give a native <select>
+   *  its menu (an offscreen page cannot show one); agent input is never intercepted. */
+  humanInput<T = Record<string, unknown>>(method: string, params?: unknown): Promise<T> {
+    return this.app.cdp<T>(this.tabId, method, params, 30000, { human: true });
+  }
+
   /**
    * Run a function in the page and return its JSON result. `fn` is a function (its source
    * is shipped) or a function expression as text; `args` must be JSON-serialisable. Runs in

@@ -852,6 +852,75 @@ class Tab {
     if (Math.abs(wc.getZoomFactor() - zf) > 0.001) wc.setZoomFactor(zf);
   }
 
+  /**
+   * A native <select> under a human click. Chromium draws a select's dropdown as a separate
+   * popup widget (on macOS a native menu attached to the window), and an offscreen window
+   * has nowhere to put it: the click focuses the select and nothing appears (measured — no
+   * popup pixels, and keyboard selection is dead too). So the app shows a native menu at
+   * the cursor itself and applies the choice to the page. x/y are page CSS px.
+   */
+  async selectAt(x, y) {
+    const { result } = await this.win.webContents.debugger.sendCommand('Runtime.evaluate', {
+      expression: `(() => {
+        const el = document.elementFromPoint(${Number(x) || 0}, ${Number(y) || 0});
+        const s = el && el.closest ? el.closest('select') : null;
+        if (!s || s.disabled || s.multiple || s.size > 1) return null;
+        window.__cobrowserSelect = s;
+        const items = [];
+        for (const node of s.children) {
+          if (node.tagName === 'OPTGROUP') {
+            items.push({ group: node.label || '' });
+            for (const o of node.children) if (o.tagName === 'OPTION') items.push({ text: o.text, disabled: o.disabled || node.disabled, selected: o.selected, index: o.index });
+          } else if (node.tagName === 'OPTION') items.push({ text: node.text, disabled: node.disabled, selected: node.selected, index: node.index });
+        }
+        s.focus();
+        const r = s.getBoundingClientRect();
+        return { items, rect: { left: r.left, top: r.top, right: r.right, bottom: r.bottom } };
+      })()`,
+      returnByValue: true,
+    });
+    return result.value || null;
+  }
+
+  /** Apply a menu choice: set the option and fire the events frameworks listen for. */
+  chooseOption(index) {
+    return this.win.webContents.debugger.sendCommand('Runtime.evaluate', {
+      expression: `(() => { const s = window.__cobrowserSelect; if (!s) return false; s.selectedIndex = ${Number(index)}; s.dispatchEvent(new Event('input', { bubbles: true })); s.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`,
+      returnByValue: true,
+    }).catch(() => undefined);
+  }
+
+  /** The native menu for a select — the same NSMenu Chrome on macOS uses — anchored the way
+   *  Chrome anchors it: at the control's left edge, with the current item lined up over the
+   *  control. `click` is where the human clicked, in page CSS px; the cursor is there on
+   *  screen, and page px map to screen points by the per-site zoom. */
+  popupSelect({ items, rect }, click) {
+    // Test-only: an isolated instance has nobody to pick; never set in normal use.
+    const pick = SKIP_BIOMETRICS ? process.env.COBROWSER_TEST_SELECT_PICK : undefined;
+    if (pick !== undefined) { log(`tab ${this.id}: TEST MODE — select auto-picked ${pick}`); return this.chooseOption(Number(pick)); }
+    const template = items.map((it) => it.group !== undefined
+      ? { label: it.group || ' ', enabled: false }
+      : { label: it.text || ' ', type: 'checkbox', checked: !!it.selected, enabled: !it.disabled, click: () => void this.chooseOption(it.index) });
+    if (template.length === 0) return;
+    const current = items.findIndex((it) => it.group === undefined && it.selected);
+    // A menu needs a window to hang off, and the tab's is offscreen with no screen position.
+    // A 1px transparent helper, shown without taking focus, stands in for the control: it is
+    // placed where the control's top-left corner is on screen, worked out from the cursor
+    // (which is at the click) and the click's offset inside the control.
+    const { screen } = require('electron');
+    const pt = screen.getCursorScreenPoint();
+    const zoom = this.layout.zoom || 1;
+    const at = rect && click
+      ? { x: Math.round(pt.x - (click.x - rect.left) * zoom), y: Math.round(pt.y - (click.y - rect.top) * zoom) }
+      : pt;
+    const height = rect ? Math.max(1, Math.round((rect.bottom - rect.top) * zoom)) : 1;
+    const helper = new BrowserWindow({ show: false, width: 1, height, x: at.x, y: at.y, frame: false, transparent: true, alwaysOnTop: true, focusable: false, skipTaskbar: true, hasShadow: false });
+    helper.showInactive();
+    // positioningItem: macOS opens the menu so that item sits over the control, exactly as a
+    // pop-up button (and Chrome's select) does.
+    Menu.buildFromTemplate(template).popup({ window: helper, x: 0, y: 0, ...(current >= 0 ? { positioningItem: current } : {}), callback: () => { if (!helper.isDestroyed()) helper.close(); } });
+  }
+
   info() {
     const wc = this.win.webContents;
     return { tabId: this.id, url: wc.isDestroyed() ? '' : wc.getURL(), title: wc.isDestroyed() ? '' : wc.getTitle(), ...(this.opener ? { opener: this.opener } : {}) };
@@ -1008,6 +1077,18 @@ async function handle(ws, state, m) {
       // protocolGuard.js), so the hot-path commands are type-checked here first.
       const bad = checkParams(m.method, m.params);
       if (bad) { log(`tab ${t.id}: refused ${bad}`); return reply({ error: bad }); }
+      // A HUMAN click on a native <select> gets a native menu instead (see Tab.selectAt).
+      // The press is swallowed so Chromium does not try to open the popup it cannot show,
+      // and so is the release that follows. Agent input is never intercepted.
+      if (m.human && m.method === 'Input.dispatchMouseEvent' && m.params.button === 'left') {
+        if (m.params.type === 'mousePressed') {
+          const sel = await t.selectAt(m.params.x, m.params.y).catch(() => null);
+          if (sel) { t.swallowRelease = true; reply({ result: { selectMenu: true } }); t.popupSelect(sel, { x: m.params.x, y: m.params.y }); return; }
+        } else if (m.params.type === 'mouseReleased' && t.swallowRelease) {
+          t.swallowRelease = false;
+          return reply({ result: { selectMenu: true } });
+        }
+      }
       // A command the session never answers must not hang the caller forever.
       let timer;
       const timeout = new Promise((_r, rej) => { timer = setTimeout(() => rej(new Error(`${m.method} did not answer within 20s`)), 20000); });

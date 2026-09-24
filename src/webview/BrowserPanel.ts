@@ -490,7 +490,7 @@ export class BrowserPanel {
     // blocking was the main "laggy" feel. Input events are independent calls, safe to interleave.
     if (!/^Input\./.test(m.type)) return; // the webview drives input only
     try {
-      const result = await this.page.cdp(m.type, m.params);
+      const result = await this.page.humanInput(m.type, m.params);
       if (m.callbackId != null) {
         this.panel.webview.postMessage({ callbackId: m.callbackId, result });
       }
