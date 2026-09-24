@@ -50,8 +50,8 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<TreeNode> {
     // clickable duplicated that (buggily) and pulled focus around.
     const item = new vscode.TreeItem(p.title || hostOf(p.url) || 'New tab');
     item.description = hostOf(p.url);
-    item.tooltip = p.url;
-    // Filled dot marks the active (foreground) tab; hollow for the rest.
+    item.tooltip = p.selected ? `${p.url}\nThe agent is working in this tab.` : p.url;
+    // Filled dot marks the tab the agent is working in; hollow for the rest.
     item.iconPath = new vscode.ThemeIcon(p.selected ? 'circle-filled' : 'circle-outline');
     item.contextValue = 'cobrowser.tab';
     return item;

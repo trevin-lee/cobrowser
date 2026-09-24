@@ -8,8 +8,11 @@ export interface PageInfo {
   pageId: string;
   url: string;
   title: string;
+  /** The tab the agent's tools act on when they are not given a pageId. */
   selected: boolean;
-  /** Who opened the tab: the agent (new_page) or the human / a site popup. */
+  /** The tab the human is looking at in the editor. Independent of `selected`. */
+  humanViewing: boolean;
+  /** Who opened the tab: the agent (new_page, or a link it clicked) or the human. */
   openedBy: 'agent' | 'human';
 }
 
@@ -47,18 +50,33 @@ interface Target {
   selector?: string;
 }
 
+/** Which tab a tool acts on: an explicit pageId, or the agent's current tab. */
+interface OnPage {
+  pageId?: string;
+}
+
 /**
  * The editor's view of this workspace's tabs in the app. BOTH drivers — the MCP tool
- * handlers (agent) and the webview panel (human) — funnel every action through `run()`, a
- * FIFO queue that serializes access so their inputs never interleave mid-action.
+ * handlers (agent) and the webview panel (human) — funnel every action on a tab through
+ * `run()`, a FIFO queue per tab, so their inputs never interleave mid-action on the same
+ * tab while different tabs proceed independently.
+ *
+ * The agent and the human each have their own current tab. Every tab is its own offscreen
+ * window that renders and takes input whether or not it is on screen, so nothing requires
+ * them to be the same: the human switching editor tabs never retargets the agent, and the
+ * agent switching tabs never moves the human's view unless it asks to.
  *
  * Every page operation is a DevTools-protocol command relayed to the app, which runs it on
  * the tab's own in-process debugger: input events are real trusted input, scripts run in
  * the page, screenshots come from the compositor. No debugging port, no puppeteer.
  */
 export class BrowserSession {
-  private active: AppPage | undefined;
-  private queue: Promise<unknown> = Promise.resolve();
+  /** The tab the agent's tools act on by default. */
+  private agentActive: AppPage | undefined;
+  /** The tab the human is looking at (the focused cobrowser panel). */
+  private humanActive: AppPage | undefined;
+  /** One FIFO per tab (keyed by page id). */
+  private queues = new Map<string, Promise<unknown>>();
 
   /** Pages in creation order, by the session's stable id. */
   private pages = new Map<string, AppPage>();
@@ -89,6 +107,8 @@ export class BrowserSession {
   private prepped = new WeakSet<AppPage>();
   /** The highest uid minted per page, so uids never repeat within a tab across documents. */
   private uidSeq = new WeakMap<AppPage, number>();
+  /** Where the agent's cursor was left in each tab, so the next move starts from there. */
+  private cursors = new WeakMap<AppPage, { x: number; y: number }>();
 
   private constructor(
     /** The cobrowser app that owns these tabs. */
@@ -112,18 +132,28 @@ export class BrowserSession {
     // a single hung tab must not delay (or wedge) the whole session coming up.
     for (const p of session.pages.values()) void session.prepPage(p);
     const first = [...session.pages.values()].find((p) => !p.url().startsWith('about:')) ?? [...session.pages.values()][0];
-    if (first) session.setActive(first);
+    if (first) session.agentActive = first;
 
-    // A site-opened popup / target=_blank tab becomes active and gets its own revealed
-    // panel, so the human and agent move to it together — never a split view. Our own
-    // newPage() gets its tab as a request reply, not through this event.
+    // A tab a page opened (target=_blank, window.open). Our own newPage() gets its tab as a
+    // request reply, not through this event.
+    //  - The agent follows it when the agent just clicked in the tab that opened it: that is
+    //    the agent's own link, and the tab counts as the agent's to tidy up.
+    //  - The human's editor reveals it when the human is looking at the tab that opened it;
+    //    a popup from a tab the agent is working in behind the scenes opens quietly.
     app.onTabOpened = (t) => {
       void (async () => {
         const page = session.adopt(t);
-        session.pushEvent('tab-opened', page.id, page.url());
+        const opener = t.opener ? session.byTab.get(t.opener) : undefined;
+        const agentFollows = !session.agentActive || (!!opener && opener === session.agentActive && Date.now() - session.agentActivityAt < 3000);
+        if (agentFollows && opener) {
+          session.agentPages.add(page);
+          session.app.markTab(page.tabId, 'agent');
+        }
+        session.pushEvent('tab-opened', page.id, page.url(), agentFollows && opener ? 'agent' : 'human');
         await session.prepPage(page); // fail-fast passkeys before any site script runs
-        await session.run(async () => session.setActive(page));
-        session.pageOpenedCb?.(page, page.id, true);
+        if (agentFollows) session.setAgentTarget(page, 'agent');
+        const reveal = !session.humanActive || !opener || opener === session.humanActive;
+        session.pageOpenedCb?.(page, page.id, reveal);
         session.pagesChangedCb?.();
       })();
     };
@@ -149,14 +179,16 @@ export class BrowserSession {
       session.pushEvent('tab-closed', page.id, page.url());
       session.pageClosedCb?.(page.id);
       session.pagesChangedCb?.();
+      if (session.humanActive === page) session.humanActive = undefined;
       if (session.pages.size === 0) {
         // Last tab closed: the app stays up (other workspaces may be using it); this
         // workspace just has no browser until the next tab opens.
-        session.active = undefined;
+        session.agentActive = undefined;
         session.allClosedCb?.(); // intentional empty → don't auto-reopen on reload
         return;
       }
-      if (session.active === page) session.setActive([...session.pages.values()][0]);
+      // The agent's tab went away: fall back to what the human is looking at, else the first.
+      if (session.agentActive === page) session.setAgentTarget(session.humanActive ?? [...session.pages.values()][0], 'human');
     };
 
     // Surface out-of-band exit (human Cmd-Q / crash) so the extension drops the dead
@@ -177,6 +209,7 @@ export class BrowserSession {
     const page = new AppPage(String(++this.idSeq), t.tabId, this.app, t.url, t.title ?? '');
     this.pages.set(page.id, page);
     this.byTab.set(t.tabId, page);
+    if (t.by === 'agent') this.agentPages.add(page); // remembered by the app across reloads
     return page;
   }
 
@@ -185,12 +218,12 @@ export class BrowserSession {
     return page.tabId;
   }
 
-  /** Set the agent's active page (the target for tools without an explicit page). */
-  private setActive(page: AppPage): void {
-    if (this.active === page) return;
-    this.active = page;
-    this.pushEvent('tab-activated', page.id, page.url());
-    this.pagesChangedCb?.(); // selection moved — refresh the sidebar's active dot
+  /** Set the tab the agent's tools act on by default. */
+  private setAgentTarget(page: AppPage, source: ActivityEvent['source']): void {
+    if (this.agentActive === page) return;
+    this.agentActive = page;
+    this.pushEvent('tab-activated', page.id, page.url(), source);
+    this.pagesChangedCb?.(); // refresh the sidebar's marker
   }
 
   private pageById(id: string): AppPage | undefined {
@@ -198,10 +231,18 @@ export class BrowserSession {
     return p && !p.isClosed() ? p : undefined;
   }
 
-  /** The page tools act on. Throws a clear error when the workspace has no tab. */
+  /** The agent's current tab. Throws a clear error when the workspace has none. */
   private current(): AppPage {
-    if (!this.active || this.active.isClosed()) throw new Error('no open page — call new_page first');
-    return this.active;
+    if (!this.agentActive || this.agentActive.isClosed()) throw new Error('no open page — call new_page first');
+    return this.agentActive;
+  }
+
+  /** The tab a tool acts on: the one named by pageId, or the agent's current tab. */
+  private pageFor(pageId?: string): AppPage {
+    if (pageId === undefined || pageId === '') return this.current();
+    const p = this.pageById(pageId);
+    if (!p) throw new Error(`No open page with id ${pageId} — list_pages shows the open tabs.`);
+    return p;
   }
 
   /**
@@ -270,8 +311,8 @@ export class BrowserSession {
     this.pageClosedCb = cb;
   }
 
-  /** Fired when the agent focuses an existing page (selectPage), so the
-   *  extension can reveal that page's panel and the human follows along. */
+  /** Fired when the agent asks for a tab to be shown to the human (select_page with
+   *  bringToFront), so the extension can reveal that page's panel. */
   onPageReveal(cb: (id: string) => void): void {
     this.pageRevealCb = cb;
   }
@@ -286,7 +327,7 @@ export class BrowserSession {
    *  restored session), so the extension builds their panels on activation. */
   emitExisting(): void {
     for (const page of this.pages.values()) {
-      if (!page.isClosed()) this.pageOpenedCb?.(page, page.id, page === this.active);
+      if (!page.isClosed()) this.pageOpenedCb?.(page, page.id, page === this.agentActive);
     }
   }
 
@@ -304,14 +345,24 @@ export class BrowserSession {
     this.app.resize(page.tabId, cssW, cssH, scale, zoom, screen);
   }
 
-  /** Serialize every browser action (agent + human) through one FIFO queue. */
-  run<T>(fn: () => Promise<T>): Promise<T> {
-    const result = this.queue.then(fn, fn);
+  /**
+   * Serialize browser actions (agent + human) on a tab through that tab's FIFO. `pageId`
+   * names the tab; without one it is the agent's current tab at the time of the call.
+   * Different tabs never wait for each other.
+   */
+  run<T>(fn: () => Promise<T>, pageId?: string): Promise<T> {
+    const key = pageId || this.agentActive?.id || '_';
+    const prev = this.queues.get(key) ?? Promise.resolve();
+    const result = prev.then(fn, fn);
     // Keep the chain alive but swallow settled state so one failure can't poison the queue.
-    this.queue = result.then(
+    const tail = result.then(
       () => undefined,
       () => undefined,
     );
+    this.queues.set(key, tail);
+    void tail.then(() => {
+      if (this.queues.get(key) === tail) this.queues.delete(key); // idle: forget it
+    });
     return result;
   }
 
@@ -321,8 +372,8 @@ export class BrowserSession {
     this.agentActivityAt = Date.now();
   }
 
-  private pushEvent(type: ActivityType, pageId: string, url: string): void {
-    const source: ActivityEvent['source'] = Date.now() - this.agentActivityAt < 3000 ? 'agent' : 'human';
+  private pushEvent(type: ActivityType, pageId: string, url: string, known?: ActivityEvent['source']): void {
+    const source: ActivityEvent['source'] = known ?? (Date.now() - this.agentActivityAt < 3000 ? 'agent' : 'human');
     this.events.push({ seq: ++this.eventSeq, time: new Date().toISOString(), type, pageId, url, source });
     if (this.events.length > 300) this.events.splice(0, this.events.length - 300);
   }
@@ -342,19 +393,27 @@ export class BrowserSession {
         pageId: p.id,
         url: p.url(),
         title: p.title(),
-        selected: p === this.active,
+        selected: p === this.agentActive,
+        humanViewing: p === this.humanActive,
         openedBy: this.agentPages.has(p) ? 'agent' : 'human',
       }));
   }
 
-  async newPage(url?: string, opts?: { background?: boolean }): Promise<PageInfo> {
-    this.markAgent();
+  /**
+   * Open a tab. By the agent (the default): it becomes the agent's current tab and counts
+   * as the agent's; `background` keeps it out of the human's view. By the human (the
+   * new-tab command, "open link in new tab", restoring saved tabs): `byAgent: false`, so it
+   * is theirs and the agent's target does not move.
+   */
+  async newPage(url?: string, opts?: { background?: boolean; byAgent?: boolean }): Promise<PageInfo> {
+    const byAgent = opts?.byAgent !== false;
+    if (byAgent) this.markAgent();
     const [w, h] = this.defaultSize;
-    const page = this.adopt(await this.app.openTab('about:blank', w, h));
-    this.agentPages.add(page);
+    const page = this.adopt(await this.app.openTab('about:blank', w, h, byAgent ? 'agent' : 'human'));
+    if (byAgent) this.agentPages.add(page);
     await this.prepPage(page); // fail-fast passkeys before navigating anywhere
     if (url) await page.goto(url).catch(() => undefined);
-    if (!opts?.background) this.setActive(page);
+    if (byAgent || !this.agentActive) this.setAgentTarget(page, byAgent ? 'agent' : 'human');
     this.pageOpenedCb?.(page, page.id, !opts?.background);
     this.pagesChangedCb?.();
     return {
@@ -362,28 +421,32 @@ export class BrowserSession {
       pageId: page.id,
       url: page.url(),
       title: page.title(),
-      selected: page === this.active,
-      openedBy: 'agent',
+      selected: page === this.agentActive,
+      humanViewing: page === this.humanActive,
+      openedBy: byAgent ? 'agent' : 'human',
     };
   }
 
   /** Size for tabs opened before any panel has measured itself. Panels correct it on attach. */
   defaultSize: [number, number] = [1280, 800];
 
-  async selectPage(pageId: string, bringToFront = true): Promise<void> {
+  /** Set the agent's current tab. The human's view moves only with bringToFront. */
+  async selectPage(pageId: string, bringToFront = false): Promise<void> {
     this.markAgent();
-    const page = this.pageById(pageId);
-    if (!page) throw new Error(`No page with id ${pageId}`);
-    this.setActive(page);
-    if (bringToFront) this.pageRevealCb?.(pageId); // reveal its VS Code tab so the human follows
+    const page = this.pageFor(pageId);
+    this.setAgentTarget(page, 'agent');
+    if (bringToFront) this.pageRevealCb?.(pageId);
   }
 
-  /** The human focused a page's panel: make it the agent's active page, WITHOUT
-   *  re-revealing — the panel is already the active editor tab, so firing the reveal
-   *  path would recurse. */
+  /** The human is looking at a page's panel. Recorded for list_pages and get_activity; it
+   *  does NOT retarget the agent, except when the agent has no tab at all. */
   async focusPage(pageId: string): Promise<void> {
     const page = this.pageById(pageId);
-    if (page) this.setActive(page);
+    if (!page || this.humanActive === page) return;
+    this.humanActive = page;
+    this.pushEvent('tab-activated', page.id, page.url(), 'human');
+    if (!this.agentActive || this.agentActive.isClosed()) this.agentActive = page;
+    this.pagesChangedCb?.();
   }
 
   /** Close a tab. The app's tabClosed event disposes its panel and picks a fallback. */
@@ -396,9 +459,10 @@ export class BrowserSession {
     type: 'url' | 'back' | 'forward' | 'reload',
     url?: string,
     timeout = 30000,
+    pageId?: string,
   ): Promise<{ url: string; title: string }> {
     this.markAgent();
-    const p = this.current();
+    const p = this.pageFor(pageId);
     if (type === 'url') {
       if (!url) throw new Error('navigate: url is required for type "url"');
       await p.goto(url, timeout);
@@ -414,17 +478,19 @@ export class BrowserSession {
   }
 
   /** Interactive elements with stable uids, optionally filtered. See snapshotScript. */
-  async takeSnapshot(opts: SnapshotOptions = {}): Promise<string> {
-    const p = this.current();
+  async takeSnapshot(opts: SnapshotOptions & OnPage = {}): Promise<string> {
+    const { pageId, ...filters } = opts;
+    const p = this.pageFor(pageId);
     const start = this.uidSeq.get(p) ?? 0;
-    const r = await p.evaluate<SnapshotResult>(snapshotScript, { ...opts, seqStart: start });
+    const r = await p.evaluate<SnapshotResult>(snapshotScript, { ...filters, seqStart: start });
     this.uidSeq.set(p, Math.max(start, r.seq));
     return r.text;
   }
 
   /** The page's visible text (and optionally its links). See readPageScript. */
-  async readPage(opts: ReadPageOptions = {}): Promise<ReadPageResult> {
-    return this.current().evaluate<ReadPageResult>(readPageScript, opts);
+  async readPage(opts: ReadPageOptions & OnPage = {}): Promise<ReadPageResult> {
+    const { pageId, ...rest } = opts;
+    return this.pageFor(pageId).evaluate<ReadPageResult>(readPageScript, rest);
   }
 
   private selectorFor(t: Target): string {
@@ -437,9 +503,9 @@ export class BrowserSession {
    * Scroll a target into view and return its viewport box in CSS px — the coordinate
    * space Input.* events use. Throws the same guidance puppeteer's handle lookup did.
    */
-  private async locate(t: Target): Promise<ElementBox> {
+  private async locate(p: AppPage, t: Target): Promise<ElementBox> {
     const selector = this.selectorFor(t);
-    const r = await this.current().evaluate<{ count: number; box?: ElementBox }>(
+    const r = await p.evaluate<{ count: number; box?: ElementBox }>(
       `(sel) => { ${FIND_JS}
         const hits = find(sel);
         if (!hits.length) return { count: 0 };
@@ -462,20 +528,20 @@ export class BrowserSession {
   }
 
   /** Flash the element in the human's panel so they can see what the agent touched. */
-  private emitHighlight(box: ElementBox): void {
-    if (this.highlightCb && box.width > 0 && box.height > 0) this.highlightCb(this.current().id, box);
+  private emitHighlight(p: AppPage, box: ElementBox): void {
+    if (this.highlightCb && box.width > 0 && box.height > 0) this.highlightCb(p.id, box);
   }
 
-  async click(opts: Target & { dblClick?: boolean }): Promise<void> {
+  async click(opts: Target & OnPage & { dblClick?: boolean }): Promise<void> {
     this.markAgent();
-    const box = await this.locate(opts);
-    this.emitHighlight(box);
+    const p = this.pageFor(opts.pageId);
+    const box = await this.locate(p, opts);
+    this.emitHighlight(p, box);
     // Real input (Input.dispatchMouseEvent through the tab's own debugger) — frameworks like
     // React treat it as genuine, unlike element.click() from evaluate_script. Approach along
     // a path first: a teleport-and-press skips every hover/mouseover the page expects (menus
     // that open on hover, for one) and is a shape no hand produces.
-    const at = await this.moveMouseTo(box);
-    const p = this.current();
+    const at = await this.moveMouseTo(p, box);
     const press = async (clickCount: number): Promise<void> => {
       await p.cdp('Input.dispatchMouseEvent', { type: 'mousePressed', x: at.x, y: at.y, button: 'left', buttons: 1, clickCount });
       await delay(40 + Math.random() * 70);
@@ -490,14 +556,13 @@ export class BrowserSession {
    * hover get the mousemove stream they wait for, and the motion has the shape of a hand.
    * Eased and slightly jittered: a straight constant-velocity line is its own tell.
    */
-  private async moveMouseTo(box: ElementBox, steps = 14): Promise<{ x: number; y: number }> {
+  private async moveMouseTo(p: AppPage, box: ElementBox, steps = 14): Promise<{ x: number; y: number }> {
     // Aim off-centre: every click landing on the exact centroid is not human either.
     const target = {
       x: box.x + box.width * (0.35 + Math.random() * 0.3),
       y: box.y + box.height * (0.35 + Math.random() * 0.3),
     };
-    const from = this.cursor ?? { x: target.x - 220, y: target.y - 160 };
-    const p = this.current();
+    const from = this.cursors.get(p) ?? { x: target.x - 220, y: target.y - 160 };
     for (let i = 1; i <= steps; i++) {
       const t = i / steps;
       // ease-in-out: slow to start, quick through the middle, settling at the end.
@@ -510,19 +575,17 @@ export class BrowserSession {
         button: 'none',
       });
     }
-    this.cursor = target;
+    this.cursors.set(p, target);
     return target;
   }
 
-  /** Where the cursor was left, so the next move starts from there rather than nowhere. */
-  private cursor: { x: number; y: number } | undefined;
-
-  async fill(opts: Target & { value: string }): Promise<void> {
+  async fill(opts: Target & OnPage & { value: string }): Promise<void> {
     this.markAgent();
+    const p = this.pageFor(opts.pageId);
     // A <select> has no keyboard path in an offscreen page (its popup cannot show): choose
     // the option by visible text or value and fire the events frameworks listen for.
     const selector = this.selectorFor(opts);
-    const picked = await this.current().evaluate<string | null | false>(
+    const picked = await p.evaluate<string | null | false>(
       `(sel, want) => { ${FIND_JS}
         const el = find(sel)[0];
         if (!el || el.tagName !== 'SELECT') return false;
@@ -541,13 +604,13 @@ export class BrowserSession {
     );
     if (picked === null) throw new Error(`no option matches "${opts.value}" in that <select> — take_snapshot lists its options`);
     if (typeof picked === 'string') {
-      this.emitHighlight(await this.locate(opts));
+      this.emitHighlight(p, await this.locate(p, opts));
       return;
     }
     // Focus with a real click, select whatever is there, then type over it: the page sees
     // exactly the events a person produces, so React-style controlled inputs update.
-    await this.click(opts);
-    await this.current().evaluate(
+    await this.click({ ...opts, pageId: p.id });
+    await p.evaluate(
       `(sel) => { ${FIND_JS}
         const el = find(sel)[0];
         if (!el) return;
@@ -557,20 +620,21 @@ export class BrowserSession {
       }`,
       this.selectorFor(opts),
     );
-    if (opts.value) await this.typeText(opts.value);
-    else await this.pressKey('Backspace', 'Backspace', 8);
+    if (opts.value) await this.typeText(opts.value, false, p.id);
+    else await this.pressKey(p, 'Backspace', 'Backspace', 8);
   }
 
-  async fillForm(elements: (Target & { value: string })[]): Promise<void> {
-    for (const e of elements) await this.fill(e);
+  async fillForm(elements: (Target & { value: string })[], pageId?: string): Promise<void> {
+    const p = this.pageFor(pageId);
+    for (const e of elements) await this.fill({ ...e, pageId: p.id });
   }
 
   /** Type into the focused element with real key events, one character at a time. */
-  async typeText(text: string, submitKey = false): Promise<void> {
-    const p = this.current();
+  async typeText(text: string, submitKey = false, pageId?: string): Promise<void> {
+    const p = this.pageFor(pageId);
     for (const ch of text) {
       if (ch === '\n') {
-        await this.pressKey('Enter', 'Enter', 13, '\r');
+        await this.pressKey(p, 'Enter', 'Enter', 13, '\r');
         continue;
       }
       const code = keyCodeFor(ch);
@@ -578,14 +642,13 @@ export class BrowserSession {
       await p.cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: ch, windowsVirtualKeyCode: code, nativeVirtualKeyCode: code });
       await delay(15 + Math.random() * 45);
     }
-    if (submitKey) await this.pressKey('Enter', 'Enter', 13, '\r');
+    if (submitKey) await this.pressKey(p, 'Enter', 'Enter', 13, '\r');
   }
 
   /** `code` is the DOM code string ("Enter"); `vk` the Windows virtual key. Parameter TYPES
    *  matter: a number where the protocol wants a string aborts the whole app inside
    *  Electron's deserializer (the app guards the hot-path commands, but stay typed). */
-  private async pressKey(key: string, code: string, vk: number, text?: string): Promise<void> {
-    const p = this.current();
+  private async pressKey(p: AppPage, key: string, code: string, vk: number, text?: string): Promise<void> {
     await p.cdp('Input.dispatchKeyEvent', { type: text ? 'keyDown' : 'rawKeyDown', key, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, ...(text ? { text, unmodifiedText: text } : {}) });
     await p.cdp('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk });
   }
@@ -598,12 +661,11 @@ export class BrowserSession {
    *
    * Call this WITHOUT wrapping it in run() (it queues its own reads).
    */
-  async waitFor(texts: string[], timeout = 15000): Promise<void> {
+  async waitFor(texts: string[], timeout = 15000, pageId?: string): Promise<void> {
+    const p = this.pageFor(pageId); // resolved once: the wait stays on this tab
     const deadline = Date.now() + timeout;
     for (;;) {
-      const body = await this.run(() =>
-        this.current().evaluate<string>(() => document.body?.innerText ?? '').catch(() => ''),
-      );
+      const body = await this.run(() => p.evaluate<string>(() => document.body?.innerText ?? '').catch(() => ''), p.id);
       if (texts.every((t) => body.includes(t))) return;
       if (Date.now() > deadline) {
         throw new Error(`Timed out after ${timeout}ms waiting for: ${texts.join(', ')}`);
@@ -612,18 +674,18 @@ export class BrowserSession {
     }
   }
 
-  async screenshot(opts?: {
+  async screenshot(opts?: OnPage & {
     format?: 'png' | 'jpeg' | 'webp';
     fullPage?: boolean;
     uid?: string;
   }): Promise<string> {
     const format = opts?.format ?? 'png';
-    const p = this.current();
+    const p = this.pageFor(opts?.pageId);
     const params: Record<string, unknown> = { format, captureBeyondViewport: false };
     if (format === 'jpeg') params.quality = 85;
     if (opts?.uid) {
-      const box = await this.locate({ uid: opts.uid });
-      this.emitHighlight(box);
+      const box = await this.locate(p, { uid: opts.uid });
+      this.emitHighlight(p, box);
       // Clip in document coordinates: the box is viewport-relative, so add the scroll offset.
       const scroll = await p.evaluate<{ x: number; y: number }>(() => ({ x: window.scrollX, y: window.scrollY }));
       params.clip = { x: box.x + scroll.x, y: box.y + scroll.y, width: Math.max(1, box.width), height: Math.max(1, box.height), scale: 1 };
@@ -640,16 +702,14 @@ export class BrowserSession {
   /** What the page's console said: log lines, warnings, uncaught exceptions, and the
    *  browser's own resource-load errors. `pageId` defaults to the active page. */
   async consoleMessages(opts: { pageId?: string; since?: number; limit?: number; level?: string } = {}): Promise<{ pageId: string; entries: ConsoleEntry[]; latest: number }> {
-    const page = opts.pageId ? this.pageById(opts.pageId) : this.current();
-    if (!page) throw new Error(`No page with id ${opts.pageId}`);
+    const page = this.pageFor(opts.pageId);
     const r = await this.app.consoleMessages(page.tabId, opts.since ?? 0, { limit: opts.limit, level: opts.level });
     return { pageId: page.id, ...r };
   }
 
   /** The tab's request log: method, URL, status or error, timing. No bodies, no headers. */
   async networkRequests(opts: { pageId?: string; since?: number; limit?: number; failedOnly?: boolean; urlContains?: string; minStatus?: number } = {}): Promise<{ pageId: string; entries: RequestEntry[]; latest: number; pending: number }> {
-    const page = opts.pageId ? this.pageById(opts.pageId) : this.current();
-    if (!page) throw new Error(`No page with id ${opts.pageId}`);
+    const page = this.pageFor(opts.pageId);
     const { pageId: _p, since, ...rest } = opts;
     const r = await this.app.networkRequests(page.tabId, since ?? 0, rest);
     return { pageId: page.id, ...r };
@@ -662,9 +722,10 @@ export class BrowserSession {
 
   /** Fill a saved login into fields the agent chose; the app supplies the secret and checks
    *  the page is on that login's site. The agent only learns what got filled. */
-  fillCredentials(opts: { usernameUid?: string; passwordUid?: string; username?: string }) {
+  fillCredentials(opts: OnPage & { usernameUid?: string; passwordUid?: string; username?: string }) {
     this.markAgent();
-    return this.app.vaultFill(this.current().tabId, opts);
+    const { pageId, ...rest } = opts;
+    return this.app.vaultFill(this.pageFor(pageId).tabId, rest);
   }
 
   /** Ask the human to grant this workspace a login for a site. Answered in the app. */
@@ -678,9 +739,9 @@ export class BrowserSession {
     return this.app.scrub(text);
   }
 
-  async evaluateScript(fn: string, args: unknown[] = []): Promise<unknown> {
+  async evaluateScript(fn: string, args: unknown[] = [], pageId?: string): Promise<unknown> {
     // The function expression is evaluated in the page's global scope with the JSON args.
-    return this.current().evaluate(fn, ...args);
+    return this.pageFor(pageId).evaluate(fn, ...args);
   }
 
   /** Current pages (stable id + URL) in creation order, synchronously — for persisting the

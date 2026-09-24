@@ -216,8 +216,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (s.pageEntries().length > 0) return; // the app still had our tabs
       const urls = tabs.map((t) => t.url).filter((u) => u && u !== 'about:blank');
       if (urls.length) log(`Restoring ${urls.length} saved tab(s).`);
-      await s.run(() => s.newPage(urls[0] ?? 'about:blank'));
-      for (const u of urls.slice(1)) await s.run(() => s.newPage(u, { background: true }));
+      // Restored tabs are the human's: they must not read as the agent's to tidy up.
+      await s.run(() => s.newPage(urls[0] ?? 'about:blank', { byAgent: false }));
+      for (const u of urls.slice(1)) await s.run(() => s.newPage(u, { background: true, byAgent: false }));
     } catch (err) {
       log(`Tab restore failed: ${String(err)}`);
     } finally {
@@ -376,7 +377,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     vscode.commands.registerCommand('cobrowser.newTab', async () => {
       const s = await getSession();
-      await s.newPage('about:blank');
+      await s.newPage('about:blank', { byAgent: false });
     }),
     // Browser-chrome shortcuts, bound in package.json while a cobrowser panel is active.
     vscode.commands.registerCommand('cobrowser.closeTab', () => BrowserPanel.active?.close()),

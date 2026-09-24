@@ -307,7 +307,7 @@ export class BrowserPanel {
     if (shouldStream) {
       // Becoming visible: make this the agent's current page too, and re-verify the
       // viewport — it may be stale from a failed apply while hidden.
-      await this.session.run(() => this.session.focusPage(this.id)).catch(() => undefined);
+      await this.session.run(() => this.session.focusPage(this.id), this.id).catch(() => undefined);
       this.appliedKey = '';
       void this.panel.webview.postMessage({ type: 'extension.remeasure' });
       this.startStream();
@@ -351,7 +351,7 @@ export class BrowserPanel {
     const key = `${cssW}x${cssH}@${scale}z${zoom}#${screen?.width ?? 0}x${screen?.height ?? 0}`;
     if (key === this.appliedKey) return;
     try {
-      await this.session.run(() => this.session.setViewport(this.page, cssW, cssH, scale, zoom, screen));
+      await this.session.run(() => this.session.setViewport(this.page, cssW, cssH, scale, zoom, screen), this.id);
       this.appliedKey = key; // only after success, so a transient failure retries
     } catch {
       this.appliedKey = '';
@@ -361,7 +361,7 @@ export class BrowserPanel {
   /** Keyboard-shortcut commands act on the active panel. */
   async navigate(kind: 'back' | 'forward' | 'reload'): Promise<void> {
     const go = kind === 'back' ? () => this.page.goBack() : kind === 'forward' ? () => this.page.goForward() : () => this.page.reload();
-    await this.session.run(() => go().then(() => undefined).catch(() => undefined)).catch(() => undefined);
+    await this.session.run(() => go().then(() => undefined).catch(() => undefined), this.id).catch(() => undefined);
   }
 
   close(): void {
@@ -438,7 +438,8 @@ export class BrowserPanel {
           case 'extension.openlink': {
             const url = (m.params as { url?: string } | undefined)?.url;
             if (url) {
-              await this.session.run(() => this.session.newPage(url).then(() => undefined));
+              // The human's own "open link in new tab": theirs, and the agent stays put.
+              await this.session.run(() => this.session.newPage(url, { byAgent: false }).then(() => undefined), this.id);
             }
             break;
           }
@@ -475,7 +476,7 @@ export class BrowserPanel {
             break;
           case 'extension.navigate': {
             const p = (m.params ?? {}) as { url?: string };
-            if (p.url) await this.session.run(() => this.page.goto(p.url!).then(() => undefined));
+            if (p.url) await this.session.run(() => this.page.goto(p.url!).then(() => undefined), this.id);
             break;
           }
         }
@@ -565,7 +566,7 @@ export class BrowserPanel {
     // session teardown (window reload), leave the pages open in the app so the reconnect
     // finds them again.
     if (!this.session.isDisposing) {
-      void this.session.run(() => this.session.closePage(this.id)).catch(() => undefined);
+      void this.session.run(() => this.session.closePage(this.id), this.id).catch(() => undefined);
     }
     for (const d of this.disposables) d.dispose();
   }

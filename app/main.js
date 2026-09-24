@@ -695,6 +695,9 @@ class Tab {
     this.id = `t${nextTabId++}`;
     this.subscribers = new Set(); // sockets receiving frames
     this.opener = opts.opener;
+    /** Who opened the tab ('agent' | 'human'), so the agent's own tabs stay its own to tidy
+     *  up after an editor reload. */
+    this.by = opts.by === 'agent' ? 'agent' : 'human';
     this.log = new TabLog();
     /** Out-of-process iframe sessions, by frame id (see routePoint). */
     this.frameSessions = new Map();
@@ -1103,7 +1106,7 @@ class Tab {
 
   info() {
     const wc = this.win.webContents;
-    return { tabId: this.id, url: wc.isDestroyed() ? '' : wc.getURL(), title: wc.isDestroyed() ? '' : wc.getTitle(), ...(this.opener ? { opener: this.opener } : {}) };
+    return { tabId: this.id, url: wc.isDestroyed() ? '' : wc.getURL(), title: wc.isDestroyed() ? '' : wc.getTitle(), by: this.by, ...(this.opener ? { opener: this.opener } : {}) };
   }
 
   close() {
@@ -1293,6 +1296,7 @@ async function handle(ws, state, m) {
       if (!t) return reply({ entries: [], latest: 0, pending: 0, error: 'no such tab' });
       return reply(t.log.requestsSince(Number(m.since) || 0, { limit: m.limit, failedOnly: !!m.failedOnly, urlContains: m.urlContains, minStatus: m.minStatus }));
     }
+    case 'markTab': { const t = w.tabs.get(m.tabId); if (t) t.by = m.by === 'agent' ? 'agent' : 'human'; return; }
     case 'closeTab': return void w.tabs.get(m.tabId)?.close();
     case 'closeAll': return void w.closeAll();
     case 'resize': return void w.tabs.get(m.tabId)?.resize(m.width, m.height, m.scale, m.zoom, m.screen);

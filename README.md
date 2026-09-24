@@ -121,6 +121,8 @@ release cannot drag everyone backwards.
 
 `list_pages`, `new_page`, `select_page`, `close_page`, `navigate_page`, `read_page`, `take_snapshot`, `take_screenshot`, `click`, `fill`, `fill_form`, `type_text`, `wait_for`, `evaluate_script`, `list_console_messages`, `list_network_requests`, `list_credentials`, `fill_credentials`, `request_credential`, `get_activity`, `get_editor_layout`.
 
+Every page tool takes an optional `pageId`, and the agent and the human each have their own current tab. Tabs are independent offscreen windows, so the agent can work in a background tab while you read another: switching tabs in your editor never retargets the agent, and the agent switching tabs (`select_page`) never moves your view unless it passes `bringToFront`. `list_pages` reports both (`selected` is the agent's tab, `humanViewing` yours), actions on different tabs run in parallel while actions on one tab stay in order, and the app remembers which tabs the agent opened, so they stay the agent's to tidy up across reloads.
+
 `read_page` is the cheap way to read: the page's visible text, optionally one region and its links. `take_snapshot` is for acting: visible interactive elements (link destinations, input values, select options, open shadow roots) each with a `[uid]` for `click`/`fill`, filterable by region, text, role and label, capped at 200 by default. **uids are stable**: an element keeps its uid for as long as it exists and uids never repeat within a tab, so agents snapshot again only after a navigation or when new UI appears. Password fields show as `(filled)`, never their value.
 
 ## Develop it

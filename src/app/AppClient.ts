@@ -29,6 +29,8 @@ export interface AppTabInfo {
   title: string;
   /** The tab that opened this one (a site popup / target=_blank), if any. */
   opener?: string;
+  /** Who opened it, kept by the app so it survives an editor reload. */
+  by?: 'agent' | 'human';
 }
 
 export interface AppFrame {
@@ -155,8 +157,13 @@ export class AppConnection {
     });
   }
 
-  async openTab(url: string, width: number, height: number): Promise<AppTabInfo> {
-    return (await this.request({ type: 'openTab', url, width, height })) as unknown as AppTabInfo;
+  async openTab(url: string, width: number, height: number, by: 'agent' | 'human' = 'human'): Promise<AppTabInfo> {
+    return (await this.request({ type: 'openTab', url, width, height, by })) as unknown as AppTabInfo;
+  }
+
+  /** Record who a tab belongs to (a popup the agent's own click opened). */
+  markTab(tabId: string, by: 'agent' | 'human'): void {
+    this.send({ type: 'markTab', tabId, by });
   }
 
   async listTabs(): Promise<AppTabInfo[]> {

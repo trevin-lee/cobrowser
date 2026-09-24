@@ -8,6 +8,14 @@ type GetSession = () => Promise<BrowserSession>;
 
 const asText = (text: string) => ({ content: [{ type: 'text' as const, text }] });
 
+/** Every page tool can act on any open tab, not just the agent's current one. */
+const pageId = z
+  .string()
+  .optional()
+  .describe(
+    "Act on this tab (a pageId from list_pages) instead of your current one. Does not change your current tab or the human's view. Always pass it when another agent may be using this browser.",
+  );
+
 /**
  * Register the cobrowser tool surface onto a fresh McpServer. Tool names/params mirror
  * chrome-devtools-mcp so the agent experience is consistent. Every handler routes through
@@ -18,7 +26,7 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'list_pages',
     {
       description:
-        "List open browser tabs. Each has openedBy: 'agent' (you or an earlier agent turn opened it) or 'human'. The human sees every tab as an editor tab, so keep the set small and tidy: before opening anything, reuse an 'agent' tab you are no longer using (navigate_page), and close_page any 'agent' tabs left over from finished work. Never close 'human' tabs unless asked.",
+        "List open browser tabs. `selected` is YOUR current tab (what tools act on without a pageId); `humanViewing` is the tab the human is looking at — they are independent, and the human switching tabs does not move you. openedBy is 'agent' (you, an earlier agent turn, or a link you clicked) or 'human'. The human sees every tab as an editor tab, so keep the set small and tidy: reuse an 'agent' tab you are done with (navigate_page) before opening another, and close_page 'agent' tabs left over from finished work. Never close 'human' tabs unless asked.",
       inputSchema: {},
     },
     async () => {
@@ -45,7 +53,7 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'new_page',
     {
       description:
-        "Open a new tab, optionally navigating to a URL. Becomes active unless background. Every tab you open is a tab in the human's editor, and leaving them behind is the top complaint — so: prefer navigate_page on the current tab when you are simply following a link; reuse a tab you opened earlier instead of opening another (list_pages shows which are yours via openedBy); keep at most one tab per task; and close_page your tabs the moment their work is done. Call get_editor_layout if you are unsure how crowded their editor already is.",
+        "Open a new tab, optionally at a URL. It becomes your current tab and returns its pageId. It is shown in the human's editor unless background: true — use background when you are working on your own so you do not pull their view away. Every tab you open is a tab in the human's editor, and leaving them behind is the top complaint — so: prefer navigate_page on your current tab when you are simply following a link; reuse a tab you opened earlier instead of opening another (list_pages shows which are yours via openedBy); keep at most one tab per task; and close_page your tabs the moment their work is done.",
       inputSchema: { url: z.string().optional(), background: z.boolean().optional() },
     },
     async ({ url, background }) => {
@@ -58,13 +66,14 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
   server.registerTool(
     'select_page',
     {
-      description: 'Make a page active (also becomes the screencast target).',
+      description:
+        "Make a tab your current tab: the one tools act on when not given a pageId. It does NOT move the human's view unless bringToFront: true (they may be reading another tab — only bring it to the front when you want them to look). For a single action in another tab, pass pageId to that tool instead.",
       inputSchema: { pageId: z.string(), bringToFront: z.boolean().optional() },
     },
-    async ({ pageId, bringToFront }) => {
+    async ({ pageId: id, bringToFront }) => {
       const s = await getSession();
-      await s.run(() => s.selectPage(pageId, bringToFront ?? true));
-      return asText(`selected page ${pageId}`);
+      await s.run(() => s.selectPage(id, bringToFront ?? false), id);
+      return asText(`your current tab is now ${id}${bringToFront ? ' (shown to the human)' : ''}`);
     },
   );
   server.registerTool(
@@ -74,7 +83,7 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
         "Close a tab by pageId. Use it routinely: when a task ends, close every tab you opened for it (list_pages marks yours with openedBy: 'agent') so the human's editor is left as you found it. Do not close 'human' tabs unless asked. Refuses to close the last remaining tab.",
       inputSchema: { pageId: z.string() },
     },
-    async ({ pageId }) => {
+    async ({ pageId: id }) => {
       const s = await getSession();
       // Refuse to close the last tab: for a human, closing the final editor tab
       // intentionally quits the browser, but an agent doing so mid-task would
@@ -83,8 +92,8 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
       if (pages.length <= 1) {
         return asText('refused: cannot close the last remaining tab (open another first)');
       }
-      await s.run(() => s.closePage(pageId));
-      return asText(`closed page ${pageId}`);
+      await s.run(() => s.closePage(id), id);
+      return asText(`closed page ${id}`);
     },
   );
 
@@ -92,16 +101,17 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'navigate_page',
     {
       description:
-        'Navigate the active page. Returns the SETTLED {url,title} after load (not the requested url), so redirects/failures are detectable.',
+        'Navigate your current tab (or pageId). Returns the SETTLED {url,title} after load (not the requested url), so redirects/failures are detectable.',
       inputSchema: {
         type: z.enum(['url', 'back', 'forward', 'reload']),
         url: z.string().optional(),
         timeout: z.number().optional(),
+        pageId,
       },
     },
-    async ({ type, url, timeout }) => {
+    async ({ type, url, timeout, pageId: id }) => {
       const s = await getSession();
-      const landed = await s.run(() => s.navigate(type, url, timeout));
+      const landed = await s.run(() => s.navigate(type, url, timeout, id), id);
       return asText(JSON.stringify({ requested: url ?? null, url: landed.url, title: landed.title }));
     },
   );
@@ -110,19 +120,20 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'take_snapshot',
     {
       description:
-        "The things you can ACT on in the active page: visible interactive elements (links with their destination, buttons, inputs with their current value, selects with their options, open shadow roots included), each with a [uid] for click/fill. uids are STABLE — an element keeps its uid as long as it exists — so do not re-snapshot after every action: snapshot again only after a navigation, when new UI appears that you need, or when a click reports a uid is gone. Keep it small: withinSelector (e.g. \"form\", \"[role=dialog]\", \"main\"), textContains (matches labels; with a \"/\" it matches link destinations, e.g. \"/orders/\"), role (\"button\", \"link\", \"input\"), labeledOnly. To READ the page use read_page instead; to pull many values at once use evaluate_script.",
+        "The things you can ACT on in your current tab (or pageId): visible interactive elements (links with their destination, buttons, inputs with their current value, selects with their options, open shadow roots included), each with a [uid] for click/fill. uids are STABLE — an element keeps its uid as long as it exists — so do not re-snapshot after every action: snapshot again only after a navigation, when new UI appears that you need, or when a click reports a uid is gone. Keep it small: withinSelector (e.g. \"form\", \"[role=dialog]\", \"main\"), textContains (matches labels; with a \"/\" it matches link destinations, e.g. \"/orders/\"), role (\"button\", \"link\", \"input\"), labeledOnly. To READ the page use read_page instead; to pull many values at once use evaluate_script.",
       inputSchema: {
         withinSelector: z.string().optional(),
         textContains: z.string().optional(),
         role: z.string().optional(),
         labeledOnly: z.boolean().optional(),
         limit: z.number().optional(),
+        pageId,
       },
     },
     async (opts) => {
       const s = await getSession();
       // Scrubbed like every page read: a field the vault filled must never come back as text.
-      return asText(await s.scrub(await s.run(() => s.takeSnapshot(opts))));
+      return asText(await s.scrub(await s.run(() => s.takeSnapshot(opts), opts.pageId)));
     },
   );
 
@@ -130,32 +141,34 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'read_page',
     {
       description:
-        "What the active page SAYS: its visible text, cheaply — the default way to read content, check a result, or find what to do next. Far smaller than take_snapshot and gives no uids; call take_snapshot (filtered) only when you need to click or type. withinSelector reads one region (\"main\", \"table\", \"[role=dialog]\"); links: true adds each link's text and destination; maxChars caps the text (default 12000, and says when it cut).",
+        "What your current tab (or pageId) SAYS: its visible text, cheaply — the default way to read content, check a result, or find what to do next. Far smaller than take_snapshot and gives no uids; call take_snapshot (filtered) only when you need to click or type. withinSelector reads one region (\"main\", \"table\", \"[role=dialog]\"); links: true adds each link's text and destination; maxChars caps the text (default 12000, and says when it cut).",
       inputSchema: {
         withinSelector: z.string().optional(),
         maxChars: z.number().optional(),
         links: z.boolean().optional(),
+        pageId,
       },
     },
     async (opts) => {
       const s = await getSession();
-      return asText(await s.scrub(JSON.stringify(await s.run(() => s.readPage(opts)), null, 2)));
+      return asText(await s.scrub(JSON.stringify(await s.run(() => s.readPage(opts), opts.pageId), null, 2)));
     },
   );
 
   server.registerTool(
     'take_screenshot',
     {
-      description: 'Screenshot the active page (or a single element by uid). Returns an image.',
+      description: 'Screenshot your current tab (or pageId), or a single element by uid. Returns an image. Works on tabs the human is not looking at.',
       inputSchema: {
         format: z.enum(['png', 'jpeg', 'webp']).optional(),
         fullPage: z.boolean().optional(),
         uid: z.string().optional(),
+        pageId,
       },
     },
-    async ({ format, fullPage, uid }) => {
+    async ({ format, fullPage, uid, pageId: id }) => {
       const s = await getSession();
-      const data = await s.run(() => s.screenshot({ format, fullPage, uid }));
+      const data = await s.run(() => s.screenshot({ format, fullPage, uid, pageId: id }), id);
       return { content: [{ type: 'image' as const, data, mimeType: `image/${format ?? 'png'}` }] };
     },
   );
@@ -165,11 +178,11 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     {
       description:
         'Click an element by uid (from take_snapshot; valid while the element exists) OR a CSS selector. A real input click (the cursor moves there, presses, releases) that frameworks (React etc.) accept as genuine — unlike element.click() from evaluate_script, which fires untrusted events sites may ignore. Check the outcome with read_page, not a fresh full snapshot.',
-      inputSchema: { uid: z.string().optional(), selector: z.string().optional(), dblClick: z.boolean().optional() },
+      inputSchema: { uid: z.string().optional(), selector: z.string().optional(), dblClick: z.boolean().optional(), pageId },
     },
-    async ({ uid, selector, dblClick }) => {
+    async ({ uid, selector, dblClick, pageId: id }) => {
       const s = await getSession();
-      await s.run(() => s.click({ uid, selector, dblClick }));
+      await s.run(() => s.click({ uid, selector, dblClick, pageId: id }), id);
       return asText(`clicked ${uid ?? selector}`);
     },
   );
@@ -179,11 +192,11 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     {
       description:
         "Set the value of an input/textarea by uid (from take_snapshot) OR a CSS selector, using real keystrokes. For a <select>, pass the OPTION'S VISIBLE TEXT (or its value): it is chosen and the input/change events fired, since a dropdown cannot open in an offscreen page.",
-      inputSchema: { uid: z.string().optional(), selector: z.string().optional(), value: z.string() },
+      inputSchema: { uid: z.string().optional(), selector: z.string().optional(), value: z.string(), pageId },
     },
-    async ({ uid, selector, value }) => {
+    async ({ uid, selector, value, pageId: id }) => {
       const s = await getSession();
-      await s.run(() => s.fill({ uid, selector, value }));
+      await s.run(() => s.fill({ uid, selector, value, pageId: id }), id);
       return asText(`filled ${uid ?? selector}`);
     },
   );
@@ -196,11 +209,12 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
         elements: z.array(
           z.object({ uid: z.string().optional(), selector: z.string().optional(), value: z.string() }),
         ),
+        pageId,
       },
     },
-    async ({ elements }) => {
+    async ({ elements, pageId: id }) => {
       const s = await getSession();
-      await s.run(() => s.fillForm(elements));
+      await s.run(() => s.fillForm(elements, id), id);
       return asText(`filled ${elements.length} field(s)`);
     },
   );
@@ -209,11 +223,11 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'type_text',
     {
       description: 'Type text into the currently-focused element; optionally press Enter.',
-      inputSchema: { text: z.string(), submitKey: z.boolean().optional() },
+      inputSchema: { text: z.string(), submitKey: z.boolean().optional(), pageId },
     },
-    async ({ text, submitKey }) => {
+    async ({ text, submitKey, pageId: id }) => {
       const s = await getSession();
-      await s.run(() => s.typeText(text, submitKey));
+      await s.run(() => s.typeText(text, submitKey, id), id);
       return asText(`typed ${text.length} char(s)`);
     },
   );
@@ -222,13 +236,13 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'wait_for',
     {
       description: 'Block until all given strings appear in the page text.',
-      inputSchema: { text: z.array(z.string()), timeout: z.number().optional() },
+      inputSchema: { text: z.array(z.string()), timeout: z.number().optional(), pageId },
     },
-    async ({ text, timeout }) => {
+    async ({ text, timeout, pageId: id }) => {
       const s = await getSession();
       // No outer run(): waitFor queues each poll itself and frees the queue
       // between polls, so a long wait doesn't freeze human input / other actions.
-      await s.waitFor(text, timeout);
+      await s.waitFor(text, timeout, id);
       return asText(`found: ${text.join(', ')}`);
     },
   );
@@ -237,12 +251,12 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'evaluate_script',
     {
       description:
-        'Evaluate a JS function expression in the active page and get JSON back, e.g. "() => document.title". THE tool for bulk reads: collecting 50 order rows or every link in a table is ONE call — `() => [...document.querySelectorAll(\'tr\')].map(r => r.innerText)` — not a snapshot and 50 clicks. `args` are plain JSON passed to the function. Synthetic .click()/dispatchEvent from here is NOT trusted input (React etc. may ignore it) — use click/fill by uid for real interactions.',
-      inputSchema: { function: z.string(), args: z.array(z.any()).optional() },
+        'Evaluate a JS function expression in your current tab (or pageId) and get JSON back, e.g. "() => document.title". THE tool for bulk reads: collecting 50 order rows or every link in a table is ONE call — `() => [...document.querySelectorAll(\'tr\')].map(r => r.innerText)` — not a snapshot and 50 clicks. `args` are plain JSON passed to the function. Synthetic .click()/dispatchEvent from here is NOT trusted input (React etc. may ignore it) — use click/fill by uid for real interactions.',
+      inputSchema: { function: z.string(), args: z.array(z.any()).optional(), pageId },
     },
-    async ({ function: fn, args }) => {
+    async ({ function: fn, args, pageId: id }) => {
       const s = await getSession();
-      const result = await s.run(() => s.evaluateScript(fn, args ?? []));
+      const result = await s.run(() => s.evaluateScript(fn, args ?? [], id), id);
       // Never hand a filled password back: the vault scrubs its own values out of the text.
       return asText(await s.scrub(typeof result === 'string' ? result : JSON.stringify(result)));
     },
@@ -252,9 +266,9 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'list_console_messages',
     {
       description:
-        "What the page's console said: console.log/warn/error output, uncaught exceptions, and the browser's own resource-load errors (\"Failed to load resource: … 404\"). THE tool for \"why isn't this site working\": check it after a click or submit that did nothing. Defaults to the active page; pass `level: \"error\"` for errors only, `since` (the `latest` from a prior call) for only newer lines. Each entry carries the pageUrl it was logged on.",
+        "What the page's console said: console.log/warn/error output, uncaught exceptions, and the browser's own resource-load errors (\"Failed to load resource: … 404\"). THE tool for \"why isn't this site working\": check it after a click or submit that did nothing. Defaults to your current tab; pass `level: \"error\"` for errors only, `since` (the `latest` from a prior call) for only newer lines. Each entry carries the pageUrl it was logged on.",
       inputSchema: {
-        pageId: z.string().optional(),
+        pageId,
         since: z.number().optional(),
         limit: z.number().optional(),
         level: z.enum(['error', 'warning', 'all']).optional(),
@@ -271,9 +285,9 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'list_network_requests',
     {
       description:
-        "The page's request log: method, URL, HTTP status (or the network error), content type and timing, for documents, XHR/fetch, scripts, images — no bodies or headers. Use it to see what a form submit or API call actually returned (a 401, a 500, a CORS block, a request that never completed — `pending` counts those). Defaults to the active page; `failedOnly` keeps errors and 4xx/5xx; `urlContains` filters by URL; `since` (the `latest` from a prior call) returns only newer requests.",
+        "The page's request log: method, URL, HTTP status (or the network error), content type and timing, for documents, XHR/fetch, scripts, images — no bodies or headers. Use it to see what a form submit or API call actually returned (a 401, a 500, a CORS block, a request that never completed — `pending` counts those). Defaults to your current tab; `failedOnly` keeps errors and 4xx/5xx; `urlContains` filters by URL; `since` (the `latest` from a prior call) returns only newer requests.",
       inputSchema: {
-        pageId: z.string().optional(),
+        pageId,
         since: z.number().optional(),
         limit: z.number().optional(),
         failedOnly: z.boolean().optional(),
@@ -310,11 +324,12 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
         usernameUid: z.string().optional(),
         passwordUid: z.string().optional(),
         username: z.string().optional(),
+        pageId,
       },
     },
     async (opts) => {
       const s = await getSession();
-      return asText(JSON.stringify(await s.run(() => s.fillCredentials(opts))));
+      return asText(JSON.stringify(await s.run(() => s.fillCredentials(opts), opts.pageId)));
     },
   );
 
