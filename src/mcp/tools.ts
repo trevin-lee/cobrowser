@@ -110,12 +110,36 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'take_snapshot',
     {
       description:
-        'Return an interactive-element text tree of the active page. Each node has a [uid] used by click/fill. uids expire on any DOM change — re-snapshot before reusing them.',
-      inputSchema: {},
+        "The things you can ACT on in the active page: visible interactive elements (links with their destination, buttons, inputs with their current value, selects with their options, open shadow roots included), each with a [uid] for click/fill. uids are STABLE — an element keeps its uid as long as it exists — so do not re-snapshot after every action: snapshot again only after a navigation, when new UI appears that you need, or when a click reports a uid is gone. Keep it small: withinSelector (e.g. \"form\", \"[role=dialog]\", \"main\"), textContains (matches labels; with a \"/\" it matches link destinations, e.g. \"/orders/\"), role (\"button\", \"link\", \"input\"), labeledOnly. To READ the page use read_page instead; to pull many values at once use evaluate_script.",
+      inputSchema: {
+        withinSelector: z.string().optional(),
+        textContains: z.string().optional(),
+        role: z.string().optional(),
+        labeledOnly: z.boolean().optional(),
+        limit: z.number().optional(),
+      },
     },
-    async () => {
+    async (opts) => {
       const s = await getSession();
-      return asText(await s.run(() => s.takeSnapshot()));
+      // Scrubbed like every page read: a field the vault filled must never come back as text.
+      return asText(await s.scrub(await s.run(() => s.takeSnapshot(opts))));
+    },
+  );
+
+  server.registerTool(
+    'read_page',
+    {
+      description:
+        "What the active page SAYS: its visible text, cheaply — the default way to read content, check a result, or find what to do next. Far smaller than take_snapshot and gives no uids; call take_snapshot (filtered) only when you need to click or type. withinSelector reads one region (\"main\", \"table\", \"[role=dialog]\"); links: true adds each link's text and destination; maxChars caps the text (default 12000, and says when it cut).",
+      inputSchema: {
+        withinSelector: z.string().optional(),
+        maxChars: z.number().optional(),
+        links: z.boolean().optional(),
+      },
+    },
+    async (opts) => {
+      const s = await getSession();
+      return asText(await s.scrub(JSON.stringify(await s.run(() => s.readPage(opts)), null, 2)));
     },
   );
 
@@ -140,7 +164,7 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'click',
     {
       description:
-        'Click an element by uid (from take_snapshot) OR a CSS selector. A real input click (the cursor moves there, presses, releases) that frameworks (React etc.) accept as genuine — unlike element.click() from evaluate_script, which fires untrusted events sites may ignore.',
+        'Click an element by uid (from take_snapshot; valid while the element exists) OR a CSS selector. A real input click (the cursor moves there, presses, releases) that frameworks (React etc.) accept as genuine — unlike element.click() from evaluate_script, which fires untrusted events sites may ignore. Check the outcome with read_page, not a fresh full snapshot.',
       inputSchema: { uid: z.string().optional(), selector: z.string().optional(), dblClick: z.boolean().optional() },
     },
     async ({ uid, selector, dblClick }) => {
@@ -213,7 +237,7 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'evaluate_script',
     {
       description:
-        'Escape hatch: evaluate a JS function expression in the active page, e.g. "() => document.title". `args` are plain JSON passed to the function. NOTE: synthetic .click()/dispatchEvent from here is NOT trusted input (React etc. may ignore it) — use click/fill by uid (from take_snapshot) for real interactions.',
+        'Evaluate a JS function expression in the active page and get JSON back, e.g. "() => document.title". THE tool for bulk reads: collecting 50 order rows or every link in a table is ONE call — `() => [...document.querySelectorAll(\'tr\')].map(r => r.innerText)` — not a snapshot and 50 clicks. `args` are plain JSON passed to the function. Synthetic .click()/dispatchEvent from here is NOT trusted input (React etc. may ignore it) — use click/fill by uid for real interactions.',
       inputSchema: { function: z.string(), args: z.array(z.any()).optional() },
     },
     async ({ function: fn, args }) => {

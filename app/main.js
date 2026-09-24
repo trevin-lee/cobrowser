@@ -340,7 +340,7 @@ async function fillCredentials(tab, { usernameUid, passwordUid, username }) {
   for (const [uid, value, label] of [[usernameUid, entry.username, 'username'], [passwordUid, entry.password, 'password']]) {
     if (!uid || !value) continue;
     const { result } = await dbg.sendCommand('Runtime.evaluate', {
-      expression: `(() => { const el = document.querySelector('[data-cobrowser-uid=${JSON.stringify(String(uid))}]'); if (!el) return false; el.focus(); if (el.select) el.select(); return true; })()`,
+      expression: `(() => { const sel = '[data-cobrowser-uid=${JSON.stringify(String(uid))}]'; let el = document.querySelector(sel); const visit = (root, d) => { for (const n of root.querySelectorAll('*')) { if (el) return; if (n.shadowRoot) { el = n.shadowRoot.querySelector(sel); if (!el && d < 8) visit(n.shadowRoot, d + 1); } } }; if (!el) visit(document, 0); if (!el) return false; el.focus(); if (el.select) el.select(); return true; })()`,
       returnByValue: true,
     });
     if (!result.value) return { filled, error: `uid ${uid} not found — take a fresh snapshot` };

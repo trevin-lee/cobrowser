@@ -1,6 +1,7 @@
 import type { AppConnection, AppTabInfo, ConsoleEntry, RequestEntry, ScreenInfo } from '../app/AppClient';
 import { AppPage } from './AppPage';
-import { snapshotScript } from './snapshot';
+import { FIND_JS, readPageScript, snapshotScript } from './snapshot';
+import type { ReadPageOptions, ReadPageResult, SnapshotOptions, SnapshotResult } from './snapshot';
 
 export interface PageInfo {
   index: number;
@@ -86,6 +87,8 @@ export class BrowserSession {
   private agentPages = new WeakSet<AppPage>();
   /** Pages that already got their passkey setup (idempotent per page). */
   private prepped = new WeakSet<AppPage>();
+  /** The highest uid minted per page, so uids never repeat within a tab across documents. */
+  private uidSeq = new WeakMap<AppPage, number>();
 
   private constructor(
     /** The cobrowser app that owns these tabs. */
@@ -410,8 +413,18 @@ export class BrowserSession {
     return { url: p.url(), title: p.title() };
   }
 
-  async takeSnapshot(): Promise<string> {
-    return this.current().evaluate<string>(snapshotScript);
+  /** Interactive elements with stable uids, optionally filtered. See snapshotScript. */
+  async takeSnapshot(opts: SnapshotOptions = {}): Promise<string> {
+    const p = this.current();
+    const start = this.uidSeq.get(p) ?? 0;
+    const r = await p.evaluate<SnapshotResult>(snapshotScript, { ...opts, seqStart: start });
+    this.uidSeq.set(p, Math.max(start, r.seq));
+    return r.text;
+  }
+
+  /** The page's visible text (and optionally its links). See readPageScript. */
+  async readPage(opts: ReadPageOptions = {}): Promise<ReadPageResult> {
+    return this.current().evaluate<ReadPageResult>(readPageScript, opts);
   }
 
   private selectorFor(t: Target): string {
@@ -426,24 +439,26 @@ export class BrowserSession {
    */
   private async locate(t: Target): Promise<ElementBox> {
     const selector = this.selectorFor(t);
-    const box = await this.current().evaluate<ElementBox | null>(
-      (sel: string) => {
-        const el = document.querySelector(sel);
-        if (!el) return null;
-        el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' as ScrollBehavior });
+    const r = await this.current().evaluate<{ count: number; box?: ElementBox }>(
+      `(sel) => { ${FIND_JS}
+        const hits = find(sel);
+        if (!hits.length) return { count: 0 };
+        const el = hits[0];
+        el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
         const r = el.getBoundingClientRect();
-        return { x: r.x, y: r.y, width: r.width, height: r.height };
-      },
+        return { count: hits.length, box: { x: r.x, y: r.y, width: r.width, height: r.height } };
+      }`,
       selector,
     );
-    if (!box) {
+    if (!r.count) {
       throw new Error(
         t.uid
-          ? `uid ${t.uid} not found — uids expire on any DOM change; call take_snapshot again first.`
+          ? `uid ${t.uid} is gone — that element was removed or the page navigated. Call take_snapshot again (narrow it with withinSelector or textContains).`
           : `No element matches selector: ${t.selector}`,
       );
     }
-    return box;
+    if (t.uid && r.count > 1) throw new Error(`uid ${t.uid} is on ${r.count} elements (the page copied it) — call take_snapshot again.`);
+    return r.box!;
   }
 
   /** Flash the element in the human's panel so they can see what the agent touched. */
@@ -508,20 +523,19 @@ export class BrowserSession {
     // the option by visible text or value and fire the events frameworks listen for.
     const selector = this.selectorFor(opts);
     const picked = await this.current().evaluate<string | null | false>(
-      (sel: string, want: string) => {
-        const s = document.querySelector(sel);
-        if (!s || s.tagName !== 'SELECT') return false;
-        const el = s as HTMLSelectElement;
-        el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' as ScrollBehavior });
-        const opts = [...el.options];
-        const norm = (t: string) => t.trim().toLowerCase();
-        const o = opts.find((x) => x.text.trim() === want) ?? opts.find((x) => x.value === want) ?? opts.find((x) => norm(x.text) === norm(want)) ?? opts.find((x) => norm(x.text).includes(norm(want)));
+      `(sel, want) => { ${FIND_JS}
+        const el = find(sel)[0];
+        if (!el || el.tagName !== 'SELECT') return false;
+        el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+        const all = Array.from(el.options);
+        const norm = (t) => t.trim().toLowerCase();
+        const o = all.find((x) => x.text.trim() === want) ?? all.find((x) => x.value === want) ?? all.find((x) => norm(x.text) === norm(want)) ?? all.find((x) => norm(x.text).includes(norm(want)));
         if (!o) return null;
         el.selectedIndex = o.index;
         el.dispatchEvent(new Event('input', { bubbles: true }));
         el.dispatchEvent(new Event('change', { bubbles: true }));
         return o.text;
-      },
+      }`,
       selector,
       opts.value,
     );
@@ -534,14 +548,13 @@ export class BrowserSession {
     // exactly the events a person produces, so React-style controlled inputs update.
     await this.click(opts);
     await this.current().evaluate(
-      (sel: string) => {
-        const el = document.querySelector(sel) as HTMLElement | null;
+      `(sel) => { ${FIND_JS}
+        const el = find(sel)[0];
         if (!el) return;
         el.focus();
-        const input = el as HTMLInputElement;
-        if (typeof input.select === 'function') input.select();
+        if (typeof el.select === 'function') el.select();
         else document.execCommand('selectAll');
-      },
+      }`,
       this.selectorFor(opts),
     );
     if (opts.value) await this.typeText(opts.value);

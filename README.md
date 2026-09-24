@@ -119,9 +119,9 @@ release cannot drag everyone backwards.
 
 ## MCP tools
 
-`list_pages`, `new_page`, `select_page`, `navigate_page`, `take_snapshot`, `take_screenshot`, `click`, `fill`, `fill_form`, `type_text`, `wait_for`, `evaluate_script`.
+`list_pages`, `new_page`, `select_page`, `close_page`, `navigate_page`, `read_page`, `take_snapshot`, `take_screenshot`, `click`, `fill`, `fill_form`, `type_text`, `wait_for`, `evaluate_script`, `list_console_messages`, `list_network_requests`, `list_credentials`, `fill_credentials`, `request_credential`, `get_activity`, `get_editor_layout`.
 
-`take_snapshot` returns an interactive-element text tree; each node has a `[uid]` for `click`/`fill`. **uids expire on any DOM change** — re-snapshot before reusing them.
+`read_page` is the cheap way to read: the page's visible text, optionally one region and its links. `take_snapshot` is for acting: visible interactive elements (link destinations, input values, select options, open shadow roots) each with a `[uid]` for `click`/`fill`, filterable by region, text, role and label, capped at 200 by default. **uids are stable**: an element keeps its uid for as long as it exists and uids never repeat within a tab, so agents snapshot again only after a navigation or when new UI appears. Password fields show as `(filled)`, never their value.
 
 ## Develop it
 
