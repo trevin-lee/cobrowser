@@ -97,6 +97,9 @@ Tabs are hidden offscreen windows, so everything a page would normally show in a
 - **alert, confirm and prompt** show as app dialogs; the page waits for your answer, as it would in Chrome. **"Leave this site?"** prompts are asked the same way.
 - **File uploads** use the app's file picker, including inside cross-site iframes.
 - **Downloads** save straight to your Downloads folder (never overwriting), with a notification that opens the file in Finder.
+- **Fullscreen** (a video player's button) fills the tab, with the panel's toolbar hidden; Escape leaves it. Nothing takes over your display.
+- **A self-signed certificate** (a router or a device on your network) gets Chrome's question: proceed anyway, remembered for that host until the app quits.
+- **A password asked for by the browser itself** (HTTP basic auth) gets a small sign-in window.
 - **A crashed page** reloads by itself, unless it crashes three times in a minute.
 - **Tabs no panel is showing** draw once a second instead of 60 times, and at full rate again the moment anything acts on them.
 
@@ -143,6 +146,11 @@ Every page tool takes an optional `pageId`, and the agent and the human each hav
 `read_page` is the cheap way to read: the page's visible text, optionally one region and its links. `take_snapshot` is for acting: visible interactive elements (link destinations, input values, select options, open shadow roots) each with a `[uid]` for `click`/`fill`, filterable by region, text, role and label, capped at 200 by default. **uids are stable**: an element keeps its uid for as long as it exists and uids never repeat within a tab, so agents snapshot again only after a navigation or when new UI appears. Password fields show as `(filled)`, never their value.
 
 ## Develop it
+
+### Tests
+
+`npm test` runs the unit tests. `npm run test:e2e` runs the end-to-end suites in `test/e2e/`: each starts its own isolated copy of the app (scratch state and data dirs, biometrics and dialogs auto-answered) and drives it through the real client and session code — pages, input, native selects, cross-origin iframes, tabs and focus, dialogs and popups, credentials, single-instance, branding. They need `npm run build` first and take about two minutes. `npm run bench:e2e` prints measurements (scroll latency, what a site sees, snapshot sizes) without asserting. Nothing in them can reach your real app, tabs or vault.
+
 
 ```bash
 npm install

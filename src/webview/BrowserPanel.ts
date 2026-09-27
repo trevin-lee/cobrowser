@@ -276,9 +276,14 @@ export class BrowserPanel {
 
     // Keep the omnibox + tab title in sync with this page's real URL/title.
     this.page.onNavigated(this.onNav);
+    this.page.onFullscreen(this.onFullscreen);
 
     this.updateTitle();
   }
+
+  private onFullscreen = (on: boolean): void => {
+    void this.panel.webview.postMessage({ type: 'extension.fullscreen', on });
+  };
 
   private onNav = (): void => {
     this.origin = hostOf(this.page.url());
@@ -562,6 +567,7 @@ export class BrowserPanel {
     BrowserPanel.panels.delete(this.id);
     this.stopStream();
     this.page.offNavigated(this.onNav);
+    this.page.offFullscreen(this.onFullscreen);
     // The human closed this editor tab → close the underlying browser page. But during a
     // session teardown (window reload), leave the pages open in the app so the reconnect
     // finds them again.

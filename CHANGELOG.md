@@ -2,6 +2,18 @@
 
 Release notes for earlier versions are on the [GitHub releases page](https://github.com/trevin-lee/cobrowser/releases).
 
+## 0.9.1
+
+### Fixed
+
+- A page going fullscreen (a video player's button) no longer takes over the whole display for a window that is not even on screen; it fills the tab, the toolbar hides, and Escape leaves it.
+- A self-signed certificate asks whether to proceed, as Chrome does, instead of failing with no way past.
+- A password asked for by the browser itself (HTTP basic auth, common on router pages) gets a sign-in window instead of a 401 page.
+
+### Changed
+
+- The end-to-end test suites live in the repo (`npm run test:e2e`).
+
 ## 0.9.0
 
 The browser app now drives its own tabs. The extension no longer opens a Chromium debugging port or uses puppeteer: every page command runs on the tab's in-process debugger, over the socket the editor already holds.

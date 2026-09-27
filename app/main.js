@@ -165,8 +165,11 @@ let vault = null; // { entries: [{ id, host, username, password, updatedAt }] } 
 // Test-only: the UI tests run an isolated instance nobody is sitting at, so they cannot
 // answer a Touch ID prompt. Never set in normal use; every skip is logged.
 const SKIP_BIOMETRICS = process.env.COBROWSER_TEST_NO_BIOMETRICS === '1';
-// Test-only: an isolated instance has nobody to answer page dialogs ('accept' | 'dismiss').
+// Test-only: an isolated instance has nobody to answer page dialogs ('accept' | 'dismiss'),
+// certificate warnings ('accept' | 'reject') or login boxes ('user:pass' | '').
 const TEST_DIALOG = SKIP_BIOMETRICS ? process.env.COBROWSER_TEST_DIALOG : undefined;
+const TEST_CERT = SKIP_BIOMETRICS ? process.env.COBROWSER_TEST_CERT : undefined;
+const TEST_LOGIN = SKIP_BIOMETRICS ? process.env.COBROWSER_TEST_LOGIN : undefined;
 async function promptBiometrics(reason) {
   if (SKIP_BIOMETRICS) { log('vault: TEST MODE — biometrics skipped for: ' + reason); return; }
   await Promise.race([
@@ -780,6 +783,90 @@ ipcMain.on('cobrowser:dialog', async (e, d) => {
   }
 });
 
+// ---------------------------------------------------------------------------------------
+// Certificate warnings and login boxes. Both are asked of the human the way Chrome asks.
+// ---------------------------------------------------------------------------------------
+/** Host + certificate → allowed, for this app session (Chromium remembers it too). */
+const certDecisions = new Map();
+const pendingCert = new Map();
+app.on('certificate-error', (event, contents, url, error, certificate, callback) => {
+  event.preventDefault();
+  let host = '';
+  try { host = new URL(url).host; } catch { /* keep */ }
+  const key = `${host}|${certificate.fingerprint}`;
+  if (certDecisions.has(key)) return callback(certDecisions.get(key));
+  // Only what the human navigated to gets a question: a bad certificate on an embedded
+  // resource of another host is just refused, as Chrome does.
+  let pageHost = '';
+  try { pageHost = new URL(contents.getURL()).host; } catch { /* keep */ }
+  if (pageHost && pageHost !== host) { log(`certificate refused for ${host} (embedded in ${pageHost}): ${error}`); return callback(false); }
+  if (TEST_CERT !== undefined) {
+    const ok = TEST_CERT === 'accept';
+    log(`certificate: TEST MODE — ${host} ${error} → ${ok ? 'accept' : 'reject'}`);
+    certDecisions.set(key, ok);
+    return callback(ok);
+  }
+  if (pendingCert.has(key)) { pendingCert.get(key).push(callback); return; }
+  pendingCert.set(key, [callback]);
+  const tab = tabOf(contents);
+  if (tab) tab.pendingDialogs++;
+  focusApp();
+  dialog.showMessageBox({
+    type: 'warning',
+    message: `Your connection to ${host} is not private`,
+    detail: `${error.replace(/^net::/, '')}\n\nThe certificate is for "${certificate.subjectName}", issued by "${certificate.issuerName}". This is normal for a device on your own network; on the internet it can mean someone is intercepting the connection. Proceeding allows it for ${host} until cobrowser quits.`,
+    buttons: ['Proceed anyway', 'Go back'], defaultId: 1, cancelId: 1,
+  }).then(({ response }) => {
+    const ok = response === 0;
+    certDecisions.set(key, ok);
+    log(`certificate for ${host}: ${ok ? 'accepted' : 'rejected'} (${error})`);
+    for (const cb of pendingCert.get(key) || []) cb(ok);
+  }).catch(() => { for (const cb of pendingCert.get(key) || []) cb(false); })
+    .finally(() => { pendingCert.delete(key); if (tab) tab.pendingDialogs--; });
+});
+
+/** A page asked for a username and password with the browser's own login box. */
+app.on('login', (event, contents, details, authInfo, callback) => {
+  event.preventDefault();
+  if (TEST_LOGIN !== undefined) {
+    log(`login: TEST MODE — ${authInfo.host} answered ${TEST_LOGIN ? 'with credentials' : 'cancel'}`);
+    const i = TEST_LOGIN.indexOf(':');
+    return TEST_LOGIN ? callback(TEST_LOGIN.slice(0, i), TEST_LOGIN.slice(i + 1)) : callback();
+  }
+  const tab = tabOf(contents);
+  if (tab) tab.pendingDialogs++;
+  const where = authInfo.isProxy ? `The proxy ${authInfo.host}` : `${authInfo.host}${authInfo.port && authInfo.port !== 80 && authInfo.port !== 443 ? ':' + authInfo.port : ''}`;
+  loginWindow(where, authInfo.realm).then((c) => {
+    if (c) callback(c.username, c.password); else callback();
+  }).catch(() => callback()).finally(() => { if (tab) tab.pendingDialogs--; });
+});
+
+function loginWindow(where, realm) {
+  return new Promise((resolve) => {
+    const esc = (v) => String(v).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+    const html = `<!doctype html><meta charset="utf-8"><title>Sign in to ${esc(where)}</title>
+<style>:root{color-scheme:light dark}body{font:13px -apple-system,system-ui;margin:18px 20px}h1{font-size:13px;font-weight:600;margin:0 0 4px}p{margin:0 0 12px;color:GrayText}
+label{display:block;margin:8px 0 3px}input{width:100%;box-sizing:border-box;font:inherit;padding:5px 7px}div{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}button{font:inherit;padding:4px 14px}</style>
+<h1>Sign in to ${esc(where)}</h1><p>${realm ? esc(realm) : 'This site asks for a username and password.'}</p>
+<form id="f"><label for="u">Username</label><input id="u" autocomplete="username"><label for="p">Password</label><input id="p" type="password" autocomplete="current-password">
+<div><button type="button" id="c">Cancel</button><button>Sign in</button></div></form>
+<script>document.getElementById('u').focus();
+document.getElementById('f').onsubmit=(e)=>{e.preventDefault();document.title='ok:'+JSON.stringify([document.getElementById('u').value,document.getElementById('p').value])};
+document.getElementById('c').onclick=()=>{document.title='cancel'};addEventListener('keydown',(e)=>{if(e.key==='Escape')document.title='cancel'});</script>`;
+    const win = new BrowserWindow({ width: 420, height: 250, show: false, resizable: false, minimizable: false, maximizable: false, fullscreenable: false, alwaysOnTop: true, title: `Sign in to ${where}`, webPreferences: { sandbox: true, contextIsolation: true } });
+    let settled = false;
+    const finish = (v) => { if (settled) return; settled = true; resolve(v); if (!win.isDestroyed()) win.close(); };
+    win.on('page-title-updated', (e, title) => {
+      e.preventDefault();
+      if (title.startsWith('ok:')) { try { const [username, password] = JSON.parse(title.slice(3)); finish({ username, password }); } catch { finish(null); } }
+      else if (title === 'cancel') finish(null);
+    });
+    win.on('closed', () => finish(null));
+    win.once('ready-to-show', () => { focusApp(); win.show(); });
+    void win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+  });
+}
+
 /** "report.txt", then "report (1).txt", … — never overwrite a download. */
 function uniquePath(dir, name) {
   const safe = (name || 'download').replace(/[\\/:]/g, '_');
@@ -832,6 +919,10 @@ class Tab {
       show: false,
       width: Math.max(100, Math.round(width) || 1280),
       height: Math.max(100, Math.round(height) || 800),
+      // A page's requestFullscreen() would otherwise take the whole display for a window
+      // that is not even on screen (measured). Not fullscreenable, the page still enters
+      // fullscreen — filling the tab, which is the panel — and nothing appears.
+      fullscreenable: false,
       webPreferences: tabWebPreferences(workspace.partition),
     });
     const wc = this.win.webContents;
@@ -862,6 +953,12 @@ class Tab {
     // Keep the editor's URL bar, tab title and activity log in step with the page.
     const announce = () => workspace.broadcast({ type: 'tabUpdated', ...this.info() });
     wc.on('did-navigate', announce);
+    // Fullscreen is the tab itself; the panel hides its toolbar while it lasts, and Escape
+    // leaves it (see routeHuman), as in Chrome.
+    this.htmlFullscreen = false;
+    wc.on('enter-html-full-screen', () => { this.htmlFullscreen = true; workspace.broadcast({ type: 'fullscreen', tabId: this.id, on: true }); });
+    wc.on('leave-html-full-screen', () => { this.htmlFullscreen = false; workspace.broadcast({ type: 'fullscreen', tabId: this.id, on: false }); });
+    wc.on('did-navigate', () => { if (this.htmlFullscreen) { this.htmlFullscreen = false; workspace.broadcast({ type: 'fullscreen', tabId: this.id, on: false }); } });
     wc.on('did-navigate-in-page', (_e, _u, isMain) => { if (isMain) announce(); });
     wc.on('page-title-updated', announce);
     // A page opening a window.
@@ -1233,6 +1330,13 @@ class Tab {
    */
   async routeHuman(method, params) {
     const dbg = this.win.webContents.debugger;
+    // Escape leaves fullscreen (the browser's key, not the page's).
+    if (this.htmlFullscreen && method === 'Input.dispatchKeyEvent' && params.key === 'Escape') {
+      if (params.type === 'keyDown' || params.type === 'rawKeyDown') {
+        return { dispatched: dbg.sendCommand('Runtime.evaluate', { expression: 'document.exitFullscreen && document.exitFullscreen(); 0', returnByValue: true }, this.inputSession).catch(() => undefined) };
+      }
+      return { dispatched: Promise.resolve({}) };
+    }
     if (method === 'Input.dispatchMouseEvent') {
       const r = await this.routePoint(params.x, params.y);
       if (params.button === 'left' && params.type === 'mousePressed') {

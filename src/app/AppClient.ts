@@ -111,6 +111,8 @@ export class AppConnection {
   onTabOpened?: (t: AppTabInfo) => void;
   onTabClosed?: (tabId: string) => void;
   onTabUpdated?: (t: AppTabInfo) => void;
+  /** The page went fullscreen inside its tab (or left it). */
+  onFullscreen?: (tabId: string, on: boolean) => void;
   onClose?: () => void;
 
   private constructor(ws: WebSocket, hello: { version: string; tabs: AppTabInfo[] }) {
@@ -284,6 +286,8 @@ export class AppConnection {
       this.onTabOpened?.(m as unknown as AppTabInfo);
     } else if (m.type === 'tabUpdated') {
       this.onTabUpdated?.(m as unknown as AppTabInfo);
+    } else if (m.type === 'fullscreen') {
+      this.onFullscreen?.(String(m.tabId), !!m.on);
     } else if (m.type === 'tabClosed') {
       const id = String(m.tabId);
       this.frameListeners.delete(id);

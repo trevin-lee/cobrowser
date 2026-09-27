@@ -2,7 +2,7 @@
   "name": "cobrowser",
   "displayName": "Cobrowser",
   "description": "An agent-controllable browser inside your editor — rendered offscreen by a companion app, co-driven by you (webview) and your AI agent (MCP).",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "publisher": "trevin-lee",
   "private": true,
   "license": "MIT",
@@ -229,7 +229,9 @@
     "sign:firefox": "node scripts/sign-firefox-extension.mjs",
     "publish:ovsx": "ovsx publish",
     "vscode:prepublish": "node esbuild.mjs --production",
-    "release": "node scripts/release.mjs"
+    "release": "node scripts/release.mjs",
+    "test:e2e": "node test/e2e/run.mjs",
+    "bench:e2e": "node test/e2e/run.mjs --bench"
   },
   "dependencies": {
     "ws": "^8.21.1"

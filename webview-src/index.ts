@@ -77,6 +77,12 @@ window.addEventListener('message', (event: MessageEvent) => {
     vscode.setState({ url: m.url });
     return;
   }
+  if (m?.type === 'extension.fullscreen') {
+    // The page fills the tab: hide the toolbar so it fills the panel too. The stage's
+    // ResizeObserver re-reports the viewport.
+    document.body.classList.toggle('fullscreen', !!m.on);
+    return;
+  }
   if (m?.type === 'extension.highlight') {
     flashHighlight(m.box as Box);
     return;

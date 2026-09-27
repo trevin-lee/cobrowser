@@ -28,6 +28,8 @@ body {
 /* ---------- toolbar ----------
  * One browser page per VS Code editor tab, so VS Code's own tab bar is the tab
  * bar — this panel just carries the per-page address bar + nav. */
+body.fullscreen #toolbar { display: none; }
+
 #toolbar {
   display: flex;
   align-items: center;

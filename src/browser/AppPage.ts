@@ -8,6 +8,7 @@ import type { AppConnection, NavigateKind, NavigateResult } from '../app/AppClie
  */
 export class AppPage {
   private navListeners = new Set<() => void>();
+  private fullscreenListeners = new Set<(on: boolean) => void>();
   private _closed = false;
 
   constructor(
@@ -46,6 +47,19 @@ export class AppPage {
 
   onNavigated(cb: () => void): void {
     this.navListeners.add(cb);
+  }
+
+  /** The page entered or left fullscreen (it fills the tab; the panel hides its toolbar). */
+  onFullscreen(cb: (on: boolean) => void): void {
+    this.fullscreenListeners.add(cb);
+  }
+
+  offFullscreen(cb: (on: boolean) => void): void {
+    this.fullscreenListeners.delete(cb);
+  }
+
+  setFullscreen(on: boolean): void {
+    for (const cb of this.fullscreenListeners) cb(on);
   }
 
   offNavigated(cb: () => void): void {

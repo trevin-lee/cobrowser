@@ -158,6 +158,8 @@ export class BrowserSession {
       })();
     };
 
+    app.onFullscreen = (tabId, on) => session.byTab.get(tabId)?.setFullscreen(on);
+
     app.onTabUpdated = (t) => {
       const page = session.byTab.get(t.tabId);
       if (!page) return;
