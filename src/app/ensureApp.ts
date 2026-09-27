@@ -4,6 +4,7 @@ import * as crypto from 'node:crypto';
 import { spawn, execFileSync } from 'node:child_process';
 import { readAppState, STATE_FILE, type AppState } from './AppClient';
 import { readSignedMarker } from './signApp';
+import { brandApp, brandedExe, isBranded } from './brandApp';
 
 type Log = (message: string) => void;
 
@@ -20,7 +21,10 @@ export interface EnsureAppOptions {
   /** A developer's checkout: prefer its own node_modules Electron, skip the download. */
   devElectron?: string;
   version: string;
+  /** The menu-bar (tray) template image. */
   iconPath?: string;
+  /** The app icon (.icns) the downloaded browser is branded with. */
+  appIcon?: string;
   onProgress?: (downloaded: number, total: number) => void;
   log: Log;
 }
@@ -33,9 +37,24 @@ export interface EnsureAppOptions {
 /** The Electron executable ensureApp would use, without starting anything. */
 export function electronExecutable(opts: Pick<EnsureAppOptions, 'cacheDir' | 'devElectron'>): string | undefined {
   if (opts.devElectron && fs.existsSync(opts.devElectron)) return opts.devElectron;
+  const dir = cachedVersionDir(opts.cacheDir);
+  const branded = brandedExe(dir);
+  if (fs.existsSync(branded)) return branded;
+  const stock = path.join(dir, 'Electron.app', 'Contents', 'MacOS', 'Electron');
+  return fs.existsSync(stock) ? stock : undefined;
+}
+
+function cachedVersionDir(cacheDir: string): string {
   const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
-  const exe = path.join(opts.cacheDir, `electron-v${ELECTRON_VERSION}-darwin-${arch}`, 'Electron.app', 'Contents', 'MacOS', 'Electron');
-  return fs.existsSync(exe) ? exe : undefined;
+  return path.join(cacheDir, `electron-v${ELECTRON_VERSION}-darwin-${arch}`);
+}
+
+/** The downloaded browser still lacks the cobrowser name and icon (a developer's own Electron
+ *  is never branded). */
+function needsBrand(opts: EnsureAppOptions): boolean {
+  if (opts.devElectron && fs.existsSync(opts.devElectron)) return false;
+  const dir = cachedVersionDir(opts.cacheDir);
+  return fs.existsSync(dir) && !isBranded(dir);
 }
 
 /** A short hash of the app bundle on disk — what the running process reports back. */
@@ -57,12 +76,16 @@ export async function ensureApp(opts: EnsureAppOptions): Promise<AppState> {
     // Signed for passkeys since it started (Enable Passkeys ran): the unsigned process can't
     // reach the authenticator, so it restarts as the signed one.
     const unsignedButSigned = !running.webauthn && !!readSignedMarker(electronExecutable(opts) ?? '');
-    if (!stale && !rebuilt && !unsignedButSigned) return running;
+    // Branding renames the bundle the running process was launched from; it has to stop first.
+    const unbranded = needsBrand(opts);
+    if (!stale && !rebuilt && !unsignedButSigned && !unbranded) return running;
     opts.log(stale
       ? `cobrowser app ${running.version} is older than this extension (${opts.version}) — restarting it.`
       : rebuilt
         ? 'cobrowser app is running an older build of this version — restarting it.'
-        : 'cobrowser app is running unsigned but the browser is now signed for passkeys — restarting it.');
+        : unbranded
+          ? 'cobrowser app is being renamed and given its icon — restarting it.'
+          : 'cobrowser app is running unsigned but the browser is now signed for passkeys — restarting it.');
     try {
       process.kill(running.pid, 'SIGTERM');
     } catch {
@@ -109,9 +132,10 @@ async function ensureElectron(opts: EnsureAppOptions): Promise<string> {
     throw new Error('cobrowser app: only macOS is supported in this release');
   }
   const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
-  const dir = path.join(opts.cacheDir, `electron-v${ELECTRON_VERSION}-darwin-${arch}`);
+  const dir = cachedVersionDir(opts.cacheDir);
   const exe = path.join(dir, 'Electron.app', 'Contents', 'MacOS', 'Electron');
-  if (fs.existsSync(exe)) return exe;
+  const brand = (): string => (isBranded(dir) ? brandedExe(dir) : brandApp(dir, opts.appIcon ?? '', opts.log));
+  if (fs.existsSync(brandedExe(dir)) || fs.existsSync(exe)) return brand();
 
   const asset = `electron-v${ELECTRON_VERSION}-darwin-${arch}.zip`;
   const base = `https://github.com/electron/electron/releases/download/v${ELECTRON_VERSION}`;
@@ -132,7 +156,7 @@ async function ensureElectron(opts: EnsureAppOptions): Promise<string> {
   fs.rmSync(zip, { force: true });
   if (!fs.existsSync(exe)) throw new Error(`Electron.app not found after extracting ${asset}`);
   opts.log(`Electron ${ELECTRON_VERSION} ready.`);
-  return exe;
+  return brand();
 }
 
 async function download(url: string, dest: string, onProgress?: (d: number, t: number) => void): Promise<void> {

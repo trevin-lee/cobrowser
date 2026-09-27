@@ -248,6 +248,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               devElectron: path.join(context.extensionUri.fsPath, 'app', 'node_modules', 'electron', 'dist', 'Electron.app', 'Contents', 'MacOS', 'Electron'),
               version: extensionVersion(context),
               iconPath: vscode.Uri.joinPath(context.extensionUri, 'media', 'trayTemplate.png').fsPath,
+              appIcon: vscode.Uri.joinPath(context.extensionUri, 'media', 'cobrowser.icns').fsPath,
               onProgress: (d, t) => progress.report({ message: t ? `downloading Electron ${Math.round(d / 1e6)} / ${Math.round(t / 1e6)} MB` : `downloading Electron ${Math.round(d / 1e6)} MB` }),
               log,
             }),

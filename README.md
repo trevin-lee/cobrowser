@@ -89,6 +89,10 @@ The app keeps a local vault (encrypted through the OS keychain, unlocked with To
 
 When an agent needs a login its workspace is not scoped for, it calls `request_credential` with the site and a one-line reason. You get a native dialog naming the workspace and the login: **Allow in this workspace** adds the workspace to the login's scope, **Allow once** permits a single fill, **Deny** does nothing. The agent only learns the outcome, and a denial is indistinguishable from there being no such login, so a workspace still cannot enumerate what others hold.
 
+### The app
+
+The browser runs as a menu-bar app named cobrowser, with its own icon. The Electron it downloads is renamed `cobrowser.app` and given the name, bundle id and icon once, before its first start, then re-sealed: with your identity when it is signed for passkeys, ad hoc otherwise. It is marked menu-bar-only, so it never appears in the Dock or the app switcher. The icon is drawn by `scripts/make-icon.js` from the mark in `media/icon.png`.
+
 ### Passkeys
 
 Run **Cobrowser: Enable Passkeys (Sign the Browser)** once. Chromium's Touch ID authenticator only works in an app signed with a `keychain-access-groups` entitlement, and Apple only grants that entitlement through a provisioning profile, so the command re-signs the downloaded browser as `dev.trevin.cobrowser` with your Apple Development identity. It builds a stub Xcode project and lets `xcodebuild -allowProvisioningUpdates` mint the profile, which needs Xcode with an Apple ID signed in (Xcode → Settings → Accounts). After that the Touch ID sheet is a system dialog, so it appears even though the page renders offscreen; passkeys are created inside cobrowser (add one from a site's security settings after a password sign-in) and live in this Mac's Secure Enclave keychain — they do not sync, and existing iCloud Keychain passkeys are not visible here, because Apple grants that only to real browsers. USB security keys work too. The browser restarts signed the next time a panel opens. A Developer ID certificate is used instead when present.

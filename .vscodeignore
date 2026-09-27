@@ -19,3 +19,5 @@ HANDOFF.md
 node_modules/**
 # The app ships as dist/app/main.js (bundled); its source tree and node_modules do not.
 app/**
+# Source art for media/cobrowser.icns (scripts/make-icon.js); the .icns is what ships.
+media/cobrowser-1024.png
