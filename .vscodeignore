@@ -25,3 +25,4 @@ media/cobrowser-1024.png
 test/**
 dist-test/**
 esbuild.test.mjs
+dist-e2e/**
