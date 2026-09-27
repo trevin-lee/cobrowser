@@ -56,6 +56,16 @@ const targets = [
     external: ['electron'],
   },
   {
+    // Every tab's preload (page dialogs): loaded by path, like the vault's.
+    ...common,
+    entryPoints: ['app/tab-preload.js'],
+    outfile: 'dist/app/tab-preload.js',
+    platform: 'node',
+    format: 'cjs',
+    target: 'node20',
+    external: ['electron'],
+  },
+  {
     // Webview: browser/IIFE.
     ...common,
     entryPoints: ['webview-src/index.ts'],

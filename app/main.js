@@ -17,7 +17,7 @@
 //   -> {type:'closeAll'}                               (this workspace's tabs)
 //   <- binary frame  [u32 metaLen][meta JSON][jpeg]    meta.tabId says which tab
 //   <- {type:'tab', ...} for tabs the page opened itself; {type:'tabClosed', tabId}
-const { app, BrowserWindow, Tray, Menu, nativeImage, session, safeStorage, systemPreferences, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, session, safeStorage, systemPreferences, ipcMain, dialog, Notification, shell } = require('electron');
 const { WebSocketServer } = require('ws');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -33,6 +33,33 @@ const STATE_DIR = process.env.COBROWSER_STATE_DIR || path.join(os.homedir(), '.c
 const STATE_FILE = path.join(STATE_DIR, 'app.json');
 const JPEG_QUALITY = 90; // q80 rings around glyphs; the frame is the thing the human reads
 const FRAME_RATE = 60;
+/** A tab no panel is showing still runs, but paints once a second: three hidden animated tabs
+ *  cost 24% of a core at 60 fps and 1% at 1 (measured). Screenshots raise it briefly. */
+const HIDDEN_FRAME_RATE = 1;
+const TAB_PRELOAD = path.join(__dirname, 'tab-preload.js');
+
+/** Every tab window's web preferences, popups included (they must match their opener's). */
+function tabWebPreferences(partition) {
+  return {
+    offscreen: true,
+    partition,
+    sandbox: true,
+    contextIsolation: true,
+    nodeIntegration: false,
+    // The preload (page dialogs) runs in every frame; sandboxed, it has no Node either way.
+    nodeIntegrationInSubFrames: true,
+    preload: TAB_PRELOAD,
+  };
+}
+
+/** The app is menu-bar only, so macOS does not bring its dialogs forward on its own. */
+function focusApp() {
+  try { app.focus({ steal: true }); } catch { /* best effort */ }
+}
+
+function hostOf(url) {
+  try { return new URL(url).host || url; } catch { return url || ''; }
+}
 const VERSION = process.env.COBROWSER_VERSION || app.getVersion();
 const ICON = process.env.COBROWSER_ICON;
 
@@ -118,6 +145,7 @@ function askPermission(origin, permission, details) {
   const kind = details?.mediaTypes ? details.mediaTypes.join(' and ') : '';
   const verb = permission === 'media' && kind ? `use your ${kind.replace('video', 'camera').replace('audio', 'microphone')}` : PERMISSION_VERB[permission] || `use "${permission}"`;
   let host = origin; try { host = new URL(origin).host; } catch { /* keep */ }
+  focusApp();
   const p = dialog.showMessageBox({ type: 'question', message: `${host} wants to ${verb}`, detail: 'cobrowser remembers this choice for the site.', buttons: ['Allow', 'Block'], defaultId: 1, cancelId: 1 })
     .then(({ response }) => { const ok = response === 0; rememberPermission(origin, permission, details, ok); return ok; })
     .catch(() => false)
@@ -137,6 +165,8 @@ let vault = null; // { entries: [{ id, host, username, password, updatedAt }] } 
 // Test-only: the UI tests run an isolated instance nobody is sitting at, so they cannot
 // answer a Touch ID prompt. Never set in normal use; every skip is logged.
 const SKIP_BIOMETRICS = process.env.COBROWSER_TEST_NO_BIOMETRICS === '1';
+// Test-only: an isolated instance has nobody to answer page dialogs ('accept' | 'dismiss').
+const TEST_DIALOG = SKIP_BIOMETRICS ? process.env.COBROWSER_TEST_DIALOG : undefined;
 async function promptBiometrics(reason) {
   if (SKIP_BIOMETRICS) { log('vault: TEST MODE — biometrics skipped for: ' + reason); return; }
   await Promise.race([
@@ -223,6 +253,7 @@ async function requestCredential(workspaceId, { site, username, reason }) {
     log(`vault: TEST MODE — request for ${label} auto-answered "${TEST_GRANT}"`);
     mode = TEST_GRANT === 'workspace' || TEST_GRANT === 'once' ? TEST_GRANT : 'denied';
   } else if (matches.length === 1) {
+    focusApp();
     const { response } = await dialog.showMessageBox({
       type: 'question',
       message: `The agent in "${name}" asks to use ${entry.username || 'the login'} on ${label}`,
@@ -234,6 +265,7 @@ Allowing lets that workspace's agent fill this login into the page; it never see
     mode = response === 0 ? 'workspace' : response === 1 ? 'once' : 'denied';
   } else {
     const names = matches.slice(0, 3).map((e) => e.username || '(no username)');
+    focusApp();
     const { response } = await dialog.showMessageBox({
       type: 'question',
       message: `The agent in "${name}" asks to use a login on ${label} — which one?`,
@@ -682,6 +714,81 @@ ipcMain.handle('vault:importCsv', async (_e, { scope } = {}) => {
 });
 ipcMain.handle('vault:lock', () => lockVault());
 
+// ---------------------------------------------------------------------------------------
+// Page dialogs (alert / confirm / prompt), sent by app/tab-preload.js. The page is paused on
+// a synchronous IPC until the human answers, exactly as it would be on Chromium's own dialog.
+// ---------------------------------------------------------------------------------------
+function tabOf(contents) {
+  for (const w of workspaces.values()) for (const t of w.tabs.values()) if (!t.win.isDestroyed() && t.win.webContents === contents) return t;
+  return undefined;
+}
+
+async function answerPageDialog({ type, message, def }, origin) {
+  if (TEST_DIALOG !== undefined) {
+    const yes = TEST_DIALOG === 'accept';
+    log(`dialog: TEST MODE — ${type} "${message}" answered ${yes ? 'accept' : 'dismiss'}`);
+    return type === 'confirm' ? yes : type === 'prompt' ? (yes ? `${def}` || 'test answer' : null) : undefined;
+  }
+  focusApp();
+  if (type === 'prompt') return promptWindow(origin, message, def);
+  const { response } = await dialog.showMessageBox({
+    type: type === 'confirm' ? 'question' : 'info',
+    message: `${origin} says`,
+    detail: message,
+    buttons: type === 'confirm' ? ['OK', 'Cancel'] : ['OK'],
+    defaultId: 0,
+    cancelId: type === 'confirm' ? 1 : 0,
+  });
+  return type === 'confirm' ? response === 0 : undefined;
+}
+
+/** prompt(): macOS has no text-input alert, so a small window of the app's own. */
+function promptWindow(origin, message, def) {
+  return new Promise((resolve) => {
+    const esc = (v) => String(v).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+    const html = `<!doctype html><meta charset="utf-8"><title>${esc(origin)} says</title>
+<style>:root{color-scheme:light dark}body{font:13px -apple-system,system-ui;margin:18px 20px}p{margin:0 0 12px;white-space:pre-wrap}
+input{width:100%;box-sizing:border-box;font:inherit;padding:5px 7px}div{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}button{font:inherit;padding:4px 14px}</style>
+<p>${esc(message)}</p><form id="f"><input id="i" value="${esc(def)}"><div><button type="button" id="c">Cancel</button><button>OK</button></div></form>
+<script>const i=document.getElementById('i');i.focus();i.select();
+document.getElementById('f').onsubmit=(e)=>{e.preventDefault();document.title='ok:'+i.value};
+document.getElementById('c').onclick=()=>{document.title='cancel'};
+addEventListener('keydown',(e)=>{if(e.key==='Escape')document.title='cancel'});</script>`;
+    const win = new BrowserWindow({ width: 440, height: 190, show: false, resizable: false, minimizable: false, maximizable: false, fullscreenable: false, alwaysOnTop: true, title: `${origin} says`, webPreferences: { sandbox: true, contextIsolation: true } });
+    let settled = false;
+    const finish = (v) => { if (settled) return; settled = true; resolve(v); if (!win.isDestroyed()) win.close(); };
+    win.on('page-title-updated', (e, title) => { e.preventDefault(); if (title.startsWith('ok:')) finish(title.slice(3)); else if (title === 'cancel') finish(null); });
+    win.on('closed', () => finish(null));
+    win.once('ready-to-show', () => { focusApp(); win.show(); });
+    void win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+  });
+}
+
+ipcMain.on('cobrowser:dialog', async (e, d) => {
+  const tab = tabOf(e.sender);
+  const origin = hostOf((e.senderFrame && e.senderFrame.url) || e.sender.getURL()) || 'This page';
+  const fallback = d && d.type === 'confirm' ? false : d && d.type === 'prompt' ? null : undefined;
+  if (!d || !['alert', 'confirm', 'prompt'].includes(d.type)) { e.returnValue = fallback; return; }
+  if (tab) tab.pendingDialogs++;
+  try {
+    e.returnValue = await answerPageDialog(d, origin);
+  } catch (err) {
+    log(`dialog: ${err.message}`);
+    e.returnValue = fallback;
+  } finally {
+    if (tab) tab.pendingDialogs--;
+  }
+});
+
+/** "report.txt", then "report (1).txt", … — never overwrite a download. */
+function uniquePath(dir, name) {
+  const safe = (name || 'download').replace(/[\\/:]/g, '_');
+  const ext = path.extname(safe), stem = safe.slice(0, safe.length - ext.length);
+  let candidate = path.join(dir, safe);
+  for (let n = 1; fs.existsSync(candidate); n++) candidate = path.join(dir, `${stem} (${n})${ext}`);
+  return candidate;
+}
+
 /** The page's own frame in Tab.frameOwners (the page has no session id). */
 const ROOT_FRAME = '(page)';
 
@@ -711,6 +818,10 @@ class Tab {
      *  pointer is over, so it can be told when the pointer leaves. undefined = the page. */
     this.inputSession = undefined;
     this.hoverSession = undefined;
+    /** Page dialogs and file pickers shown to the human right now (the page waits on them). */
+    this.pendingDialogs = 0;
+    /** Recent renderer crashes, so a page that keeps crashing is not reloaded forever. */
+    this.crashes = [];
     /** CSS size the panel wants, the render scale (device pixels per CSS px), and the
      *  per-site zoom. The window is css*scale pixels wide and the page is zoomed by
      *  scale*zoom, so it lays out at css/zoom CSS px and rasterizes at `scale` px per CSS px.
@@ -721,21 +832,16 @@ class Tab {
       show: false,
       width: Math.max(100, Math.round(width) || 1280),
       height: Math.max(100, Math.round(height) || 800),
-      webPreferences: {
-        offscreen: true,
-        partition: workspace.partition,
-        sandbox: true,
-        contextIsolation: true,
-        nodeIntegration: false,
-      },
+      webPreferences: tabWebPreferences(workspace.partition),
     });
     const wc = this.win.webContents;
-    wc.setFrameRate(FRAME_RATE);
+    wc.setFrameRate(HIDDEN_FRAME_RATE); // until a panel shows it — see setWatched
     // Everything the tab's debugger sees goes into the tab's log (console + requests), from
     // the page and from its out-of-process frames alike.
     wc.debugger.on('message', (_e, method, params, sessionId) => {
       if (method === 'Target.attachedToTarget') return this.onFrameAttached(params, sessionId);
       if (method === 'Target.detachedFromTarget') return this.onFrameDetached(params);
+      if (method === 'Page.fileChooserOpened') return void this.chooseFiles(params, sessionId || undefined);
       // Request ids are per renderer; keep a frame's apart from the page's.
       const p = sessionId && params && params.requestId ? { ...params, requestId: `${sessionId}:${params.requestId}` } : params;
       this.log.onEvent(method, p, wc.getURL());
@@ -758,17 +864,93 @@ class Tab {
     wc.on('did-navigate', announce);
     wc.on('did-navigate-in-page', (_e, _u, isMain) => { if (isMain) announce(); });
     wc.on('page-title-updated', announce);
-    // A page opening a window (target=_blank, window.open) gets a real tab of its own, which
-    // the editor adopts through puppeteer's targetcreated exactly like a Chrome popup.
-    wc.setWindowOpenHandler(({ url: u }) => {
+    // A page opening a window.
+    //  - A popup window (window.open with a size) is how "Sign in with Google" and payment
+    //    checks open, and it must keep window.opener to report back. Electron cannot render a
+    //    window.open popup offscreen (measured: it never paints), so it opens as a real small
+    //    window on the desktop, as it would in Chrome, and closes itself when done.
+    //  - Everything else (target=_blank links) becomes a tab in the editor, as before.
+    wc.setWindowOpenHandler((details) => {
+      if (details.disposition === 'new-window') {
+        return { action: 'allow', overrideBrowserWindowOptions: { show: false, webPreferences: { ...tabWebPreferences(workspace.partition), offscreen: false } } };
+      }
       const [w, h] = this.win.getContentSize();
-      const t = workspace.openTab({ url: u, width: w, height: h, opener: this.id });
-      void t.ready.then(() => workspace.broadcast({ type: 'tab', ...t.info(), url: u }));
+      const t = workspace.openTab({ url: details.url, width: w, height: h, opener: this.id });
+      void t.ready.then(() => workspace.broadcast({ type: 'tab', ...t.info(), url: details.url }));
       return { action: 'deny' };
+    });
+    wc.on('did-create-window', (child, details) => {
+      log(`tab ${this.id}: popup window for ${hostOf(details.url)}`);
+      let shown = false;
+      const show = () => { if (shown || child.isDestroyed()) return; shown = true; child.center(); focusApp(); child.show(); };
+      child.once('ready-to-show', show);
+      setTimeout(show, 1500); // a popup that never signals ready still appears
+    });
+    // A crashed page comes back by itself — unless it keeps crashing.
+    wc.on('render-process-gone', (_e, d) => {
+      log(`tab ${this.id}: page process gone (${d.reason})`);
+      if (d.reason === 'clean-exit' || wc.isDestroyed()) return;
+      const now = Date.now();
+      this.crashes = this.crashes.filter((at) => now - at < 60000);
+      if (this.crashes.length >= 3) { log(`tab ${this.id}: crashed 3 times in a minute; leaving it for a manual reload`); return; }
+      this.crashes.push(now);
+      setTimeout(() => { if (!wc.isDestroyed()) wc.reload(); }, 400);
+    });
+    // "Leave site? Changes you made may not be saved." Without a handler the navigation was
+    // silently cancelled. The answer has to be given synchronously.
+    wc.on('will-prevent-unload', (event) => {
+      const leave = TEST_DIALOG !== undefined
+        ? TEST_DIALOG === 'accept'
+        : (focusApp(), dialog.showMessageBoxSync({ type: 'question', message: 'Leave this site?', detail: `${hostOf(wc.getURL())}: changes you made may not be saved.`, buttons: ['Leave', 'Stay'], defaultId: 1, cancelId: 1 }) === 0);
+      if (leave) event.preventDefault();
     });
     wc.on('destroyed', () => workspace.onTabGone(this));
     this.win.on('closed', () => workspace.onTabGone(this));
     void wc.loadURL(url || 'about:blank');
+  }
+
+  /** Paint at full rate while a panel shows the tab or something is acting on it, once a
+   *  second otherwise. */
+  setWatched() {
+    const wc = this.win.webContents;
+    if (wc.isDestroyed()) return;
+    wc.setFrameRate(this.subscribers.size || this.boostTimer ? FRAME_RATE : HIDDEN_FRAME_RATE);
+  }
+
+  /**
+   * Something is acting on this tab (the agent, a screenshot, input): full rate until it has
+   * been quiet for 3 s, whether or not a panel shows it. A tab only handles input when it
+   * draws a frame, so at 1 fps an agent's click on a hidden tab took 14 s (measured).
+   */
+  boost() {
+    clearTimeout(this.boostTimer);
+    this.boostTimer = setTimeout(() => { this.boostTimer = undefined; this.setWatched(); }, 3000);
+    this.setWatched();
+  }
+
+  /**
+   * A page asked for a file. The picker is intercepted (Page.setInterceptFileChooserDialog):
+   * Chromium's own is a sheet on the hidden tab window and pulled it onto the desktop. The app
+   * shows the picker itself and hands the files to the <input>.
+   */
+  async chooseFiles({ mode, backendNodeId }, sessionId) {
+    let files;
+    const test = SKIP_BIOMETRICS ? process.env.COBROWSER_TEST_UPLOAD : undefined;
+    if (test !== undefined) {
+      files = test ? [test] : [];
+    } else {
+      const host = hostOf(this.win.webContents.getURL());
+      this.pendingDialogs++;
+      try {
+        focusApp();
+        const r = await dialog.showOpenDialog({ title: `Upload to ${host}`, message: `${host} asks for ${mode === 'selectMultiple' ? 'files' : 'a file'}`, buttonLabel: 'Upload', properties: mode === 'selectMultiple' ? ['openFile', 'multiSelections'] : ['openFile'] });
+        files = r.canceled ? [] : r.filePaths;
+      } finally {
+        this.pendingDialogs--;
+      }
+    }
+    if (!files.length) return;
+    await this.win.webContents.debugger.sendCommand('DOM.setFileInputFiles', { files, backendNodeId }, sessionId).catch((e) => log(`tab ${this.id}: upload: ${e.message}`));
   }
 
   /** Attach the in-process debugger and put every per-session override in place: identity,
@@ -789,6 +971,9 @@ class Tab {
     await send('Runtime.enable', {});
     await send('Log.enable', {});
     await send('Network.enable', {});
+    // File pickers come to the app instead of opening as a sheet on the hidden window.
+    await send('Page.enable', {});
+    await send('Page.setInterceptFileChooserDialog', { enabled: true });
     // Cross-origin iframes (video players, embeds, sign-in widgets) run in their own renderer
     // process, and offscreen, input sent to the page never reaches them (measured: a click on
     // a button in one is lost; same-origin iframes are fine). Attach to each one as its own
@@ -850,7 +1035,7 @@ class Tab {
     head.writeUInt32LE(metaBuf.length, 0);
     const frame = Buffer.concat([head, metaBuf, jpeg]);
     for (const ws of this.subscribers) {
-      if (ws.readyState !== ws.OPEN) { this.subscribers.delete(ws); continue; }
+      if (ws.readyState !== ws.OPEN) { this.subscribers.delete(ws); this.setWatched(); continue; }
       // Never queue frames behind a slow socket: skip this one, the next paint is newer anyway.
       if (ws.bufferedAmount > 2 * 1024 * 1024) continue;
       ws.send(frame, { binary: true });
@@ -951,6 +1136,8 @@ class Tab {
     void send('Log.enable', {});
     void send('Network.enable', {});
     void send('DOM.enable', {});
+    void send('Page.enable', {});
+    void send('Page.setInterceptFileChooserDialog', { enabled: true });
     // Frames inside frames (an LMS page embedding a tool embedding a player) get the same.
     void send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true });
   }
@@ -1123,6 +1310,21 @@ class Workspace {
     this.sockets = new Set();
     const ses = session.fromPartition(this.partition);
     ses.setUserAgent(USER_AGENT, ACCEPT_LANGUAGES);
+    // Downloads go straight to the Downloads folder, like any browser. Without this Electron
+    // asks where to save with a sheet on the hidden tab window, pulling it onto the desktop.
+    ses.on('will-download', (_e, item) => {
+      const dir = process.env.COBROWSER_DOWNLOADS_DIR || app.getPath('downloads');
+      const target = uniquePath(dir, item.getFilename());
+      item.setSavePath(target);
+      log(`download: ${item.getURL()} -> ${target}`);
+      item.once('done', (_e2, state) => {
+        log(`download ${state}: ${target}`);
+        if (state !== 'completed' || SKIP_BIOMETRICS || !Notification.isSupported()) return; // no banners from test instances
+        const n = new Notification({ title: 'Downloaded', body: path.basename(target), silent: true });
+        n.on('click', () => shell.showItemInFolder(target));
+        n.show();
+      });
+    });
     ses.setPermissionCheckHandler((_wc, permission, origin, details) => {
       if (AUTO_ALLOW.has(permission)) return true;
       return permissionDecision(origin, permission, details) === true;
@@ -1142,6 +1344,7 @@ class Workspace {
         const accounts = details.accounts || details.credentials || [];
         if (accounts.length === 1) return callback(accounts[0].id ?? accounts[0].credentialId ?? accounts[0]);
         const names = accounts.map((a) => a.userName || a.displayName || a.name || String(a.id ?? ''));
+        focusApp();
         dialog.showMessageBox({ type: 'question', message: 'Which passkey?', detail: details.relyingPartyId || '', buttons: [...names, 'Cancel'], cancelId: names.length })
           .then(({ response }) => callback(response < names.length ? (accounts[response].id ?? accounts[response].credentialId ?? accounts[response]) : undefined))
           .catch(() => callback(undefined));
@@ -1167,7 +1370,7 @@ class Workspace {
 
   detach(ws) {
     this.sockets.delete(ws);
-    for (const t of this.tabs.values()) t.subscribers.delete(ws);
+    for (const t of this.tabs.values()) if (t.subscribers.delete(ws)) t.setWatched();
   }
 
   closeAll() {
@@ -1228,6 +1431,7 @@ async function handle(ws, state, m) {
         case 'vault.fill': {
           const tab = state.workspace?.tabs.get(m.tabId);
           if (!tab) return reply({ filled: [], error: 'no such tab in this workspace' });
+          tab.boost();
           return reply(await fillCredentials(tab, m));
         }
         default: return reply({ error: `unknown ${m.type}` });
@@ -1260,18 +1464,28 @@ async function handle(ws, state, m) {
       // protocolGuard.js), so the hot-path commands are type-checked here first.
       const bad = checkParams(m.method, m.params);
       if (bad) { log(`tab ${t.id}: refused ${bad}`); return reply({ error: bad }); }
+      t.boost();
       // The human's input is routed into out-of-process frames and native <select>s, in
       // order, without waiting on each dispatch (see Tab.queueHuman).
       if (m.human && /^Input\./.test(m.method)) {
         try { reply({ result: await t.queueHuman(m.method, m.params || {}) }); } catch (e) { reply({ error: e.message || String(e) }); }
         return;
       }
+      // A screenshot wants a fresh frame now, not the next scheduled one.
+      if (m.method === 'Page.captureScreenshot') t.win.webContents.invalidate();
       // A command the session never answers must not hang the caller forever.
       let timer;
       const timeout = new Promise((_r, rej) => { timer = setTimeout(() => rej(new Error(`${m.method} did not answer within 20s`)), 20000); });
       let timedOut = false;
       try { reply({ result: await Promise.race([t.win.webContents.debugger.sendCommand(m.method, m.params || {}), timeout.catch((e) => { timedOut = true; throw e; })]) }); }
-      catch (e) { log(`tab ${t.id}: ${m.method}: ${e.message}`); reply({ error: e.message || String(e) }); }
+      catch (e) {
+        // The page is waiting on a dialog the human has to answer: that is not a stuck session.
+        const waiting = timedOut && t.pendingDialogs > 0;
+        const msg = waiting ? 'The page is showing a dialog to the human (a confirm, prompt or file picker); it continues when they answer it.' : (e.message || String(e));
+        log(`tab ${t.id}: ${m.method}: ${msg}`);
+        reply({ error: msg });
+        if (waiting) timedOut = false;
+      }
       finally { clearTimeout(timer); }
       // Best effort for a session that stopped answering: detaching fires 'detach', which
       // reattaches a fresh one.
@@ -1282,6 +1496,7 @@ async function handle(ws, state, m) {
       const t = w.tabs.get(m.tabId);
       const reply = (obj) => ws.send(JSON.stringify({ ...obj, requestId: m.requestId }));
       if (!t || t.win.isDestroyed()) return reply({ url: '', title: '', error: 'no such tab in this workspace' });
+      t.boost();
       return reply(await t.navigate(m.kind, m.url, Number(m.timeout) || 30000));
     }
     case 'console': {
@@ -1304,10 +1519,15 @@ async function handle(ws, state, m) {
       const t = w.tabs.get(m.tabId);
       if (!t) return;
       t.subscribers.add(ws);
+      t.setWatched();
       t.win.webContents.invalidate(); // a fresh subscriber wants a frame now, not on next change
       return;
     }
-    case 'unsubscribe': return void w.tabs.get(m.tabId)?.subscribers.delete(ws);
+    case 'unsubscribe': {
+      const t = w.tabs.get(m.tabId);
+      if (t) { t.subscribers.delete(ws); t.setWatched(); }
+      return;
+    }
   }
 }
 

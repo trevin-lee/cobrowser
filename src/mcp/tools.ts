@@ -177,7 +177,7 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'click',
     {
       description:
-        'Click an element by uid (from take_snapshot; valid while the element exists) OR a CSS selector. A real input click (the cursor moves there, presses, releases) that frameworks (React etc.) accept as genuine — unlike element.click() from evaluate_script, which fires untrusted events sites may ignore. Check the outcome with read_page, not a fresh full snapshot.',
+        'Click an element by uid (from take_snapshot; valid while the element exists) OR a CSS selector. A real input click (the cursor moves there, presses, releases) that frameworks (React etc.) accept as genuine — unlike element.click() from evaluate_script, which fires untrusted events sites may ignore. Check the outcome with read_page, not a fresh full snapshot. If the click opens a page dialog (confirm, prompt) or a file picker, it is shown to the human and the click waits for their answer.',
       inputSchema: { uid: z.string().optional(), selector: z.string().optional(), dblClick: z.boolean().optional(), pageId },
     },
     async ({ uid, selector, dblClick, pageId: id }) => {

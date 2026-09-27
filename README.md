@@ -89,6 +89,19 @@ The app keeps a local vault (encrypted through the OS keychain, unlocked with To
 
 When an agent needs a login its workspace is not scoped for, it calls `request_credential` with the site and a one-line reason. You get a native dialog naming the workspace and the login: **Allow in this workspace** adds the workspace to the login's scope, **Allow once** permits a single fill, **Deny** does nothing. The agent only learns the outcome, and a denial is indistinguishable from there being no such login, so a workspace still cannot enumerate what others hold.
 
+### Popups, dialogs, uploads and downloads
+
+Tabs are hidden offscreen windows, so everything a page would normally show in a window of its own is handled by the app instead:
+
+- **Sign-in and payment popups** (`window.open` with a size, as "Sign in with Google" uses) open as a real small window on your desktop, as in Chrome, keep `window.opener` so they can report back, and close themselves. Links that open a new tab stay editor tabs.
+- **alert, confirm and prompt** show as app dialogs; the page waits for your answer, as it would in Chrome. **"Leave this site?"** prompts are asked the same way.
+- **File uploads** use the app's file picker, including inside cross-site iframes.
+- **Downloads** save straight to your Downloads folder (never overwriting), with a notification that opens the file in Finder.
+- **A crashed page** reloads by itself, unless it crashes three times in a minute.
+- **Tabs no panel is showing** draw once a second instead of 60 times, and at full rate again the moment anything acts on them.
+
+If the agent's action opens a dialog or a file picker, it is shown to you, and the agent's action waits for your answer.
+
 ### The app
 
 The browser runs as a menu-bar app named cobrowser, with its own icon. The Electron it downloads is renamed `cobrowser.app` and given the name, bundle id and icon once, before its first start, then re-sealed: with your identity when it is signed for passkeys, ad hoc otherwise. It is marked menu-bar-only, so it never appears in the Dock or the app switcher. The icon is drawn by `scripts/make-icon.js` from the mark in `media/icon.png`.

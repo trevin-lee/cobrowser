@@ -21,3 +21,7 @@ node_modules/**
 app/**
 # Source art for media/cobrowser.icns (scripts/make-icon.js); the .icns is what ships.
 media/cobrowser-1024.png
+# Tests are for the repo, not the installed extension.
+test/**
+dist-test/**
+esbuild.test.mjs
