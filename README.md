@@ -2,18 +2,20 @@
 
 An embedded, agent-controllable browser inside your editor — **co-driven** by you and your AI agent. A small companion app renders one isolated browser per workspace *offscreen* and streams it into a webview panel in VS Code / Cursor. You drive it (frames + input); your agent drives the *same* tabs over MCP (Claude Code, Cursor, or VS Code's agent). Log into a site once — the session persists and the agent acts as you, sandboxed from your daily-driver browser.
 
-> **Status: early.** The core loop (per-workspace profile → offscreen frames → agent-over-MCP → same tabs) works and is what you get by default. See [Simplifications](#simplifications) and [Next steps](#next-steps).
+> **Status:** in daily use on macOS. What it deliberately does not do is under [Limits](#limits).
 
 ## Install
 
-Not on the marketplaces yet — install the VSIX from [Releases](https://github.com/trevin-lee/cobrowser/releases):
+Cobrowser is not on any marketplace. Download `cobrowser-<version>.vsix` from the [latest release](https://github.com/trevin-lee/cobrowser/releases/latest) and install it:
 
 ```bash
 # Cursor
-cursor --install-extension cobrowser-0.7.0.vsix
+cursor --install-extension cobrowser-<version>.vsix
 # VS Code
-code --install-extension cobrowser-0.7.0.vsix
+code --install-extension cobrowser-<version>.vsix
 ```
+
+To update later, install the newer release the same way, then quit and reopen the editor.
 
 Or use the editor's **Extensions: Install from VSIX…** command. Then reload the window and run **Cobrowser: Open Browser Panel** from the Command Palette.
 
@@ -21,7 +23,7 @@ No browser setup required — the companion app (a pinned Electron, ~120 MB) dow
 
 ## Why
 
-- **Agent acts as you, but isolated.** Each workspace gets its own browser profile inside the app, never your real Chrome/Zen profile and never the repo working tree. Manual logins persist there; the agent inherits them.
+- **Agent acts as you, but isolated.** Each workspace gets its own browser profile inside the app, never your real Chrome or Firefox profile and never the repo working tree. Manual logins persist there; the agent inherits them.
 - **No floating browser windows.** Tabs render offscreen — there is no OS window at all — and appear as editor tabs next to your code.
 - **Consistent tool surface.** MCP tool names mirror [`chrome-devtools-mcp`](https://github.com/ChromeDevTools/chrome-devtools-mcp) (`navigate_page`, `take_snapshot`, `click`, `fill`, …).
 
@@ -36,22 +38,22 @@ No browser setup required — the companion app (a pinned Electron, ~120 MB) dow
                 │ frames / resize / open / close            │ CDP over the same socket
 ┌───────────────┴──────────── extension host (per editor window) ───────────┐
 │  BrowserPanel (webview host)             BrowserSession + MCP tools        │
-│  postMessage ↔ canvas, forwards input    run() FIFO serializes all actions │
+│  postMessage ↔ canvas, forwards input    one action queue per tab          │
 └───────────────────────────────────────────────────────────────────────────┘
             │ postMessage                                    │ HTTP (daemon)
      webview <canvas> — you click/type                 agent (Claude Code / …)
 ```
 
-**The app owns the browsers; the editor is a client.** Tabs are offscreen webContents: rendered into GPU memory with no OS window, so nothing can hide, minimize or stall them, and they keep painting while you work elsewhere. The app outlives editor windows — a reload reconnects and finds the tabs where they were, and session cookies survive. The extension sends DevTools-protocol commands over the same socket and the app runs them on each tab's in-process debugger, so the MCP tools and the panel's input are real input to the very same tabs — with no debugging port open on the machine and no automation switch on the process. Everything funnels through `run()` so agent and human actions never interleave mid-action.
+**The app owns the browsers; the editor is a client.** Tabs are offscreen webContents: rendered into GPU memory with no OS window, so nothing can hide, minimize or stall them, and they keep painting while you work elsewhere. The app outlives editor windows — a reload reconnects and finds the tabs where they were, and session cookies survive. The extension sends DevTools-protocol commands over the same socket and the app runs them on each tab's in-process debugger, so the MCP tools and the panel's input are real input to the very same tabs — with no debugging port open on the machine and no automation switch on the process. Each tab has its own action queue, so an agent's steps on a tab never interleave while different tabs proceed in parallel; your own clicks and keys go straight to the page.
 
 Electron is pinned (`ELECTRON_VERSION`), so the app's Chromium is the browser version for every install — no dependence on what happens to be in `/Applications`.
 
 ## How the agent discovers it
 
 Cobrowser runs **one** MCP endpoint for every window: a small background daemon on
-`127.0.0.1:39273` (`cobrowser.port`), gated by a Bearer token. Each editor window keeps its own
-browser + Chrome profile and registers it with the daemon; the daemon proxies each call to the
-window that owns the named workspace.
+`127.0.0.1:39273` (`cobrowser.port`), gated by a Bearer token. Each editor window registers its
+workspace — and that workspace's own browser profile in the app — with the daemon, and the
+daemon routes each call to the window that owns the workspace.
 
 ```
   ~/.cursor/mcp.json ─┐                     ┌─ window A → browser + profile A
@@ -59,15 +61,18 @@ window that owns the named workspace.
    (ONE entry)            registry + proxy  └─ window B → browser + profile B
 ```
 
-Every tool therefore takes a required `workspace` argument — the folder name, or the full path
-when names collide — and `list_workspaces` shows what is open. Routing is explicit precisely so
-a long-running agent can never land on a different workspace's browser because focus moved.
+A Claude Code session is **bound to its workspace** by that workspace's own token: its tools act
+on that folder's browser only and take no `workspace` argument, enforced by the credential rather
+than by trusting what the agent asks for. VS Code's agent and Cursor use one unscoped entry, so
+their tools take a required `workspace` argument — the folder name, or the full path when names
+collide — and `list_workspaces` shows what is open. Either way, routing is explicit, so a
+long-running agent never lands on another workspace's browser because focus moved.
 
 | Client | Mechanism |
 |---|---|
-| **VS Code** agent | `vscode.lm.registerMcpServerDefinitionProvider` (native), pointed at the daemon |
-| **Cursor** | `~/.cursor/mcp.json` → one `cobrowser` entry |
-| **Claude Code** | `~/.claude.json` → top-level `mcpServers.cobrowser` (user scope) |
+| **Claude Code** | `~/.claude.json` → `projects[<folder>].mcpServers.cobrowser`, with that workspace's token |
+| **VS Code** agent | `vscode.lm.registerMcpServerDefinitionProvider` (native), pointed at the daemon, unscoped |
+| **Cursor** | `~/.cursor/mcp.json` → one unscoped `cobrowser` entry |
 
 Nothing is written into your repo, and the URL never changes: the daemon outlives every window,
 exits ~2 minutes after the last one closes, and is restarted automatically when its version no
@@ -85,7 +90,7 @@ Cobrowser says what it is. The user agent is the standard reduced Chromium UA wi
 
 ### Logins
 
-The app keeps a local vault (encrypted through the OS keychain, unlocked with Touch ID) that the agent fills from without ever seeing a password: `list_credentials` shows the sites and usernames this workspace may use, `fill_credentials` types a login into the fields the agent picked, and the app checks the page is really on that site first. Add logins from the menu-bar **Logins…** window or by CSV import, and scope each one to the workspaces that may use it, or to all.
+The app keeps a local vault (encrypted through the OS keychain, unlocked with Touch ID) that the agent fills from without ever seeing a password: `list_credentials` shows the sites and usernames this workspace may use, `fill_credentials` types a login into the fields the agent picked, and the app checks the page is really on that site first. Add logins from the menu-bar **Logins…** window or by CSV import, and scope each one to the workspaces that may use it, or to all. **Export CSV…** in the Logins window, or **Cobrowser: Export Logins to CSV**, writes every login to a CSV other password managers import (asking for Touch ID each time); the file is plain text, so delete it once it is imported.
 
 When an agent needs a login its workspace is not scoped for, it calls `request_credential` with the site and a one-line reason. You get a native dialog naming the workspace and the login: **Allow in this workspace** adds the workspace to the login's scope, **Allow once** permits a single fill, **Deny** does nothing. The agent only learns the outcome, and a denial is indistinguishable from there being no such login, so a workspace still cannot enumerate what others hold.
 
@@ -96,6 +101,7 @@ Tabs are hidden offscreen windows, so everything a page would normally show in a
 - **Sign-in and payment popups** (`window.open` with a size, as "Sign in with Google" uses) open as a real small window on your desktop, as in Chrome, keep `window.opener` so they can report back, and close themselves. Links that open a new tab stay editor tabs.
 - **alert, confirm and prompt** show as app dialogs; the page waits for your answer, as it would in Chrome. **"Leave this site?"** prompts are asked the same way.
 - **File uploads** use the app's file picker, including inside cross-site iframes.
+- **Dropdowns, date, time and color fields** open their picker as a macOS menu or a small window of the app's own at the cursor, and your choice goes back into the page. The agent's `fill` sets them directly.
 - **Downloads** save straight to your Downloads folder (never overwriting), with a notification that opens the file in Finder.
 - **Fullscreen** (a video player's button) fills the tab, with the panel's toolbar hidden; Escape leaves it. Nothing takes over your display.
 - **A self-signed certificate** (a router or a device on your network) gets Chrome's question: proceed anyway, remembered for that host until the app quits.
@@ -149,6 +155,8 @@ Every page tool takes an optional `pageId`, and the agent and the human each hav
 
 ## Develop it
 
+**Cobrowser: Turn Off Passkeys** signs the browser again as it was downloaded; passkeys already saved stay in your keychain and work again if you re-enable with the same team and identifier.
+
 ### Tests
 
 `npm test` runs the unit tests. `npm run test:e2e` runs the end-to-end suites in `test/e2e/`: each starts its own isolated copy of the app (scratch state and data dirs, biometrics and dialogs auto-answered) and drives it through the real client and session code — pages, input, native selects, cross-origin iframes, tabs and focus, dialogs and popups, credentials, single-instance, branding. They need `npm run build` first and take about two minutes. `npm run bench:e2e` prints measurements (scroll latency, what a site sees, snapshot sizes) without asserting. Nothing in them can reach your real app, tabs or vault.
@@ -173,34 +181,24 @@ Scripts: `npm run watch` (rebuild on change), `npm run typecheck`.
 
 - **Per-request MCP transport.** Stateless Streamable HTTP creates a fresh `McpServer` + transport per POST (a single shared instance would misroute concurrent clients).
 - **Cursor-safe activation.** The VS Code-only MCP API is feature-detected.
-- **Tabs belong to the app, not the socket.** A window's connection can drop (reload) without closing anything; the same workspace reconnecting adopts its tabs by target id. Another workspace never sees them.
+- **Tabs belong to the app, not the socket.** A window's connection can drop (reload) without closing anything; the same workspace reconnecting adopts its tabs by the app's tab id. Another workspace never sees them.
 - **Never uncap the frame rate.** Measured twice: `--disable-frame-rate-limit` multiplies CPU ~35x for no extra frames. `setFrameRate` alone reaches 120 fps at a tenth of a core.
 
-## Simplifications
+## Limits
 
-- Stateless MCP (no resumable sessions); single active page tracked; screencast follows the active target only.
-- JPEG frames encoded on the app's main thread (~6 ms at panel size). Shared-texture hardware encode is the planned next step, not a switch.
-- `uid` model is DOM-attribute tagging, not a full accessibility tree.
-- `evaluate_script` runs arbitrary JS in the page (escape hatch).
-
-## Next steps
-
-- Publish to Open VSX so Cursor can install it directly.
-- Windows/Linux (the Electron download is macOS-only so far).
-- Pop-out to a real window.
-- Richer/accessibility-tree `take_snapshot`; multi-tab mirroring UI.
-- Input-owner hard lock (currently a FIFO queue + advisory flag).
+- **macOS only.** The pinned Electron is downloaded for macOS (arm64 and x64).
+- **The agent's tools stop at embedded frames.** A video player or widget embedded from another site is listed in `take_snapshot` as `[frame]`, and the agent hands it to you: your own clicks and typing reach inside it, the agent's do not.
+- **No accessibility tree.** `take_snapshot` tags interactive DOM elements with `uid`s rather than walking the accessibility tree.
+- **`evaluate_script` runs arbitrary JavaScript in the page.** It is the escape hatch, and it is not subject to the click and fill rule below.
+- **Stateless MCP.** No resumable sessions; each request stands alone.
+- **The agent does not pay or type secrets on its own.** In both the panel and your own browser, it will not click a button that pays or places an order, or type a password, one-time code or card number, unless you tell it to (`allowPayment`, `allowCredentials`). Saved logins go in through `fill_credentials`, which never shows it the password.
 
 ## Security notes
 
-The profile holds live session cookies — treat it as credentials. It lives in `globalStorageUri` (outside the repo). The MCP server binds `127.0.0.1` only, is token-gated (random Bearer per session), and does manual, port-aware `Host`-header validation (the SDK's built-in `allowedHosts` check matches the port-bearing raw header and would reject everything). Seed the profile only with the accounts your automation needs; don't drop high-value logins (primary email, bank) into an agent-driven browser.
+Each workspace's browser profile holds live session cookies — treat it as credentials. Profiles live in the app's data folder (`~/Library/Application Support/cobrowser`), outside every repo. The vault is encrypted with a key in your login keychain and unlocks with Touch ID; showing or exporting passwords asks for Touch ID every time, and a stored password is never sent back out to the editor or the agent. The daemon binds `127.0.0.1` only and is gated by tokens stored with owner-only permissions under `~/.cobrowser`: a daemon-wide one for unscoped clients and one per workspace for scoped sessions. It also rejects any request whose `Host` header is not a loopback address. No remote debugging port is ever opened, so no other process can attach to the browser. Seed each profile only with the accounts your automation needs; don't put high-value logins (primary email, bank) in an agent-driven browser.
 
 ## Requirements
 
 - **VS Code or Cursor**, and an agent that speaks MCP over HTTP (Claude Code, Cursor, or VS Code's agent).
 - **No browser setup.** On first run the extension downloads the pinned Electron into `globalStorage` (checksum-verified against the release's `SHASUMS256.txt`) and runs the bundled app with it. Nothing depends on what you have installed.
 - **macOS** only for now (arm64 and x64).
-
-## Publishing (Open VSX)
-
-Cursor installs from [Open VSX](https://open-vsx.org), not the MS Marketplace. After signing the Eclipse Publisher Agreement and creating the `trevin-lee` namespace: `npm run package` → `npx ovsx publish cobrowser-<version>.vsix -p <token>`.
