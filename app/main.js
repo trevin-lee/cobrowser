@@ -33,9 +33,11 @@ const STATE_DIR = process.env.COBROWSER_STATE_DIR || path.join(os.homedir(), '.c
 const STATE_FILE = path.join(STATE_DIR, 'app.json');
 const JPEG_QUALITY = 90; // q80 rings around glyphs; the frame is the thing the human reads
 const FRAME_RATE = 60;
-/** A tab no panel is showing still runs, but paints once a second: three hidden animated tabs
- *  cost 24% of a core at 60 fps and 1% at 1 (measured). Screenshots raise it briefly. */
-const HIDDEN_FRAME_RATE = 1;
+/** A tab no panel is showing still runs, but paints 4 times a second: three hidden animated
+ *  tabs cost 24% of a core at 60 fps (measured). The first command to an idle hidden tab waits
+ *  for its next frame — up to a second at 1 fps (measured: 130–950 ms, evenly spread), at most
+ *  250 ms at 4 — and anything acting on a tab raises it to full rate (see boost). */
+const HIDDEN_FRAME_RATE = 4;
 const TAB_PRELOAD = path.join(__dirname, 'tab-preload.js');
 
 /** Every tab window's web preferences, popups included (they must match their opener's). */

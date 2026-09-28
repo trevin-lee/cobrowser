@@ -101,7 +101,7 @@ Tabs are hidden offscreen windows, so everything a page would normally show in a
 - **A self-signed certificate** (a router or a device on your network) gets Chrome's question: proceed anyway, remembered for that host until the app quits.
 - **A password asked for by the browser itself** (HTTP basic auth) gets a small sign-in window.
 - **A crashed page** reloads by itself, unless it crashes three times in a minute.
-- **Tabs no panel is showing** draw once a second instead of 60 times, and at full rate again the moment anything acts on them.
+- **Tabs no panel is showing** draw 4 times a second instead of 60, and at full rate again the moment anything acts on them.
 
 If the agent's action opens a dialog or a file picker, it is shown to you, and the agent's action waits for your answer.
 

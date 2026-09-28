@@ -122,6 +122,7 @@ document.getElementById('file').addEventListener('change',(e)=>window.__files=[.
     r.check('three hidden animated tabs cost little CPU', cpu < 12, { cpuPercentOfOneCore: cpu });
     const spin = (await s.listPages()).find((p) => p.url.endsWith('/spin'))!;
     const t0 = Date.now(); const shot = await s.run(() => s.screenshot({ format: 'png', pageId: spin.pageId }), spin.pageId); const shotMs = Date.now() - t0;
+    // The first command to an idle hidden tab waits for its next frame (at most 250 ms at 4 fps).
     r.check('a screenshot of a hidden tab is quick', shot.length > 1000 && shotMs < 600, { shotMs });
     r.note('hidden tabs CPU', `${cpu}% of one core`); r.note('hidden screenshot', `${shotMs} ms`);
     r.check('no window is on screen at the end', onScreenWindows(pid).length === 0, onScreenWindows(pid));
