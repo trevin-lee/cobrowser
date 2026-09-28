@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 import type { AppPage } from '../browser/AppPage';
 import type { BrowserSession, ElementBox } from '../browser/BrowserSession';
 import type { AppConnection, ScreenInfo } from '../app/AppClient';
+import { DEFAULT_TAB_TITLE_MAX, fullTabTitle, tabLabel } from './tabTitle';
 
 /** Default ceiling on rendered pixels per frame (cobrowser.renderBudgetMegapixels). Measured
  *  on an M4 Pro: the app's JPEG encode holds 24fps at 8.2Mpx (a full-height retina laptop
@@ -82,6 +83,8 @@ export class BrowserPanel {
   static renderScale = 2;
   /** Pixel budget per frame; see DEFAULT_RENDER_BUDGET_PX. */
   static renderBudgetPx = DEFAULT_RENDER_BUDGET_PX;
+  /** Longest tab title, in characters (cobrowser.tabTitleMaxLength); 0 = no limit. */
+  static tabTitleMax = DEFAULT_TAB_TITLE_MAX;
   /** The panel that is the active editor, for the keyboard-shortcut commands. */
   static active: BrowserPanel | undefined;
 
@@ -292,10 +295,19 @@ export class BrowserPanel {
     void this.applyViewport(); // apply this origin's remembered zoom
   };
 
-  /** Called on navigation and by the extension whenever the tab set changes (titles). */
+  /** The page's whole title, last sent to the webview (its address bar shows it on hover). */
+  private fullTitle = '';
+
+  /** Called on navigation and by the extension whenever the tab set changes (titles). The
+   *  tab shows the title cut like a browser tab's; the address bar's tooltip has all of it. */
   updateTitle(): void {
-    const title = this.page.title() || hostOf(this.page.url()) || 'Browser';
-    if (this.panel.title !== title) this.panel.title = title;
+    const label = tabLabel(this.page.title(), this.page.url(), BrowserPanel.tabTitleMax);
+    if (this.panel.title !== label) this.panel.title = label;
+    const full = fullTabTitle(this.page.title(), this.page.url());
+    if (full !== this.fullTitle) {
+      this.fullTitle = full;
+      void this.panel.webview.postMessage({ type: 'extension.title', title: full });
+    }
   }
 
   /** Post an agent-action highlight box down to this panel's webview. */
@@ -399,6 +411,7 @@ export class BrowserPanel {
             this.ready = true;
             await this.syncRender();
             void this.panel.webview.postMessage({ type: 'extension.url', url: this.page.url() });
+            void this.panel.webview.postMessage({ type: 'extension.title', title: this.fullTitle });
             break;
           case 'extension.contextinfo': {
             // Right-click: report what's under the cursor (selection / link) so the

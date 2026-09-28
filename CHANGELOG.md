@@ -2,6 +2,12 @@
 
 Release notes for earlier versions are on the [GitHub releases page](https://github.com/trevin-lee/cobrowser/releases).
 
+## Unreleased
+
+### Fixed
+
+- Browser tabs no longer grow as wide as their page title. A title is cut at 30 characters with an ellipsis, as a browser tab is (`cobrowser.tabTitleMaxLength`, 0 for no limit); hovering the address bar or the sidebar row shows it in full, and a blank tab reads "New Tab".
+
 ## 0.9.1
 
 ### Fixed

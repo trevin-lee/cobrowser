@@ -128,6 +128,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const readRender = (c: vscode.WorkspaceConfiguration): void => {
     BrowserPanel.renderScale = c.get<number>('renderScale', 2);
     BrowserPanel.renderBudgetPx = Math.round(c.get<number>('renderBudgetMegapixels', 6.5) * 1_000_000);
+    BrowserPanel.tabTitleMax = c.get<number>('tabTitleMaxLength', 30);
   };
   readRender(cfg);
   context.subscriptions.push(
@@ -135,6 +136,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (e.affectsConfiguration('cobrowser.renderScale') || e.affectsConfiguration('cobrowser.renderBudgetMegapixels')) {
         readRender(vscode.workspace.getConfiguration('cobrowser'));
         BrowserPanel.remeasureAll();
+      }
+      if (e.affectsConfiguration('cobrowser.tabTitleMaxLength')) {
+        readRender(vscode.workspace.getConfiguration('cobrowser'));
+        BrowserPanel.refreshTitles();
       }
     }),
   );

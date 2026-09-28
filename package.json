@@ -174,6 +174,12 @@
           "minimum": 1,
           "maximum": 16,
           "description": "Largest frame the app will render, in megapixels. Above it the render scale is backed off. 6.5 keeps scrolling at ~30fps on a full-height Retina panel (~1.8x); 9 gives true 2x there at ~24fps. Measured on an M4 Pro."
+        },
+        "cobrowser.tabTitleMaxLength": {
+          "type": "number",
+          "default": 30,
+          "minimum": 0,
+          "description": "Longest browser tab title, in characters. Longer titles end with …, as in a browser; hovering the address bar shows the whole title. 0 shows titles in full."
         }
       }
     },

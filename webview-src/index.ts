@@ -77,6 +77,11 @@ window.addEventListener('message', (event: MessageEvent) => {
     vscode.setState({ url: m.url });
     return;
   }
+  if (m?.type === 'extension.title') {
+    // The editor tab shows the title cut short; hovering the address bar shows all of it.
+    urlInput.title = String(m.title ?? '');
+    return;
+  }
   if (m?.type === 'extension.fullscreen') {
     // The page fills the tab: hide the toolbar so it fills the panel too. The stage's
     // ResizeObserver re-reports the viewport.
