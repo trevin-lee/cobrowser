@@ -3,58 +3,44 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-/**
- * The guard patterns live in the extension (plain JS, injected into pages), so they are read
- * out of the source rather than imported. Pinning them here because a regression is not a
- * crash: it is an agent clicking "Sign out" on a bank, or typing into a password box. That
- * already happened once, which is why these exist.
- */
-const src = fs.readFileSync(
-  path.join(__dirname, '..', 'firefox-extension', 'background.js'),
-  'utf8',
-);
+import { COMMITTING as SHARED_COMMITTING, CREDENTIAL as SHARED_CREDENTIAL } from '../src/browser/guards';
 
-function pattern(name: string): RegExp {
-  const m = new RegExp(`^const ${name} = (/.*/[gimsuy]*);$`, 'm').exec(src);
-  assert.ok(m, `pattern ${name} not found in background.js`);
+/**
+ * One rule for both browsers the agent drives (src/browser/guards.ts): no clicking a button
+ * that pays or places an order, no typing a password, one-time code or card number. The
+ * browser extensions run in pages and carry copies of the patterns, read here out of their
+ * source; the copies must equal the shared ones, so the two tool families cannot drift.
+ */
+const EXTENSIONS = ['firefox-extension', 'chrome-extension'].map((dir) => ({
+  dir,
+  src: fs.readFileSync(path.join(__dirname, '..', dir, 'background.js'), 'utf8'),
+}));
+const src = EXTENSIONS[0].src;
+
+function patternIn(source: string, name: string): RegExp {
+  const m = new RegExp(`^const ${name} = (/.*/[gimsuy]*);$`, 'm').exec(source);
+  assert.ok(m, `pattern ${name} not found`);
   const body = m![1];
   const lastSlash = body.lastIndexOf('/');
   return new RegExp(body.slice(1, lastSlash), body.slice(lastSlash + 1));
 }
 
-const DESTRUCTIVE = pattern('DESTRUCTIVE');
-const CREDENTIAL = pattern('CREDENTIAL');
-const COMMITTING = pattern('COMMITTING');
+const CREDENTIAL = SHARED_CREDENTIAL;
+const COMMITTING = SHARED_COMMITTING;
 
-test('the labels that signed the user out of their bank are caught', () => {
-  for (const label of ['Sign out', 'Sign Out', 'Log out', 'Logout', 'LOG OUT']) {
-    assert.ok(DESTRUCTIVE.test(label), `${label} must be refused by default`);
+test('both extensions carry exactly the shared patterns', () => {
+  for (const { dir, src: source } of EXTENSIONS) {
+    assert.equal(patternIn(source, 'COMMITTING').source, SHARED_COMMITTING.source, `${dir}: COMMITTING`);
+    assert.equal(patternIn(source, 'CREDENTIAL').source, SHARED_CREDENTIAL.source, `${dir}: CREDENTIAL`);
   }
 });
 
-test('account-destroying controls are caught', () => {
-  for (const label of [
-    'Delete account',
-    'Close account',
-    'Cancel subscription',
-    'Cancel membership',
-    'Deactivate',
-  ]) {
-    assert.ok(DESTRUCTIVE.test(label), `${label} must be refused by default`);
+test('sign-out and delete-account controls are not refused in either extension (never part of the rule)', () => {
+  for (const { dir, src: source } of EXTENSIONS) {
+    assert.ok(!/DESTRUCTIVE|found\.destructive/.test(source), `${dir} still carries the sign-out guard`);
   }
-});
-
-test('ordinary controls are NOT refused — the guard must not block real work', () => {
-  for (const label of [
-    'Load more orders',
-    'View order detail',
-    'Sign in',
-    'Continue',
-    'Download CSV',
-    'Delete item from cart',
-    'Cancel', // a bare dialog Cancel is not "cancel account"
-  ]) {
-    assert.ok(!DESTRUCTIVE.test(label), `${label} must remain clickable`);
+  for (const label of ['Sign out', 'Log out', 'Delete account', 'Cancel subscription']) {
+    assert.ok(!COMMITTING.test(label), `${label} is not a payment`);
   }
 });
 

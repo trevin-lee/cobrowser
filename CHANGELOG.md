@@ -2,6 +2,25 @@
 
 Release notes for earlier versions are on the [GitHub releases page](https://github.com/trevin-lee/cobrowser/releases).
 
+## 0.9.3
+
+### Changed
+
+- **One rule for what the agent does not do on its own**, in the panel and in your own browser alike: it does not click a button that pays or places an order, or type a password, one-time code or card number, unless you tell it to (`allowPayment`, `allowCredentials`); saved logins go in through `fill_credentials`. The panel's tools did neither before. The own-browser tools also refused sign-out and delete-account controls, which was never part of the rule, and no longer do.
+- Snapshots list embedded frames (a video player or widget from another site) as out of the agent's reach, so it hands them to you instead of taking the page for empty.
+
+### Added
+
+- Export logins to CSV, from the Logins window or **Cobrowser: Export Logins to CSV**, with Touch ID each time. Devices on your network export as `http://`, sites as `https://`.
+- **Cobrowser: Turn Off Passkeys.**
+- Date, time and color fields open a picker when you click them, as dropdowns do; the agent's `fill` sets them directly.
+
+### Fixed
+
+- The README describes the product as it is: install, how agents connect, limits, security.
+- Command names are consistent, and the deprecated `cobrowser.zenContainer` setting is gone.
+- The Firefox add-on's messages name the tools as they are called now.
+
 ## 0.9.2
 
 ### Fixed

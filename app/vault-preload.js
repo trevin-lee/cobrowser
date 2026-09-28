@@ -11,5 +11,6 @@ contextBridge.exposeInMainWorld('vault', {
   // The one call that returns a password — the app demands a fresh Touch ID for it every time.
   reveal: (host, username) => ipcRenderer.invoke('vault:reveal', { host, username }),
   importCsv: (scope) => ipcRenderer.invoke('vault:importCsv', { scope }),
+  exportCsv: () => ipcRenderer.invoke('vault:exportCsv'),
   lock: () => ipcRenderer.invoke('vault:lock'),
 });

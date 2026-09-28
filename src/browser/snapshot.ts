@@ -135,8 +135,28 @@ export function snapshotScript(opts: SnapshotOptions): SnapshotResult {
     return parts.length ? ' ' + parts.join(' ') : '';
   }
 
+  // Frames are listed, not entered: the tools act on the page's own document, so a video
+  // player or sign-in widget embedded from another site is out of their reach. Saying so
+  // lets the agent hand that part to the human instead of concluding the page is empty.
+  let frames = 0;
+  function frameLine(el: Element, depth: number): void {
+    const f = el as HTMLIFrameElement;
+    const src = f.src || '';
+    let where = src;
+    try { const u = new URL(src); where = u.host + (u.pathname.length > 1 ? u.pathname : ''); } catch { /* keep */ }
+    const title = clean(f.title || f.getAttribute('aria-label') || f.name || '');
+    if (want && !(title.toLowerCase().includes(want) || src.toLowerCase().includes(want))) return;
+    if (o.role && o.role !== 'frame') return;
+    frames++;
+    lines.push('  '.repeat(Math.min(depth, 8)) + '[frame]' + (title ? ' "' + title + '"' : '') + (where ? ' ' + clip(where, 120) : '') + ' — contents not reachable by these tools; ask the human to act inside it');
+  }
+
   function walk(el: Element, depth: number): void {
     if (depth > 60) return;
+    if ((el.tagName === 'IFRAME' || el.tagName === 'FRAME') && isVisible(el)) {
+      frameLine(el, depth);
+      return;
+    }
     let tagged = false;
     if (isInteractive(el) && isVisible(el)) {
       const label = labelFor(el);
@@ -177,6 +197,7 @@ export function snapshotScript(opts: SnapshotOptions): SnapshotResult {
   const notes: string[] = [];
   if (matched > limit) notes.push('…' + (matched - limit) + ' more elements not shown — narrow with withinSelector / textContains / role, or raise limit.');
   if (skippedUnlabeled) notes.push(skippedUnlabeled + ' unlabeled element(s) left out (labeledOnly).');
+  if (frames) notes.push(frames + ' embedded frame(s) listed as [frame]: the human can use them in the panel; these tools cannot.');
   const body = lines.length ? lines.join('\n') : '(no matching interactive elements)';
   return { text: head + '\n' + body + (notes.length ? '\n\n' + notes.join('\n') : ''), seq };
 }

@@ -7,6 +7,7 @@ const PAGE = `<!doctype html><title>snap</title><body>
 <div id=box><button id=go>Go</button><a href="/dest">Order details</a><button aria-label=""><svg width=10 height=10></svg></button></div>
 <form id=f><input id=user placeholder="Email"><input id=pw type=password><select id=size><option>Small</option><option selected>Medium</option></select></form>
 <x-card id=card></x-card>
+<iframe id=player title="Lecture player" src="http://localhost:1/embed/video" style="width:200px;height:100px"></iframe>
 <script>
   window.__go = 0; window.__shadow = 0;
   document.getElementById('go').addEventListener('click', () => window.__go++);
@@ -41,7 +42,7 @@ suite('snapshot', async (r) => {
     const limited = await s.run(() => s.takeSnapshot({ limit: 2 }));
     r.check('limit caps the list and says what was left out', (limited.match(/^\s*\[\d+\]/gm) || []).length === 2 && /more elements not shown/.test(limited), limited);
 
-    await s.run(() => s.fill({ selector: '#pw', value: 'hunter2secret' }));
+    await s.run(() => s.fill({ selector: '#pw', value: 'hunter2secret', allowCredentials: true }));
     await s.run(() => s.fill({ selector: '#user', value: 'me@example.com' }));
     const snap3 = await s.run(() => s.takeSnapshot({ withinSelector: '#f' }));
     r.check('a filled password shows as (filled), never its value; other inputs show theirs', !snap3.includes('hunter2secret') && /input:password \(filled\)/.test(snap3) && /value="me@example.com"/.test(snap3), snap3);
@@ -53,6 +54,8 @@ suite('snapshot', async (r) => {
     let err = ''; try { await s.run(() => s.click({ uid: goUid })); } catch (e) { err = String((e as Error).message); }
     r.check('a removed element says the uid is gone and to take_snapshot', /is gone/.test(err) && /take_snapshot/.test(err), err);
 
+    const withFrame = await s.run(() => s.takeSnapshot());
+    r.check('an embedded frame is listed as out of reach, with a note', /\[frame\] "Lecture player" localhost:1\/embed\/video — contents not reachable/.test(withFrame) && /1 embedded frame\(s\) listed/.test(withFrame), withFrame);
     const rp = await s.run(() => s.readPage());
     r.check('read_page returns the visible text', rp.text.includes('Order 1234 shipped on Tuesday') && rp.title === 'snap' && !rp.truncated, rp);
     const rp2 = await s.run(() => s.readPage({ maxChars: 20, links: true }));

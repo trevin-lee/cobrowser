@@ -172,7 +172,7 @@ function buildServer(scope: Registration | undefined): Server {
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     const raw = await rawTools();
-    // firefox_* tools only appear for a workspace that is bound to a container, so an agent
+    // bridge_* tools only appear for a workspace that is bound to a container, so an agent
     // never sees tools it cannot use. An unscoped caller sees them and names a workspace.
     const zenTools = scope ? (scope.container ? ZEN_TOOLS : []) : ZEN_TOOLS;
     return scope
@@ -232,7 +232,7 @@ function buildServer(scope: Registration | undefined): Server {
     if (isZenTool(name)) {
       if (!target.container) {
         return {
-          content: [{ type: 'text' as const, text: `The "${target.name}" workspace is not bound to a browser. Run "Bind Firefox Container…" or "Bind Chrome Tab Group…" in that editor window.` }],
+          content: [{ type: 'text' as const, text: `The "${target.name}" workspace is not bound to a browser. Run "Cobrowser: Bind Firefox Container to This Workspace" or "Cobrowser: Bind Chrome Tab Group to This Workspace" in that editor window.` }],
           isError: true,
         };
       }

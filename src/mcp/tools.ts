@@ -120,7 +120,7 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'take_snapshot',
     {
       description:
-        "The things you can ACT on in your current tab (or pageId): visible interactive elements (links with their destination, buttons, inputs with their current value, selects with their options, open shadow roots included), each with a [uid] for click/fill. uids are STABLE — an element keeps its uid as long as it exists — so do not re-snapshot after every action: snapshot again only after a navigation, when new UI appears that you need, or when a click reports a uid is gone. Keep it small: withinSelector (e.g. \"form\", \"[role=dialog]\", \"main\"), textContains (matches labels; with a \"/\" it matches link destinations, e.g. \"/orders/\"), role (\"button\", \"link\", \"input\"), labeledOnly. To READ the page use read_page instead; to pull many values at once use evaluate_script.",
+        "The things you can ACT on in your current tab (or pageId): visible interactive elements (links with their destination, buttons, inputs with their current value, selects with their options, open shadow roots included), each with a [uid] for click/fill. uids are STABLE — an element keeps its uid as long as it exists — so do not re-snapshot after every action: snapshot again only after a navigation, when new UI appears that you need, or when a click reports a uid is gone. Keep it small: withinSelector (e.g. \"form\", \"[role=dialog]\", \"main\"), textContains (matches labels; with a \"/\" it matches link destinations, e.g. \"/orders/\"), role (\"button\", \"link\", \"input\"), labeledOnly. To READ the page use read_page instead; to pull many values at once use evaluate_script. Embedded frames (a video player or widget from another site) show as [frame]: their contents are out of these tools' reach, so hand that part to the human.",
       inputSchema: {
         withinSelector: z.string().optional(),
         textContains: z.string().optional(),
@@ -177,13 +177,13 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'click',
     {
       description:
-        'Click an element by uid (from take_snapshot; valid while the element exists) OR a CSS selector. A real input click (the cursor moves there, presses, releases) that frameworks (React etc.) accept as genuine — unlike element.click() from evaluate_script, which fires untrusted events sites may ignore. Check the outcome with read_page, not a fresh full snapshot. If the click opens a page dialog (confirm, prompt) or a file picker, it is shown to the human and the click waits for their answer.',
-      inputSchema: { uid: z.string().optional(), selector: z.string().optional(), dblClick: z.boolean().optional(), pageId },
+        'Click an element by uid (from take_snapshot; valid while the element exists) OR a CSS selector. A real input click (the cursor moves there, presses, releases) that frameworks (React etc.) accept as genuine — unlike element.click() from evaluate_script, which fires untrusted events sites may ignore. Check the outcome with read_page, not a fresh full snapshot. If the click opens a page dialog (confirm, prompt) or a file picker, it is shown to the human and the click waits for their answer. REFUSES buttons that pay or place an order (it reports the button instead of clicking), since the human owns that click; pass allowPayment only if they asked you to complete that payment.',
+      inputSchema: { uid: z.string().optional(), selector: z.string().optional(), dblClick: z.boolean().optional(), allowPayment: z.boolean().optional(), pageId },
     },
-    async ({ uid, selector, dblClick, pageId: id }) => {
+    async ({ uid, selector, dblClick, allowPayment, pageId: id }) => {
       const s = await getSession();
-      await s.run(() => s.click({ uid, selector, dblClick, pageId: id }), id);
-      return asText(`clicked ${uid ?? selector}`);
+      const r = await s.run(() => s.click({ uid, selector, dblClick, allowPayment, pageId: id }), id);
+      return asText('clicked' in r ? `clicked ${JSON.stringify(r.clicked)}` : JSON.stringify(r, null, 2));
     },
   );
 
@@ -191,44 +191,45 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'fill',
     {
       description:
-        "Set the value of an input/textarea by uid (from take_snapshot) OR a CSS selector, using real keystrokes. For a <select>, pass the OPTION'S VISIBLE TEXT (or its value): it is chosen and the input/change events fired, since a dropdown cannot open in an offscreen page.",
-      inputSchema: { uid: z.string().optional(), selector: z.string().optional(), value: z.string(), pageId },
+        "Set the value of an input/textarea by uid (from take_snapshot) OR a CSS selector, using real keystrokes. For a <select>, pass the OPTION'S VISIBLE TEXT (or its value): it is chosen and the input/change events fired, since a dropdown cannot open in an offscreen page. Date, time and color fields take their standard value (2026-10-05, 14:30, #336699) and are set the same way. REFUSES password, one-time-code, card and security-code fields and reports them instead: the human types those, and a saved login goes in with fill_credentials, which never shows you the secret. Pass allowCredentials only for a value the human gave you for that field.",
+      inputSchema: { uid: z.string().optional(), selector: z.string().optional(), value: z.string(), allowCredentials: z.boolean().optional(), pageId },
     },
-    async ({ uid, selector, value, pageId: id }) => {
+    async ({ uid, selector, value, allowCredentials, pageId: id }) => {
       const s = await getSession();
-      await s.run(() => s.fill({ uid, selector, value, pageId: id }), id);
-      return asText(`filled ${uid ?? selector}`);
+      const r = await s.run(() => s.fill({ uid, selector, value, allowCredentials, pageId: id }), id);
+      return asText(r.refused ? JSON.stringify(r, null, 2) : `filled ${uid ?? selector}`);
     },
   );
 
   server.registerTool(
     'fill_form',
     {
-      description: 'Fill multiple fields (by uid or selector) in one call (preferred over repeated fill).',
+      description: 'Fill multiple fields (by uid or selector) in one call (preferred over repeated fill). The same rule as fill: secret fields are left for the human (or fill_credentials) and reported, unless allowCredentials.',
       inputSchema: {
         elements: z.array(
           z.object({ uid: z.string().optional(), selector: z.string().optional(), value: z.string() }),
         ),
+        allowCredentials: z.boolean().optional(),
         pageId,
       },
     },
-    async ({ elements, pageId: id }) => {
+    async ({ elements, allowCredentials, pageId: id }) => {
       const s = await getSession();
-      await s.run(() => s.fillForm(elements, id), id);
-      return asText(`filled ${elements.length} field(s)`);
+      const r = await s.run(() => s.fillForm(elements, id, allowCredentials === true), id);
+      return asText(r.refused ? JSON.stringify(r, null, 2) : `filled ${r.filled} field(s)`);
     },
   );
 
   server.registerTool(
     'type_text',
     {
-      description: 'Type text into the currently-focused element; optionally press Enter.',
-      inputSchema: { text: z.string(), submitKey: z.boolean().optional(), pageId },
+      description: 'Type text into the currently-focused element; optionally press Enter. Refuses when the focused field is a password, one-time-code or card field, as fill does, unless allowCredentials.',
+      inputSchema: { text: z.string(), submitKey: z.boolean().optional(), allowCredentials: z.boolean().optional(), pageId },
     },
-    async ({ text, submitKey, pageId: id }) => {
+    async ({ text, submitKey, allowCredentials, pageId: id }) => {
       const s = await getSession();
-      await s.run(() => s.typeText(text, submitKey, id), id);
-      return asText(`typed ${text.length} char(s)`);
+      const r = await s.run(() => s.typeText(text, submitKey, id, allowCredentials === true), id);
+      return asText(r.refused ? JSON.stringify(r, null, 2) : `typed ${text.length} char(s)`);
     },
   );
 

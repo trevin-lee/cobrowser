@@ -31,6 +31,27 @@ suite('credentials', async (r) => {
         await L.stop();
       }
     }
+    // export: every login, as a CSV other managers (and this vault) read, round-tripping
+    const exportPath = path.join(process.env.COBROWSER_E2E_SCRATCH!, 'export', 'logins.csv');
+    require('node:fs').mkdirSync(path.dirname(exportPath), { recursive: true });
+    const L = await launch({ env: { COBROWSER_TEST_EXPORT_PATH: exportPath }, workspace: path.join(process.env.COBROWSER_E2E_SCRATCH!, 'ws-X') });
+    try {
+      await L.conn.vaultAdd('https://bank.test', 'ada', 'p,a"ss\nword', 'all');
+      await L.conn.vaultAdd('http://192.168.1.1:8080', 'admin', 'router-pw', 'all');
+      const ex = await L.conn.vaultExport();
+      const fsm = require('node:fs') as typeof import('node:fs');
+      const csv = fsm.readFileSync(exportPath, 'utf8');
+      const mode = (fsm.statSync(exportPath).mode & 0o777).toString(8);
+      const rows = (t: string) => t.trim().split(/\n(?=[^\n]*,https?:\/\/)/).slice(1).sort();
+      r.check('[export] every login in the vault is written as name,url,username,password, readable only by you', ex.ok === true && ex.count === rows(csv).length && ex.count >= 2 && csv.startsWith('name,url,username,password\n') && csv.includes('"p,a""ss\nword"') && mode === '600', { ex, csv, mode });
+      r.check('[export] a device on the network exports as http, a domain as https', csv.includes(',http://192.168.1.1:8080,admin,') && csv.includes(',https://bank.test,ada,'), csv);
+      await L.conn.vaultImport(csv, 'all');
+      const again = await L.conn.vaultExport();
+      const csv2 = fsm.readFileSync(exportPath, 'utf8');
+      r.check('[export] importing the file back changes nothing: same logins, no duplicates', again.count === ex.count && JSON.stringify(rows(csv2)) === JSON.stringify(rows(csv)), { first: rows(csv), second: rows(csv2) });
+    } finally {
+      await L.stop();
+    }
   } finally {
     srv.close();
   }

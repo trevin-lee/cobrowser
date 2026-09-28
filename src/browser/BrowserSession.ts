@@ -1,6 +1,20 @@
 import type { AppConnection, AppTabInfo, ConsoleEntry, RequestEntry, ScreenInfo } from '../app/AppClient';
 import { AppPage } from './AppPage';
 import { FIND_JS, readPageScript, snapshotScript } from './snapshot';
+import { COMMITTING, CREDENTIAL, SECRET_AUTOCOMPLETE, credentialRefusal, paymentRefusal } from './guards';
+
+/** What click reports: what it clicked, or why it did not (see guards.ts). */
+export type ClickResult = { clicked: string } | ReturnType<typeof paymentRefusal>;
+/** What fill / fill_form / type_text report: what went in, and any secret field left for the human. */
+export type FillResult = { filled: number; refused?: string[]; needsUserAction?: string; why?: string };
+
+/** In-page: whether an element is a secret field (see guards.ts), and a name for it. */
+const SECRET_JS = `const secretInfo = (el, credSrc, auto) => {
+  if (!el) return null;
+  const describes = [el.getAttribute('aria-label'), el.getAttribute('name'), el.getAttribute('id'), el.getAttribute('placeholder'), el.getAttribute('autocomplete'), el.labels && el.labels[0] ? el.labels[0].innerText : ''].join(' ');
+  const secret = el.type === 'password' || auto.includes(String(el.autocomplete || '').toLowerCase()) || new RegExp(credSrc, 'i').test(describes);
+  return { secret, name: String(el.getAttribute('name') || el.getAttribute('id') || el.getAttribute('aria-label') || el.type || 'field').slice(0, 40) };
+};`;
 import type { ReadPageOptions, ReadPageResult, SnapshotOptions, SnapshotResult } from './snapshot';
 
 export interface PageInfo {
@@ -512,16 +526,17 @@ export class BrowserSession {
    * Scroll a target into view and return its viewport box in CSS px — the coordinate
    * space Input.* events use. Throws the same guidance puppeteer's handle lookup did.
    */
-  private async locate(p: AppPage, t: Target): Promise<ElementBox> {
+  private async locate(p: AppPage, t: Target): Promise<ElementBox & { label: string }> {
     const selector = this.selectorFor(t);
-    const r = await p.evaluate<{ count: number; box?: ElementBox }>(
+    const r = await p.evaluate<{ count: number; box?: ElementBox & { label: string } }>(
       `(sel) => { ${FIND_JS}
         const hits = find(sel);
         if (!hits.length) return { count: 0 };
         const el = hits[0];
         el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
         const r = el.getBoundingClientRect();
-        return { count: hits.length, box: { x: r.x, y: r.y, width: r.width, height: r.height } };
+        const label = String(el.getAttribute('aria-label') || el.innerText || el.value || el.getAttribute('title') || '').replace(/\\s+/g, ' ').trim().slice(0, 100);
+        return { count: hits.length, box: { x: r.x, y: r.y, width: r.width, height: r.height, label } };
       }`,
       selector,
     );
@@ -541,10 +556,17 @@ export class BrowserSession {
     if (this.highlightCb && box.width > 0 && box.height > 0) this.highlightCb(p.id, box);
   }
 
-  async click(opts: Target & OnPage & { dblClick?: boolean }): Promise<void> {
+  async click(opts: Target & OnPage & { dblClick?: boolean; allowPayment?: boolean }): Promise<ClickResult> {
     this.markAgent();
     const p = this.pageFor(opts.pageId);
     const box = await this.locate(p, opts);
+    if (COMMITTING.test(box.label) && opts.allowPayment !== true) return paymentRefusal(box.label);
+    await this.pressBox(p, box, opts.dblClick === true);
+    return { clicked: box.label || opts.selector || `uid ${opts.uid}` };
+  }
+
+  /** Move to an element and click it (the input half of click, without its rule). */
+  private async pressBox(p: AppPage, box: ElementBox, dblClick: boolean): Promise<void> {
     this.emitHighlight(p, box);
     // Real input (Input.dispatchMouseEvent through the tab's own debugger) — frameworks like
     // React treat it as genuine, unlike element.click() from evaluate_script. Approach along
@@ -557,7 +579,7 @@ export class BrowserSession {
       await p.cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', x: at.x, y: at.y, button: 'left', buttons: 0, clickCount });
     };
     await press(1);
-    if (opts.dblClick) await press(2);
+    if (dblClick) await press(2);
   }
 
   /**
@@ -588,12 +610,47 @@ export class BrowserSession {
     return target;
   }
 
-  async fill(opts: Target & OnPage & { value: string }): Promise<void> {
+  async fill(opts: Target & OnPage & { value: string; allowCredentials?: boolean }): Promise<FillResult> {
     this.markAgent();
     const p = this.pageFor(opts.pageId);
+    // The rule (guards.ts): a secret field is the human's to type, or the vault's to fill.
+    const info = await p.evaluate<{ secret: boolean; name: string } | null>(
+      `(sel, credSrc, auto) => { ${FIND_JS} ${SECRET_JS} return secretInfo(find(sel)[0], credSrc, auto); }`,
+      this.selectorFor(opts),
+      CREDENTIAL.source,
+      SECRET_AUTOCOMPLETE,
+    );
+    if (!info) await this.locate(p, opts); // throws the "uid is gone" / "no element" guidance
+    if (info?.secret && opts.allowCredentials !== true) return { filled: 0, ...credentialRefusal([info.name]) };
     // A <select> has no keyboard path in an offscreen page (its popup cannot show): choose
     // the option by visible text or value and fire the events frameworks listen for.
     const selector = this.selectorFor(opts);
+    // Date, time and color fields likewise: their picker cannot show, and typed keys go into
+    // locale-formatted segments, so the value (YYYY-MM-DD, HH:MM, #rrggbb…) is set directly.
+    const pickerValue = await p.evaluate<{ ok: boolean; type: string } | false>(
+      `(sel, want) => { ${FIND_JS}
+        const el = find(sel)[0];
+        const PICKERS = ['date', 'time', 'datetime-local', 'month', 'week', 'color'];
+        if (!el || el.tagName !== 'INPUT' || !PICKERS.includes(el.type)) return false;
+        el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+        const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+        set.call(el, want);
+        if (want !== '' && el.value === '') return { ok: false, type: el.type };
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        return { ok: true, type: el.type };
+      }`,
+      this.selectorFor(opts),
+      opts.value,
+    );
+    if (pickerValue) {
+      if (!pickerValue.ok) {
+        const formats: Record<string, string> = { date: 'YYYY-MM-DD', time: 'HH:MM', 'datetime-local': 'YYYY-MM-DDTHH:MM', month: 'YYYY-MM', week: 'YYYY-Www', color: '#rrggbb' };
+        throw new Error(`"${opts.value}" is not a valid value for that ${pickerValue.type} field — use ${formats[pickerValue.type] ?? 'its standard format'}`);
+      }
+      this.emitHighlight(p, await this.locate(p, opts));
+      return { filled: 1 };
+    }
     const picked = await p.evaluate<string | null | false>(
       `(sel, want) => { ${FIND_JS}
         const el = find(sel)[0];
@@ -614,11 +671,11 @@ export class BrowserSession {
     if (picked === null) throw new Error(`no option matches "${opts.value}" in that <select> — take_snapshot lists its options`);
     if (typeof picked === 'string') {
       this.emitHighlight(p, await this.locate(p, opts));
-      return;
+      return { filled: 1 };
     }
     // Focus with a real click, select whatever is there, then type over it: the page sees
     // exactly the events a person produces, so React-style controlled inputs update.
-    await this.click({ ...opts, pageId: p.id });
+    await this.pressBox(p, await this.locate(p, opts), false);
     await p.evaluate(
       `(sel) => { ${FIND_JS}
         const el = find(sel)[0];
@@ -629,18 +686,38 @@ export class BrowserSession {
       }`,
       this.selectorFor(opts),
     );
-    if (opts.value) await this.typeText(opts.value, false, p.id);
+    if (opts.value) await this.typeInto(p, opts.value, false);
     else await this.pressKey(p, 'Backspace', 'Backspace', 8);
+    return { filled: 1 };
   }
 
-  async fillForm(elements: (Target & { value: string })[], pageId?: string): Promise<void> {
+  async fillForm(elements: (Target & { value: string })[], pageId?: string, allowCredentials = false): Promise<FillResult> {
     const p = this.pageFor(pageId);
-    for (const e of elements) await this.fill({ ...e, pageId: p.id });
+    let filled = 0;
+    const refused: string[] = [];
+    for (const e of elements) {
+      const r = await this.fill({ ...e, pageId: p.id, allowCredentials });
+      filled += r.filled;
+      if (r.refused) refused.push(...r.refused);
+    }
+    return refused.length ? { filled, ...credentialRefusal(refused) } : { filled };
   }
 
-  /** Type into the focused element with real key events, one character at a time. */
-  async typeText(text: string, submitKey = false, pageId?: string): Promise<void> {
+  /** Type into the focused element with real key events — unless it is a secret field. */
+  async typeText(text: string, submitKey = false, pageId?: string, allowCredentials = false): Promise<FillResult> {
     const p = this.pageFor(pageId);
+    const info = await p.evaluate<{ secret: boolean; name: string } | null>(
+      `(credSrc, auto) => { ${SECRET_JS} const el = document.activeElement; return el && el !== document.body ? secretInfo(el, credSrc, auto) : null; }`,
+      CREDENTIAL.source,
+      SECRET_AUTOCOMPLETE,
+    );
+    if (info?.secret && !allowCredentials) return { filled: 0, ...credentialRefusal([info.name]) };
+    await this.typeInto(p, text, submitKey);
+    return { filled: 1 };
+  }
+
+  /** Real key events, one character at a time, into whatever has focus. */
+  private async typeInto(p: AppPage, text: string, submitKey: boolean): Promise<void> {
     for (const ch of text) {
       if (ch === '\n') {
         await this.pressKey(p, 'Enter', 'Enter', 13, '\r');

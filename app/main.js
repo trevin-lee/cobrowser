@@ -23,7 +23,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { parseSite, siteMatches, siteLabel } = require('./site.js');
+const { parseSite, siteMatches, siteLabel, isIp } = require('./site.js');
 const identity = require('./identity.js');
 const { TabLog } = require('./capture.js');
 const { checkParams } = require('./protocolGuard.js');
@@ -333,6 +333,47 @@ function parseCsv(text) {
   if (cell.length || row.length) { row.push(cell); rows.push(row); }
   return rows.filter((r) => r.some((c) => c.trim()));
 }
+/** Every login as a CSV in Chrome's export format (name,url,username,password), which Apple
+ *  Passwords, Bitwarden, 1Password, Chrome and this vault's own import all read. Scopes are a
+ *  cobrowser idea with no column to go in; they are not exported. */
+function exportCsv() {
+  const q = (v) => (/[",\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+  const rows = [['name', 'url', 'username', 'password']];
+  for (const e of vault.entries) {
+    const label = siteLabel(e);
+    // The vault keeps host and port, not the scheme, and other managers match on it: a device
+    // on the network (an IP address, or a one-word host like a router's) is usually plain
+    // http, anything with a domain https.
+    const local = isIp(e.host) || !String(e.host).includes('.');
+    const url = /^https?:\/\//.test(label) ? label : `${local ? 'http' : 'https'}://${label}`;
+    rows.push([label, url, e.username || '', e.password || '']);
+  }
+  return rows.map((r) => r.map((c) => q(String(c))).join(',')).join('\n') + '\n';
+}
+
+/**
+ * Export the vault to a CSV file the human chooses. Every password leaves the keychain's
+ * protection here, so it takes a fresh Touch ID every time (as showing one password does) and
+ * says plainly that the file is plaintext. The passwords are written by the app itself; they
+ * never cross to the editor.
+ */
+async function exportVault(parent) {
+  if (!SKIP_BIOMETRICS && (process.platform !== 'darwin' || !systemPreferences.canPromptTouchID())) throw new Error('Touch ID is needed to export passwords (open the lid, or use a Mac with Touch ID)');
+  await unlockVault('export the cobrowser vault');
+  await promptBiometrics(`export ${vault.entries.length} login${vault.entries.length === 1 ? '' : 's'} with their passwords to a file`);
+  let file = SKIP_BIOMETRICS ? process.env.COBROWSER_TEST_EXPORT_PATH : undefined;
+  if (!file) {
+    focusApp();
+    const opts = { title: 'Export logins', defaultPath: path.join(app.getPath('documents'), 'cobrowser-logins.csv'), buttonLabel: 'Export', filters: [{ name: 'CSV', extensions: ['csv'] }], message: 'The file holds every password in plain text. Import it where you need it, then delete it.' };
+    const r = parent ? await dialog.showSaveDialog(parent, opts) : await dialog.showSaveDialog(opts);
+    if (r.canceled || !r.filePath) return null;
+    file = r.filePath;
+  }
+  fs.writeFileSync(file, exportCsv(), { mode: 0o600 });
+  log(`vault: exported ${vault.entries.length} login(s) to ${file}`);
+  return { count: vault.entries.length, file };
+}
+
 function importCsv(text, scope) {
   const rows = parseCsv(text);
   if (rows.length < 2) return 0;
@@ -511,7 +552,7 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser logins
   <section class="pane">
     <div class="search"><input id="q" placeholder="Filter" autocomplete="off" spellcheck="false"></div>
     <div class="list" id="list" tabindex="0"></div>
-    <div class="foot"><button class="primary" id="new">Add login</button><button id="import">Import CSV…</button></div>
+    <div class="foot"><button class="primary" id="new">Add login</button><button id="import">Import CSV…</button><button id="export">Export CSV…</button></div>
   </section>
   <section class="pane detail" id="detail"></section>
 </div>
@@ -668,6 +709,10 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser logins
   $('q').oninput = renderList;
   $('new').onclick = async () => { if (!(await ensureUnlocked())) return; mode = 'add'; sel = null; render(); };
   $('import').onclick = async () => { if (!(await ensureUnlocked())) return; mode = 'import'; sel = null; render(); };
+  $('export').onclick = async () => {
+    try { const r = await vault.exportCsv(); if (r) say('Exported ' + r.count + ' login' + (r.count === 1 ? '' : 's') + ' to ' + r.file + '. The file is plain text: delete it once it is imported elsewhere.'); }
+    catch (e) { say(e.message); }
+  };
   $('lock').onclick = async () => { await vault.lock(); unlocked = false; rows = []; sel = null; mode = 'view'; render(); };
   // ↑/↓ move the selection through the roster.
   $('list').addEventListener('keydown', (e) => { if (!rows.length || (e.key !== 'ArrowDown' && e.key !== 'ArrowUp')) return; e.preventDefault(); const i = rows.indexOf(sel); sel = rows[Math.max(0, Math.min(rows.length - 1, i + (e.key === 'ArrowDown' ? 1 : -1)))]; mode = 'view'; render(); });
@@ -717,6 +762,7 @@ ipcMain.handle('vault:importCsv', async (_e, { scope } = {}) => {
   if (del.response === 0) fs.rmSync(r.filePaths[0], { force: true });
   return n;
 });
+ipcMain.handle('vault:exportCsv', () => exportVault(vaultWin));
 ipcMain.handle('vault:lock', () => lockVault());
 
 // ---------------------------------------------------------------------------------------
@@ -1188,6 +1234,15 @@ class Tab {
     const { result } = await this.win.webContents.debugger.sendCommand('Runtime.evaluate', {
       expression: `(() => {
         const el = document.elementFromPoint(${Number(x) || 0}, ${Number(y) || 0});
+        // Date, time and color inputs open a picker popup, which an offscreen page cannot
+        // show either (measured: the field focuses and nothing appears), like a select's list.
+        const PICKERS = ['date', 'time', 'datetime-local', 'month', 'week', 'color'];
+        if (el && el.tagName === 'INPUT' && PICKERS.includes(el.type) && !el.disabled && !el.readOnly) {
+          window.__cobrowserPicker = el;
+          el.focus();
+          const r = el.getBoundingClientRect();
+          return { picker: { type: el.type, value: el.value, min: el.min, max: el.max, step: el.step }, rect: { left: r.left, top: r.top, right: r.right, bottom: r.bottom } };
+        }
         const s = el && el.closest ? el.closest('select') : null;
         if (!s || s.disabled || s.multiple || s.size > 1) return null;
         window.__cobrowserSelect = s;
@@ -1213,6 +1268,42 @@ class Tab {
       expression: `(() => { const s = window.__cobrowserSelect; if (!s) return false; s.selectedIndex = ${Number(index)}; s.dispatchEvent(new Event('input', { bubbles: true })); s.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`,
       returnByValue: true,
     }, this.selectSession).catch(() => undefined);
+  }
+
+  /** Apply a picker's value to the page's input, through the native setter so frameworks'
+   *  value tracking sees it, with the events they listen for. */
+  applyPicker(value) {
+    return this.win.webContents.debugger.sendCommand('Runtime.evaluate', {
+      expression: `(() => { const el = window.__cobrowserPicker; if (!el) return false;
+        const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; set.call(el, ${JSON.stringify(String(value))});
+        el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`,
+      returnByValue: true,
+    }, this.selectSession).catch(() => undefined);
+  }
+
+  /** The page's date/time/color control, shown in a small real window of the app's own at the
+   *  cursor, where Chromium's picker popup works; the choice goes back into the page. */
+  popupPicker({ picker }) {
+    const test = SKIP_BIOMETRICS ? process.env.COBROWSER_TEST_PICKER_VALUE : undefined;
+    if (test !== undefined) { log(`tab ${this.id}: TEST MODE — ${picker.type} picker answered ${test}`); return this.applyPicker(test); }
+    const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+    const attr = (k) => (picker[k] ? ` ${k}="${esc(picker[k])}"` : '');
+    const html = `<!doctype html><meta charset="utf-8"><title>Choose</title>
+<style>:root{color-scheme:light dark}body{font:13px -apple-system,system-ui;margin:14px 16px}input{font:inherit;width:100%;box-sizing:border-box;padding:5px 7px}input[type=color]{height:36px;padding:2px}
+div{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}button{font:inherit;padding:4px 14px}</style>
+<form id="f"><input id="i" type="${esc(picker.type)}" value="${esc(picker.value)}"${attr('min')}${attr('max')}${attr('step')}><div><button type="button" id="c">Cancel</button><button>OK</button></div></form>
+<script>const i=document.getElementById('i');i.focus();
+document.getElementById('f').onsubmit=(e)=>{e.preventDefault();document.title='ok:'+i.value};
+document.getElementById('c').onclick=()=>{document.title='cancel'};addEventListener('keydown',(e)=>{if(e.key==='Escape')document.title='cancel'});</script>`;
+    const { screen } = require('electron');
+    const pt = screen.getCursorScreenPoint();
+    const win = new BrowserWindow({ x: pt.x, y: pt.y, width: 300, height: picker.type === 'color' ? 120 : 110, show: false, resizable: false, minimizable: false, maximizable: false, fullscreenable: false, alwaysOnTop: true, title: 'Choose', webPreferences: { sandbox: true, contextIsolation: true } });
+    let settled = false;
+    const finish = (v) => { if (settled) return; settled = true; if (v !== null) void this.applyPicker(v); if (!win.isDestroyed()) win.close(); };
+    win.on('page-title-updated', (e, title) => { e.preventDefault(); if (title.startsWith('ok:')) finish(title.slice(3)); else if (title === 'cancel') finish(null); });
+    win.on('closed', () => finish(null));
+    win.once('ready-to-show', () => { focusApp(); win.show(); });
+    void win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
   }
 
   /** A new out-of-process frame: remember its session, which <iframe> element in its parent
@@ -1343,7 +1434,11 @@ class Tab {
       const r = await this.routePoint(params.x, params.y);
       if (params.button === 'left' && params.type === 'mousePressed') {
         const sel = await this.selectAt(r.x, r.y, r.sessionId).catch(() => null);
-        if (sel) { this.swallowRelease = true; this.popupSelect(sel, { x: r.x, y: r.y }); return { dispatched: Promise.resolve({ selectMenu: true }) }; }
+        if (sel) {
+          this.swallowRelease = true;
+          if (sel.picker) this.popupPicker(sel); else this.popupSelect(sel, { x: r.x, y: r.y });
+          return { dispatched: Promise.resolve({ selectMenu: true }) };
+        }
       } else if (params.button === 'left' && params.type === 'mouseReleased' && this.swallowRelease) {
         this.swallowRelease = false;
         return { dispatched: Promise.resolve({ selectMenu: true }) };
@@ -1522,6 +1617,7 @@ async function handle(ws, state, m) {
       switch (m.type) {
         // Added over the socket, a login defaults to the calling workspace's scope.
         case 'vault.add': { await unlockVault('add a login to the cobrowser vault'); upsertLogin(m.host, m.username, m.password, m.scope ?? [state.workspace?.id].filter(Boolean)); saveVault(); return reply({ ok: true }); }
+        case 'vault.export': { const r = await exportVault(); return reply(r ? { ok: true, ...r } : { ok: false, canceled: true }); }
         case 'vault.import': { await unlockVault('import logins into the cobrowser vault'); const n = importCsv(String(m.csv || ''), m.scope ?? [state.workspace?.id].filter(Boolean)); saveVault(); return reply({ ok: true, count: n }); }
         case 'vault.list': {
           const v = await unlockVault('list the logins in the cobrowser vault');

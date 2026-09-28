@@ -70,13 +70,6 @@ function noteRefusal(status, bodyText) {
   return challenged;
 }
 
-/**
- * Controls whose activation is the user's to make, not the agent's.
- *
- * This is not hypothetical: a broad selector signed the user out of their bank mid-session.
- * Matching is on the accessible label, because that is what the agent selects by.
- */
-const DESTRUCTIVE = /\b(sign\s?out|log\s?out|logout|delete\s+account|close\s+account|cancel\s+(account|subscription|membership)|deactivate|remove\s+account)\b/i;
 /** Fields the agent must never populate, even when asked. */
 const CREDENTIAL = /\b(password|passcode|pin|otp|one[-\s]?time|2fa|mfa|security\s+code|verification\s+code|cvv|cvc|card\s+number|ssn|social\s+security)\b/i;
 /** Buttons that move money or place an order. */
@@ -342,22 +335,14 @@ async function dispatch(conn, method, params) {
       if (found && found.ambiguous) {
         throw new Error(
           `"${params.text}" matches ${found.count} elements: ${found.samples.join(' | ')}. ` +
-            'Pass exact:true, a more specific text, or use a ref from firefox_snapshot.',
+            'Pass exact:true, a more specific text, or use a ref from bridge_snapshot.',
         );
       }
-      if (found && found.destructive && params.allowDestructive !== true) {
-        return {
-          refused: 'destructive',
-          label: found.label,
-          needsUserAction: `click "${found.label}" yourself, or re-issue with allowDestructive: true`,
-          why: 'This looks like sign-out / delete / cancel-account. Refusing by default: a broad selector once signed the user out of their bank mid-session.',
-        };
-      }
-      if (found && found.committing && params.allowDestructive !== true) {
+      if (found && found.committing && params.allowPayment !== true && params.allowDestructive !== true) {
         return {
           refused: 'committing',
           label: found.label,
-          needsUserAction: `the human should click "${found.label}" themselves`,
+          needsUserAction: `the human should click "${found.label}" themselves; re-issue with allowPayment: true only if they asked you to complete this payment`,
           why: 'This submits a payment or places an order. The human owns that click.',
         };
       }
@@ -753,7 +738,6 @@ const PAGE_SCRIPTS = {
    * element.
    */
   locate: (ref, selector, text, exact) => {
-    const DESTRUCTIVE = /\b(sign\s?out|log\s?out|logout|delete\s+account|close\s+account|cancel\s+(account|subscription|membership)|deactivate|remove\s+account)\b/i;
     const COMMITTING = /\b(pay\s+now|confirm\s+(payment|order|purchase)|place\s+order|submit\s+payment|send\s+money|transfer\s+now|buy\s+now)\b/i;
     const labelOf = (el) =>
       ((el.getAttribute && el.getAttribute('aria-label')) ||
@@ -802,7 +786,6 @@ const PAGE_SCRIPTS = {
       label,
       tag: el.tagName.toLowerCase(),
       href: el.tagName === 'A' ? el.href : undefined,
-      destructive: DESTRUCTIVE.test(label),
       committing: COMMITTING.test(label),
     };
   },

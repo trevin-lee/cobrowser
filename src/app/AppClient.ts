@@ -230,6 +230,11 @@ export class AppConnection {
     if (r.error) throw new Error(String(r.error));
     return r.logins as { host: string; username: string }[];
   }
+  /** Ask the app to export every login to a CSV the human picks (Touch ID each time). The
+   *  passwords are written by the app; nothing but the count and the path comes back. */
+  async vaultExport(): Promise<{ ok: boolean; count?: number; file?: string; canceled?: boolean; error?: string }> {
+    return (await this.request({ type: 'vault.export' }, 300000)) as unknown as { ok: boolean; count?: number; file?: string; canceled?: boolean; error?: string };
+  }
   async vaultLock(): Promise<void> {
     await this.request({ type: 'vault.lock' });
   }

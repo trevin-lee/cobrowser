@@ -1,4 +1,5 @@
 import type { Tool } from './toolSchema';
+import { COMMITTING, paymentRefusal } from '../browser/guards';
 import type { ZenHub } from './zenHub';
 
 /**
@@ -89,10 +90,10 @@ export const ZEN_TOOLS: Tool[] = [
   {
     name: 'bridge_click',
     description:
-      "Click an element by `ref` (from bridge_snapshot), CSS `selector`, or visible `text` — text is usually what you want, e.g. {text: 'Load more orders', exact: true}. Sees into open shadow roots. REFUSES sign-out / delete-account / cancel-subscription controls, and payment or place-order buttons, returning `needsUserAction` so you can hand that step to the human; pass allowDestructive only if they explicitly asked. Input is synthetic (isTrusted: false), so a site that checks event trust may ignore it — report that to the human rather than working around it.",
+      "Click an element by `ref` (from bridge_snapshot), CSS `selector`, or visible `text` — text is usually what you want, e.g. {text: 'Load more orders', exact: true}. Sees into open shadow roots. REFUSES buttons that pay or place an order, returning `needsUserAction` so you can hand that click to the human; pass allowPayment only if they asked you to complete the payment. Input is synthetic (isTrusted: false), so a site that checks event trust may ignore it — report that to the human rather than working around it.",
     inputSchema: {
       type: 'object',
-      properties: { tabId, ref: str, selector: str, text: str, exact: bool, allowDestructive: bool },
+      properties: { tabId, ref: str, selector: str, text: str, exact: bool, allowPayment: bool },
       required: ['tabId'],
     },
   },
@@ -128,10 +129,29 @@ export function isZenTool(name: string): boolean {
 }
 
 type Content = { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string };
-const asJson = (v: unknown): { content: Content[] } => ({ content: [{ type: 'text', text: JSON.stringify(v, null, 2) }] });
+
+/** The Firefox add-on already installed predates the rename of these tools and still names
+ *  them firefox_* in its messages; re-signing it is a separate step, so the names are fixed
+ *  on the way through. */
+const currentNames = (text: string): string => text.replace(/\bfirefox_([a-z_]+)/g, 'bridge_$1');
+
+const asJson = (v: unknown): { content: Content[] } => ({ content: [{ type: 'text', text: currentNames(JSON.stringify(v, null, 2)) }] });
 
 /** Run one bridge_* tool for a workspace through its bridge connection. */
 export async function callZenTool(
+  hub: ZenHub,
+  workspace: string,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<{ content: Content[]; isError?: boolean }> {
+  try {
+    return await runZenTool(hub, workspace, name, args);
+  } catch (e) {
+    throw new Error(currentNames((e as Error).message ?? String(e)));
+  }
+}
+
+async function runZenTool(
   hub: ZenHub,
   workspace: string,
   name: string,
@@ -163,8 +183,17 @@ export async function callZenTool(
       return asJson(await hub.call(workspace, 'snapshot', { tabId, options }));
     }
     case 'bridge_click': {
-      const { tabId: _t, ...rest } = args;
-      return asJson(await hub.call(workspace, 'click', { tabId, ...rest }));
+      const { tabId: _t, allowPayment, ...rest } = args;
+      const pay = allowPayment === true;
+      // allowDestructive is the add-on's old name for the same override.
+      const click = (override: boolean) => hub.call<{ refused?: string; label?: string }>(workspace, 'click', { tabId, ...rest, allowPayment: override, allowDestructive: override });
+      let result = await click(pay);
+      // An add-on from before the rule changed still refuses sign-out and delete-account
+      // controls. That guard is gone, so go past it — but never past a payment button.
+      if (result && result.refused === 'destructive') {
+        result = COMMITTING.test(result.label ?? '') && !pay ? paymentRefusal(result.label ?? '') : await click(true);
+      }
+      return asJson(result);
     }
     case 'bridge_fill':
       return asJson(await hub.call(workspace, 'fill', { tabId, fields: args.fields, allowCredentials: args.allowCredentials }));

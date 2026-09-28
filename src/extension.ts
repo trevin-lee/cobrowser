@@ -10,7 +10,7 @@ import { daemonToken, deregister, ensureDaemon, register } from './daemon/client
 import { DEFAULT_DAEMON_PORT, DEV_DAEMON_PORT, bridgeEndpointUrl } from './daemon/protocol';
 import { AppConnection, readAppState } from './app/AppClient';
 import { ensureApp, electronExecutable } from './app/ensureApp';
-import { APP_BUNDLE_ID, listSigningIdentities, readSignedMarker, signElectronForPasskeys } from './app/signApp';
+import { APP_BUNDLE_ID, listSigningIdentities, readSignedMarker, signElectronForPasskeys, unsignForPasskeys } from './app/signApp';
 import { registerEndpoint, unregisterEndpoint } from './firefox/managedManifest';
 import { listFirefoxContainers } from './firefox/containers';
 
@@ -55,9 +55,9 @@ let extensionContext: vscode.ExtensionContext | undefined;
 /** Set once this window has registered with the daemon, so deactivate() can withdraw it. */
 let registeredWith: { port: number; id: string; dev: boolean } | undefined;
 
-/** The container this workspace may drive: the command-set binding first, then the setting,
- *  then the pre-rename setting. Three sources so the binding can be per-workspace without
- *  writing a file into the repo, and so an existing zenContainer keeps working. */
+/** The container this workspace may drive: the command-set binding first (a binding stored
+ *  under its pre-rename key is carried over once), then the setting. The binding keeps it
+ *  per-workspace without writing a file into the repo. */
 function firefoxContainerFor(
   context: vscode.ExtensionContext,
   cfg: vscode.WorkspaceConfiguration,
@@ -73,7 +73,7 @@ function firefoxContainerFor(
     return legacy;
   }
   return (
-    cfg.get<string>('firefoxContainer', '').trim() || cfg.get<string>('zenContainer', '').trim()
+    cfg.get<string>('firefoxContainer', '').trim()
   );
 }
 
@@ -318,7 +318,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   };
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration('cobrowser.firefoxContainer') || e.affectsConfiguration('cobrowser.zenContainer')) syncBridge();
+      if (e.affectsConfiguration('cobrowser.firefoxContainer')) syncBridge();
     }),
   );
 
@@ -487,12 +487,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       });
       if (!bundleId) return;
       try {
-        // Quit the app BEFORE signing: macOS kills a running process whose binary is re-signed
-        // underneath it, the next time it pages in code — minutes later, mid-session.
-        await disposeSession(context);
-        try { const st = readAppState(); if (st) process.kill(st.pid, 'SIGTERM'); } catch { /* not running */ }
-        const gone = Date.now() + 8000;
-        while (readAppState() && Date.now() < gone) await new Promise((r) => setTimeout(r, 200));
+        await quitAppForResigning();
         const marker = await vscode.window.withProgress(
           { location: vscode.ProgressLocation.Notification, title: 'Cobrowser: signing the browser for passkeys' },
           () => signElectronForPasskeys(exe, log, { team, bundleId: bundleId.trim() }),
@@ -522,6 +517,36 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const n = await BrowserPanel.app!.vaultImport(csv);
       const del = await vscode.window.showInformationMessage(`Cobrowser: imported ${n} login(s), usable in this workspace. The CSV is plaintext — delete it?`, 'Delete the CSV', 'Keep');
       if (del === 'Delete the CSV') await vscode.workspace.fs.delete(picked[0]);
+    }),
+    vscode.commands.registerCommand('cobrowser.disablePasskeys', async () => {
+      const exe = electronExecutable({ cacheDir: path.join(context.globalStorageUri.fsPath, 'electron') });
+      if (!exe || !readSignedMarker(exe)) {
+        void vscode.window.showInformationMessage('Cobrowser: passkeys are not enabled.');
+        return;
+      }
+      const ok = await vscode.window.showWarningMessage(
+        'Turn passkeys off?',
+        { modal: true, detail: 'The browser is signed again as it was downloaded, and passkey prompts fall back to passwords. Passkeys already saved stay in your keychain, and work again if you enable passkeys with the same team and identifier.' },
+        'Turn Off',
+      );
+      if (ok !== 'Turn Off') return;
+      try {
+        await quitAppForResigning();
+        unsignForPasskeys(exe, log);
+        void vscode.window.showInformationMessage('Cobrowser: passkeys turned off. The browser restarts the next time a panel opens.');
+      } catch (err) {
+        void vscode.window.showErrorMessage(`Cobrowser: could not turn passkeys off — ${String((err as Error).message ?? err)}`);
+      }
+    }),
+    vscode.commands.registerCommand('cobrowser.exportLoginsCsv', async () => {
+      await getSession();
+      try {
+        const r = await BrowserPanel.app!.vaultExport();
+        if (r.error) throw new Error(r.error);
+        if (r.ok) void vscode.window.showInformationMessage(`Cobrowser: exported ${r.count} login(s) to ${r.file}. The file holds the passwords in plain text — delete it once it is imported elsewhere.`);
+      } catch (err) {
+        void vscode.window.showErrorMessage(`Cobrowser: could not export logins — ${String((err as Error).message ?? err)}`);
+      }
     }),
     vscode.commands.registerCommand('cobrowser.lockVault', async () => {
       await BrowserPanel.app?.vaultLock();
@@ -556,6 +581,20 @@ export async function deactivate(): Promise<void> {
   }
   await mcp?.close();
   mcp = undefined;
+}
+
+/** Stop the app before re-signing its binary: macOS kills a running process whose binary is
+ *  re-signed underneath it, the next time it pages in code — minutes later, mid-session. */
+async function quitAppForResigning(): Promise<void> {
+  await disposeSession(extensionContext);
+  try {
+    const st = readAppState();
+    if (st) process.kill(st.pid, 'SIGTERM');
+  } catch {
+    /* not running */
+  }
+  const gone = Date.now() + 8000;
+  while (readAppState() && Date.now() < gone) await new Promise((r) => setTimeout(r, 200));
 }
 
 async function disposeSession(
