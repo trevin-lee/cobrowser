@@ -1703,3 +1703,17 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => { /* menu-bar app: stay alive with zero tabs */ });
+
+// Quitting closes every tab window, and each close reaches the editors as a tab closing. Say
+// so first: without this, an editor took a quit (menu bar, or an update replacing the app)
+// for the human closing every tab, saved an empty tab list, and never restored them.
+// Sent before any window closes, on the same sockets, so it arrives ahead of those closes.
+let quitAnnounced = false;
+function announceQuit() {
+  if (quitAnnounced) return;
+  quitAnnounced = true;
+  for (const w of workspaces.values()) w.broadcast({ type: 'quitting' });
+}
+app.on('before-quit', announceQuit);
+// The extension replaces the app with SIGTERM; make that a normal quit, announced.
+process.on('SIGTERM', () => { announceQuit(); app.quit(); });

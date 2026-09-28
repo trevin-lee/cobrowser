@@ -111,6 +111,8 @@ export class AppConnection {
   onTabOpened?: (t: AppTabInfo) => void;
   onTabClosed?: (tabId: string) => void;
   onTabUpdated?: (t: AppTabInfo) => void;
+  /** The app is quitting: the tab closes that follow are the quit, not the human. */
+  onQuitting?: () => void;
   /** The page went fullscreen inside its tab (or left it). */
   onFullscreen?: (tabId: string, on: boolean) => void;
   onClose?: () => void;
@@ -288,6 +290,8 @@ export class AppConnection {
       this.onTabUpdated?.(m as unknown as AppTabInfo);
     } else if (m.type === 'fullscreen') {
       this.onFullscreen?.(String(m.tabId), !!m.on);
+    } else if (m.type === 'quitting') {
+      this.onQuitting?.();
     } else if (m.type === 'tabClosed') {
       const id = String(m.tabId);
       this.frameListeners.delete(id);

@@ -93,6 +93,8 @@ export class BrowserSession {
   private agentActivityAt = 0;
 
   private disposing = false;
+  /** The app announced it is quitting: its tabs are not being closed by anyone. */
+  private appQuitting = false;
   private onDisconnectedCb?: () => void;
   private allClosedCb?: () => void;
   private pageOpenedCb?: PageOpenedListener;
@@ -160,6 +162,10 @@ export class BrowserSession {
 
     app.onFullscreen = (tabId, on) => session.byTab.get(tabId)?.setFullscreen(on);
 
+    // From here the app closes every tab window on its way out. Those are not closes: the
+    // editor keeps its tab list, and restores it when the app comes back.
+    app.onQuitting = () => { session.appQuitting = true; };
+
     app.onTabUpdated = (t) => {
       const page = session.byTab.get(t.tabId);
       if (!page) return;
@@ -172,6 +178,7 @@ export class BrowserSession {
     // A closed tab disposes its panel; if it was the agent's active page, fall
     // back to another open page so tools keep a live target.
     app.onTabClosed = (tabId) => {
+      if (session.appQuitting) return;
       const page = session.byTab.get(tabId);
       if (!page) return;
       page.markClosed();

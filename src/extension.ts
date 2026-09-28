@@ -201,6 +201,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       // reconnect in the reload case.
       if (s.isDisposing) return;
       log('The cobrowser app went away — clearing session; it will reconnect on next use.');
+      // The saved tab list (and the columns the tabs were in) is what the reconnect restores;
+      // closing the panels here must not overwrite it.
+      if (BrowserPanel.onLayoutChanged === saveTabs) BrowserPanel.onLayoutChanged = undefined;
       BrowserPanel.disposeAll();
       if (session === s) session = undefined;
       sessionPromise = undefined;
