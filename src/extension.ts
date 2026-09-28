@@ -10,7 +10,7 @@ import { daemonToken, deregister, ensureDaemon, register } from './daemon/client
 import { DEFAULT_DAEMON_PORT, DEV_DAEMON_PORT, bridgeEndpointUrl } from './daemon/protocol';
 import { AppConnection, readAppState } from './app/AppClient';
 import { ensureApp, electronExecutable } from './app/ensureApp';
-import { signElectronForPasskeys } from './app/signApp';
+import { APP_BUNDLE_ID, listSigningIdentities, readSignedMarker, signElectronForPasskeys } from './app/signApp';
 import { registerEndpoint, unregisterEndpoint } from './firefox/managedManifest';
 import { listFirefoxContainers } from './firefox/containers';
 
@@ -256,6 +256,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               appIcon: vscode.Uri.joinPath(context.extensionUri, 'media', 'cobrowser.icns').fsPath,
               onProgress: (d, t) => progress.report({ message: t ? `downloading Electron ${Math.round(d / 1e6)} / ${Math.round(t / 1e6)} MB` : `downloading Electron ${Math.round(d / 1e6)} MB` }),
               log,
+              onSigningNotice: (level, message) => {
+                log(message);
+                void (level === 'warning' ? vscode.window.showWarningMessage(`Cobrowser: ${message}`) : vscode.window.showInformationMessage(`Cobrowser: ${message}`));
+              },
             }),
         );
         const { conn, tabs } = await AppConnection.connect(state, workspaceId);
@@ -452,6 +456,33 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         void vscode.window.showErrorMessage('Cobrowser: the browser has not been downloaded yet — open a panel first, then run this again.');
         return;
       }
+      // Which team signs it. A free (personal) team's profiles expire after 7 days; a paid
+      // team's last a year. Renewal at startup reuses this choice.
+      const ids = listSigningIdentities();
+      if (!ids.length) {
+        void vscode.window.showErrorMessage('Cobrowser: no code-signing identity on this Mac. Sign in to Xcode with your Apple ID (Xcode → Settings → Accounts), then run this again.');
+        return;
+      }
+      const previous = readSignedMarker(exe);
+      const order = (i: (typeof ids)[number]): number => (i.developerId ? 0 : i.paid ? 1 : 2);
+      const pick = await vscode.window.showQuickPick(
+        [...ids].sort((a, b) => order(a) - order(b)).map((i) => ({
+          label: i.teamName,
+          description: i.developerId ? 'Developer ID' : i.paid ? 'paid team — signing lasts a year' : 'free team — signing lasts 7 days',
+          detail: i.name + (previous?.team === i.team ? '  (current)' : ''),
+          identity: i,
+        })),
+        { title: 'Sign the browser for passkeys with which team?', placeHolder: 'Renewal before it expires is automatic, with the same team' },
+      );
+      if (!pick) return;
+      const team = pick.identity.team;
+      const bundleId = await vscode.window.showInputBox({
+        title: 'App identifier',
+        prompt: `A reverse-DNS identifier ${pick.label} can register. One registered to another team is refused; use your own domain, e.g. com.yourcompany.cobrowser.`,
+        value: previous?.team === team && previous.bundleId ? previous.bundleId : APP_BUNDLE_ID,
+        validateInput: (v) => (/^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/.test(v.trim()) ? undefined : 'Reverse-DNS, like com.example.cobrowser'),
+      });
+      if (!bundleId) return;
       try {
         // Quit the app BEFORE signing: macOS kills a running process whose binary is re-signed
         // underneath it, the next time it pages in code — minutes later, mid-session.
@@ -461,9 +492,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         while (readAppState() && Date.now() < gone) await new Promise((r) => setTimeout(r, 200));
         const marker = await vscode.window.withProgress(
           { location: vscode.ProgressLocation.Notification, title: 'Cobrowser: signing the browser for passkeys' },
-          () => Promise.resolve(signElectronForPasskeys(exe, log)),
+          () => signElectronForPasskeys(exe, log, { team, bundleId: bundleId.trim() }),
         );
-        void vscode.window.showInformationMessage(`Cobrowser: passkeys enabled (${marker.identity.replace(/:.*/, '')}). The browser restarts signed the next time a panel opens.`);
+        const until = marker.expires ? ` It lasts until ${new Date(marker.expires).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })} and renews itself before then.` : '';
+        void vscode.window.showInformationMessage(`Cobrowser: passkeys enabled with ${pick.label}.${until} The browser restarts signed the next time a panel opens.`);
       } catch (err) {
         void vscode.window.showErrorMessage(`Cobrowser: could not enable passkeys — ${String((err as Error).message ?? err)}`);
       }

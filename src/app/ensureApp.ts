@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import { spawn, execFileSync } from 'node:child_process';
 import { readAppState, STATE_FILE, type AppState } from './AppClient';
-import { readSignedMarker } from './signApp';
+import { APP_BUNDLE_ID, readSignedMarker, signElectronForPasskeys, signingExpiry, signingState, unsignForPasskeys } from './signApp';
 import { brandApp, brandedExe, isBranded } from './brandApp';
 
 type Log = (message: string) => void;
@@ -26,6 +26,8 @@ export interface EnsureAppOptions {
   /** The app icon (.icns) the downloaded browser is branded with. */
   appIcon?: string;
   onProgress?: (downloaded: number, total: number) => void;
+  /** Something about the passkey signing the human should know (renewed, failing, removed). */
+  onSigningNotice?: (level: 'info' | 'warning', message: string) => void;
   log: Log;
 }
 
@@ -97,6 +99,7 @@ export async function ensureApp(opts: EnsureAppOptions): Promise<AppState> {
     ? opts.devElectron
     : await ensureElectron(opts);
   if (!fs.existsSync(opts.appMain)) throw new Error(`cobrowser app bundle missing: ${opts.appMain}`);
+  await keepSigningValid(electron, opts);
   const signed = readSignedMarker(electron);
   opts.log(`Starting cobrowser app ${opts.version} (${electron})${signed ? ' — signed, passkeys on' : ''}.`);
   const child = spawn(electron, [opts.appMain], {
@@ -124,6 +127,43 @@ export async function ensureApp(opts: EnsureAppOptions): Promise<AppState> {
     return ensureApp({ ...opts, retried: true });
   }
   return state;
+}
+
+/**
+ * Keep a passkey-signed browser startable. Its provisioning profile expires (7 days on a free
+ * team, a year on a paid one), and past that macOS refuses to start an app with restricted
+ * entitlements. So before a start with an expired profile: renew it with the same team and
+ * identifier; if that fails, sign it ad hoc like a downloaded Electron, so the browser starts
+ * and passkeys fall back to passwords. Runs only when no app is running — re-signing a
+ * running app's binary gets it killed — and a running app is unaffected by the expiry.
+ */
+export async function keepSigningValid(electron: string, opts: Pick<EnsureAppOptions, 'log' | 'onSigningNotice'>, now = new Date()): Promise<void> {
+  const marker = readSignedMarker(electron);
+  if (!marker) return;
+  let expires: Date | undefined;
+  try {
+    expires = signingExpiry(electron);
+  } catch (e) {
+    opts.log(`could not read the passkey signing's expiry: ${(e as Error).message}`);
+    return;
+  }
+  if (signingState(expires, now) !== 'expired') return;
+  const date = (d: Date): string => d.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
+  opts.log(`Passkey signing expired ${expires!.toISOString()}; renewing it with team ${marker.team}.`);
+  try {
+    const renewed = await signElectronForPasskeys(electron, opts.log, { team: marker.team, bundleId: marker.bundleId || APP_BUNDLE_ID });
+    const until = renewed.expires ? new Date(renewed.expires) : undefined;
+    // A profile that is itself expired would leave an app macOS refuses to start.
+    if (!until || signingState(until, now) === 'expired') throw new Error('Xcode returned a profile that has already expired');
+    opts.onSigningNotice?.('info', `Renewed the browser's passkey signing; it lasts until ${date(until)}.`);
+  } catch (e) {
+    try {
+      unsignForPasskeys(electron, opts.log);
+    } catch (u) {
+      opts.log(`could not remove the expired signing: ${(u as Error).message}`);
+    }
+    opts.onSigningNotice?.('warning', `The browser's passkey signing expired on ${date(expires!)} and could not be renewed (${(e as Error).message}). It now starts unsigned, and passkeys fall back to passwords. Run "Cobrowser: Enable Passkeys" to sign it again.`);
+  }
 }
 
 /** Download the pinned Electron once into the cache and return its executable path. */

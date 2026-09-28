@@ -1,6 +1,7 @@
 /* Branding a stock and a signed Electron: renamed, iconed, menu-bar-only, still starting, passkeys kept. */
 import { suite, ROOT, scratchDir, sleep, withTimeout, serve, html } from './harness';
 import { brandApp, isBranded } from '../../src/app/brandApp';
+import { APP_BUNDLE_ID } from '../../src/app/signApp';
 import { ELECTRON_VERSION } from '../../src/app/ensureApp';
 import { execFileSync, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
@@ -37,7 +38,9 @@ suite('brand', async (r) => {
     const exe = brandApp(dir, icon, () => undefined);
     const app = path.join(dir, 'cobrowser.app');
     const plist = ['CFBundleName', 'CFBundleIdentifier', 'CFBundleIconFile', 'LSUIElement'].map((k) => sh('/usr/libexec/PlistBuddy', ['-c', `Print :${k}`, path.join(app, 'Contents', 'Info.plist')]).trim());
-    r.check(`[${c.label}] renamed, identified, iconed and menu-bar-only`, isBranded(dir) && fs.lstatSync(path.join(dir, 'Electron.app')).isSymbolicLink() && plist.join('|') === 'cobrowser|dev.trevin.cobrowser|cobrowser.icns|true', plist);
+    // A signed copy keeps the identifier its profile was issued for (the team may have its own).
+    const expectedId = (c.signed ? (JSON.parse(fs.readFileSync(c.signed, 'utf8')) as { bundleId?: string }).bundleId : undefined) || APP_BUNDLE_ID;
+    r.check(`[${c.label}] renamed, identified, iconed and menu-bar-only`, isBranded(dir) && fs.lstatSync(path.join(dir, 'Electron.app')).isSymbolicLink() && plist.join('|') === `cobrowser|${expectedId}|cobrowser.icns|true`, plist);
     r.check(`[${c.label}] the outer bundle's seal verifies`, (sh('codesign', ['--verify', '--strict', app]).trim() || 'valid') === 'valid');
     if (c.signed) r.check('[signed] the passkey entitlement is kept', /keychain-access-groups/.test(sh('codesign', ['-d', '--entitlements', '-', '--xml', app])));
     const out = path.join(dir, 'probe.json');

@@ -65,10 +65,13 @@ export function brandApp(versionDir: string, iconIcns: string, log: Log): string
 
   const contents = path.join(branded, 'Contents');
   const plist = path.join(contents, 'Info.plist');
+  const exe = brandedExe(versionDir);
+  const signed = readSignedMarker(exe);
   for (const [key, type, value] of [
     ['CFBundleName', '-string', APP_NAME],
     ['CFBundleDisplayName', '-string', APP_NAME],
-    ['CFBundleIdentifier', '-string', APP_BUNDLE_ID],
+    // A signed app keeps the identifier its provisioning profile was issued for.
+    ['CFBundleIdentifier', '-string', signed?.bundleId || APP_BUNDLE_ID],
     ['CFBundleIconFile', '-string', `${APP_NAME}.icns`],
     ['LSUIElement', '-bool', 'true'],
   ]) {
@@ -77,8 +80,6 @@ export function brandApp(versionDir: string, iconIcns: string, log: Log): string
   if (fs.existsSync(iconIcns)) fs.copyFileSync(iconIcns, path.join(contents, 'Resources', `${APP_NAME}.icns`));
   else log(`cobrowser icon missing at ${iconIcns}; keeping Electron's`);
 
-  const exe = brandedExe(versionDir);
-  const signed = readSignedMarker(exe);
   if (signed) {
     const ent = path.join(os.tmpdir(), `cobrowser-brand-${process.pid}.plist`);
     try {

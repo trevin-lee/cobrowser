@@ -6,6 +6,7 @@ Release notes for earlier versions are on the [GitHub releases page](https://git
 
 ### Fixed
 
+- A passkey-signed browser no longer stops starting when its provisioning profile expires (after 7 days on a free Apple team). Before each start an expired signature is renewed with the same team, and if that fails the browser starts unsigned with passkeys falling back to passwords. Enable Passkeys now asks which team signs and with what identifier, preferring paid teams, whose profiles last a year.
 - Browser tabs no longer grow as wide as their page title. A title is cut at 30 characters with an ellipsis, as a browser tab is (`cobrowser.tabTitleMaxLength`, 0 for no limit); hovering the address bar or the sidebar row shows it in full, and a blank tab reads "New Tab".
 
 ## 0.9.1
