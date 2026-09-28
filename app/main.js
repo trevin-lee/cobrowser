@@ -74,9 +74,42 @@ const DATA_DIR = process.env.COBROWSER_DATA_DIR
 fs.mkdirSync(DATA_DIR, { recursive: true });
 app.setPath('userData', DATA_DIR);
 // One app per data dir. Editor windows race to start the app after a restart (each sees no
-// state file for a moment and spawns its own); the lock, keyed on userData, lets exactly one
-// live. The loser exits before it has a tray, a socket or a state file.
-if (!app.requestSingleInstanceLock()) {
+// state file for a moment and spawns its own). Electron's lock is not enough on its own: two
+// copies started in the same instant sometimes both get it (measured: two apps, two ports,
+// two menu-bar icons). So a lock file of our own is a second gate — created exclusively, so
+// exactly one starter can make it, and holding the owner's pid, so a crashed app's leftover
+// file is recognised and cleared. The loser exits before it has a tray, a socket or a state file.
+const APP_LOCK = path.join(DATA_DIR, 'app.lock');
+function lockOwnerLives(pid) {
+  if (!pid) return true; // the owner has created it but not written its pid yet
+  try { process.kill(pid, 0); } catch { return false; }
+  try {
+    // A pid reused by an unrelated process does not count as the owner.
+    return require('node:child_process').execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8' }).includes('/app/main.js');
+  } catch {
+    return false;
+  }
+}
+function acquireAppLock() {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const fd = fs.openSync(APP_LOCK, 'wx', 0o600);
+      fs.writeSync(fd, String(process.pid));
+      fs.closeSync(fd);
+      return true;
+    } catch (e) {
+      if (e.code !== 'EEXIST') return true; // cannot lock at all: never refuse to start over it
+      let pid = 0;
+      try { pid = Number(fs.readFileSync(APP_LOCK, 'utf8').trim()) || 0; } catch { continue; } // just released
+      if (lockOwnerLives(pid)) return false;
+      // Left by an app that is gone. Clear it only if it is still that one (another starter
+      // may have cleared and re-made it meanwhile), then try again.
+      try { if ((Number(fs.readFileSync(APP_LOCK, 'utf8').trim()) || 0) === pid) fs.unlinkSync(APP_LOCK); } catch { /* raced; retry */ }
+    }
+  }
+  return false;
+}
+if (!app.requestSingleInstanceLock() || !acquireAppLock()) {
   app.exit(0);
 }
 app.setName('cobrowser'); // names the Keychain item safeStorage uses ("cobrowser Safe Storage")
@@ -1798,6 +1831,7 @@ app.whenReady().then(async () => {
   }
   if (process.env.COBROWSER_OPEN_VAULT === '1') openVaultWindow(); // dev/test: open it without a tray click
   app.on('will-quit', () => { try { if (JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')).pid === process.pid) fs.unlinkSync(STATE_FILE); } catch { /* fine */ } });
+  app.on('will-quit', () => { try { if (Number(fs.readFileSync(APP_LOCK, 'utf8').trim()) === process.pid) fs.unlinkSync(APP_LOCK); } catch { /* fine */ } });
 });
 
 app.on('window-all-closed', () => { /* menu-bar app: stay alive with zero tabs */ });
