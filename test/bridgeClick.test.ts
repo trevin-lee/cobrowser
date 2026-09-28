@@ -39,3 +39,19 @@ test('tool names from the old add-on are brought up to date, in results and in e
   const bad = { call: async () => { throw new Error('Pass exact:true, or use a ref from firefox_snapshot.'); } } as unknown as ZenHub;
   await assert.rejects(callZenTool(bad, '/ws', 'bridge_click', { tabId: 1 }), /bridge_snapshot/);
 });
+
+test('a click that changed nothing comes back pointing at the panel, where input is real', async () => {
+  const { hub } = fakeHub(() => ({ clicked: 'cb3', noVisibleEffect: true }));
+  const r = text(await callZenTool(hub, '/ws', 'bridge_click', { tabId: 1, ref: 'cb3' }));
+  assert.equal(r.noVisibleEffect, true);
+  assert.match(r.hint, /panel/);
+  const { hub: ok } = fakeHub(() => ({ clicked: 'cb3' }));
+  assert.equal(text(await callZenTool(ok, '/ws', 'bridge_click', { tabId: 1, ref: 'cb3' })).hint, undefined);
+});
+
+test('settle reaches the add-on with its quiet time', async () => {
+  const { hub, calls } = fakeHub(() => ({ found: true, settled: true }));
+  await callZenTool(hub, '/ws', 'bridge_wait_for', { tabId: 1, settle: true, quietMs: 800 });
+  assert.equal(calls[0].settle, true);
+  assert.equal(calls[0].quietMs, 800);
+});

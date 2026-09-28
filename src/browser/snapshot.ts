@@ -65,7 +65,29 @@ export function snapshotScript(opts: SnapshotOptions): SnapshotResult {
     return style.visibility !== 'hidden' && style.display !== 'none' && style.opacity !== '0';
   }
 
+  // Radios and checkboxes the page draws itself: the real input is hidden (a pixel wide,
+  // clipped or transparent) and its label is what a person sees and clicks. The label is
+  // listed in the input's place, so the uid points at something that can be clicked.
+  function visuallyHidden(el: Element): boolean {
+    const r = el.getBoundingClientRect();
+    const st = getComputedStyle(el);
+    return r.width <= 2 || r.height <= 2 || st.opacity === '0' || (st.clip !== '' && st.clip !== 'auto') || (st.clipPath !== '' && st.clipPath !== 'none');
+  }
+  function drawnControl(el: Element): HTMLInputElement | null {
+    if (el.tagName !== 'LABEL') return null;
+    const c = (el as HTMLLabelElement).control;
+    return c instanceof HTMLInputElement && (c.type === 'radio' || c.type === 'checkbox') && visuallyHidden(c) ? c : null;
+  }
+  function hasVisibleLabel(input: HTMLInputElement): boolean {
+    const lab = input.labels && input.labels[0];
+    if (!lab) return false;
+    const r = lab.getBoundingClientRect();
+    return r.width > 2 && r.height > 2;
+  }
+
   function isInteractive(el: Element): boolean {
+    if (el.tagName === 'LABEL') return !!drawnControl(el);
+    if (el instanceof HTMLInputElement && (el.type === 'radio' || el.type === 'checkbox') && visuallyHidden(el) && hasVisibleLabel(el)) return false;
     if (INTERACTIVE.has(el.tagName)) return el.tagName !== 'A' || el.hasAttribute('href') || el.hasAttribute('role');
     const role = el.getAttribute('role');
     if (role && ROLES.has(role)) return true;
@@ -100,6 +122,8 @@ export function snapshotScript(opts: SnapshotOptions): SnapshotResult {
   }
 
   function roleFor(el: Element): string {
+    const drawn = drawnControl(el);
+    if (drawn) return 'input:' + drawn.type;
     const explicit = el.getAttribute('role');
     if (explicit) return explicit;
     const tag = el.tagName.toLowerCase();
@@ -114,6 +138,10 @@ export function snapshotScript(opts: SnapshotOptions): SnapshotResult {
   const origin = location.origin;
   function extras(el: Element): string {
     const parts: string[] = [];
+    const drawn = drawnControl(el);
+    if (drawn) parts.push(drawn.checked ? '[checked]' : '[unchecked]');
+    const ariaChecked = el.getAttribute('aria-checked');
+    if (ariaChecked === 'true' || ariaChecked === 'false') parts.push(ariaChecked === 'true' ? '[checked]' : '[unchecked]');
     if (el instanceof HTMLAnchorElement && el.href) {
       // The destination: twenty identical "View order" links can be opened directly.
       parts.push('→ ' + (el.href.startsWith(origin + '/') ? el.href.slice(origin.length) : clip(el.href, 160)));

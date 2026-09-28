@@ -3,8 +3,45 @@ import { AppPage } from './AppPage';
 import { FIND_JS, readPageScript, snapshotScript } from './snapshot';
 import { COMMITTING, CREDENTIAL, SECRET_AUTOCOMPLETE, credentialRefusal, paymentRefusal } from './guards';
 
-/** What click reports: what it clicked, or why it did not (see guards.ts). */
-export type ClickResult = { clicked: string } | ReturnType<typeof paymentRefusal>;
+/** What click reports: what it clicked (and whether the page visibly reacted), or why it did
+ *  not (see guards.ts). */
+export type ClickResult = { clicked: string; noVisibleEffect?: boolean } | ReturnType<typeof paymentRefusal>;
+
+/** In-page: watch for DOM changes around a click, so one the page ignored is reported rather
+ *  than assumed to have worked. Kept under a Symbol.for key, off the page's own names. */
+// Checking a box or picking a radio changes a property, not the DOM, so form state is compared
+// too; otherwise a click that selected a radio read as one that did nothing.
+const FORM_STATE = `const formState = () => Array.from(document.querySelectorAll('input, select, textarea'), (f) => (f.checked ? '1' : '0') + (f.type === 'password' ? f.value.length : f.value) + '/' + (f.selectedIndex ?? '')).join('|');`;
+const EFFECT_START = `() => { ${FORM_STATE}
+  const k = Symbol.for('cobrowser.effect');
+  if (window[k]) window[k].obs.disconnect();
+  const e = { n: 0, url: location.href, form: formState(), obs: null };
+  e.obs = new MutationObserver((recs) => { e.n += recs.length; });
+  e.obs.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+  window[k] = e;
+  return true;
+}`;
+const EFFECT_READ = `() => { ${FORM_STATE}
+  const k = Symbol.for('cobrowser.effect');
+  const e = window[k];
+  if (!e) return { changed: true }; // a new document: the click navigated
+  e.obs.disconnect();
+  window[k] = null;
+  const a = document.activeElement;
+  const editing = !!a && (a.isContentEditable || a.tagName === 'TEXTAREA' || (a.tagName === 'INPUT' && !['radio', 'checkbox', 'button', 'submit', 'reset'].includes(a.type)));
+  return { changed: e.n > 0 || location.href !== e.url || editing || formState() !== e.form };
+}`;
+/** In-page: when the DOM last changed, for waiting until a page settles. */
+const WATCH_START = `() => {
+  const k = Symbol.for('cobrowser.watch');
+  if (window[k]) window[k].obs.disconnect();
+  const w = { last: Date.now(), obs: null };
+  w.obs = new MutationObserver(() => { w.last = Date.now(); });
+  w.obs.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+  window[k] = w;
+  return true;
+}`;
+const WATCH_READ = `() => { const w = window[Symbol.for('cobrowser.watch')]; return w ? Date.now() - w.last : -1; }`;
 /** What fill / fill_form / type_text report: what went in, and any secret field left for the human. */
 export type FillResult = { filled: number; refused?: string[]; needsUserAction?: string; why?: string };
 
@@ -561,8 +598,11 @@ export class BrowserSession {
     const p = this.pageFor(opts.pageId);
     const box = await this.locate(p, opts);
     if (COMMITTING.test(box.label) && opts.allowPayment !== true) return paymentRefusal(box.label);
+    await p.evaluate(EFFECT_START).catch(() => undefined);
     await this.pressBox(p, box, opts.dblClick === true);
-    return { clicked: box.label || opts.selector || `uid ${opts.uid}` };
+    await delay(400);
+    const effect = await p.evaluate<{ changed: boolean }>(EFFECT_READ).catch(() => ({ changed: true }));
+    return { clicked: box.label || opts.selector || `uid ${opts.uid}`, ...(effect.changed ? {} : { noVisibleEffect: true }) };
   }
 
   /** Move to an element and click it (the input half of click, without its rule). */
@@ -747,16 +787,25 @@ export class BrowserSession {
    *
    * Call this WITHOUT wrapping it in run() (it queues its own reads).
    */
-  async waitFor(texts: string[], timeout = 15000, pageId?: string): Promise<void> {
+  async waitFor(texts: string[], timeout = 15000, pageId?: string, opts: { settle?: boolean; quietMs?: number } = {}): Promise<{ settled?: boolean }> {
     const p = this.pageFor(pageId); // resolved once: the wait stays on this tab
     const deadline = Date.now() + timeout;
+    // settle: also wait until the page has stopped changing (no DOM change for quietMs), so a
+    // single-page app that swaps content after the URL changes is read when it is done.
+    const quietMs = opts.settle ? Math.max(200, opts.quietMs ?? 500) : 0;
+    if (quietMs) await this.run(() => p.evaluate(WATCH_START).catch(() => undefined), p.id);
     for (;;) {
-      const body = await this.run(() => p.evaluate<string>(() => document.body?.innerText ?? '').catch(() => ''), p.id);
-      if (texts.every((t) => body.includes(t))) return;
-      if (Date.now() > deadline) {
-        throw new Error(`Timed out after ${timeout}ms waiting for: ${texts.join(', ')}`);
+      const body = texts.length ? await this.run(() => p.evaluate<string>(() => document.body?.innerText ?? '').catch(() => ''), p.id) : '';
+      if (texts.every((t) => body.includes(t))) {
+        if (!quietMs) return {};
+        const quiet = await this.run(() => p.evaluate<number>(WATCH_READ).catch(() => -1), p.id);
+        if (quiet >= quietMs) return { settled: true };
+        if (quiet < 0) await this.run(() => p.evaluate(WATCH_START).catch(() => undefined), p.id); // it navigated
       }
-      await delay(300); // queue is free here — input/other actions can interleave
+      if (Date.now() > deadline) {
+        throw new Error(texts.every((t) => body.includes(t)) && quietMs ? `Timed out after ${timeout}ms waiting for the page to stop changing` : `Timed out after ${timeout}ms waiting for: ${texts.join(', ')}`);
+      }
+      await delay(quietMs ? 150 : 300); // queue is free here — input/other actions can interleave
     }
   }
 

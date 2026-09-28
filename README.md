@@ -191,6 +191,7 @@ Scripts: `npm run watch` (rebuild on change), `npm run typecheck`.
 - **No accessibility tree.** `take_snapshot` tags interactive DOM elements with `uid`s rather than walking the accessibility tree.
 - **`evaluate_script` runs arbitrary JavaScript in the page.** It is the escape hatch, and it is not subject to the click and fill rule below.
 - **Stateless MCP.** No resumable sessions; each request stands alone.
+- **Your own browser gets synthetic input only.** No browser extension can send real clicks or keystrokes, and some sites (Google's and Cloudflare's consoles among them) ignore synthetic ones. The own-browser tools report a click that changed nothing and point the agent to the panel, where input is real.
 - **The agent does not pay or type secrets on its own.** In both the panel and your own browser, it will not click a button that pays or places an order, or type a password, one-time code or card number, unless you tell it to (`allowPayment`, `allowCredentials`). Saved logins go in through `fill_credentials`, which never shows it the password.
 
 ## Security notes

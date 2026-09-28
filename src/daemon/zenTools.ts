@@ -42,8 +42,8 @@ export const ZEN_TOOLS: Tool[] = [
   {
     name: 'bridge_wait_for',
     description:
-      'Wait until text or a selector appears in a tab, instead of guessing when a single-page app has finished rendering. Returns as soon as it matches, or errors at the timeout.',
-    inputSchema: { type: 'object', properties: { tabId, text: str, selector: str, timeoutMs: num }, required: ['tabId'] },
+      'Wait until text or a selector appears in a tab, and/or (settle: true) until the page stops changing — no DOM change for quietMs, default 500 — instead of guessing when a single-page app has finished rendering. Use settle after a click or navigation so you read the page once it is done updating. Errors at the timeout.',
+    inputSchema: { type: 'object', properties: { tabId, text: str, selector: str, settle: bool, quietMs: num, timeoutMs: num }, required: ['tabId'] },
   },
   {
     name: 'bridge_list_tabs',
@@ -90,7 +90,7 @@ export const ZEN_TOOLS: Tool[] = [
   {
     name: 'bridge_click',
     description:
-      "Click an element by `ref` (from bridge_snapshot), CSS `selector`, or visible `text` — text is usually what you want, e.g. {text: 'Load more orders', exact: true}. Sees into open shadow roots. REFUSES buttons that pay or place an order, returning `needsUserAction` so you can hand that click to the human; pass allowPayment only if they asked you to complete the payment. Input is synthetic (isTrusted: false), so a site that checks event trust may ignore it — report that to the human rather than working around it.",
+      "Click an element by `ref` (from bridge_snapshot), CSS `selector`, or visible `text` — text is usually what you want, e.g. {text: 'Load more orders', exact: true}. Sees into open shadow roots. REFUSES buttons that pay or place an order, returning `needsUserAction` so you can hand that click to the human; pass allowPayment only if they asked you to complete the payment. Input here is synthetic (isTrusted: false) — no browser extension can send real clicks — and some sites ignore it: Google's and Cloudflare's consoles, among others. The result says noVisibleEffect when nothing on the page changed. When that happens, do the task in the cobrowser panel instead (new_page, then click/fill there), where input is real; the human signs in there once (fill_credentials for the password, the human for 2FA).",
     inputSchema: {
       type: 'object',
       properties: { tabId, ref: str, selector: str, text: str, exact: bool, allowPayment: bool },
@@ -100,7 +100,7 @@ export const ZEN_TOOLS: Tool[] = [
   {
     name: 'bridge_fill',
     description:
-      "Set form values. For a <select>, pass the OPTION'S VISIBLE TEXT — it is chosen and driven with the focus/input/change/blur sequence frameworks listen for, because setting the value alone leaves React lists unrefreshed. REFUSES passwords, one-time codes, CVVs and card numbers, returning `needsUserAction`: the human types those. Never automate login or MFA.",
+      "Set form values. For a <select>, pass the OPTION'S VISIBLE TEXT — it is chosen and driven with the focus/input/change/blur sequence frameworks listen for, because setting the value alone leaves React lists unrefreshed. REFUSES passwords, one-time codes, CVVs and card numbers, returning `needsUserAction`: the human types those. Never automate login or MFA. Values are set, not typed: a search-as-you-type field that waits for keystrokes (a picker whose results appear as you type) may not react — use the panel's fill or type_text for those, which type real keys.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -164,7 +164,7 @@ async function runZenTool(
     case 'bridge_fetch':
       return asJson(await hub.call(workspace, 'fetchUrl', { tabId, url: args.url, method: args.method, headers: args.headers, body: args.body }));
     case 'bridge_wait_for':
-      return asJson(await hub.call(workspace, 'waitFor', { tabId, text: args.text, selector: args.selector, timeoutMs: args.timeoutMs }));
+      return asJson(await hub.call(workspace, 'waitFor', { tabId, text: args.text, selector: args.selector, settle: args.settle, quietMs: args.quietMs, timeoutMs: args.timeoutMs }));
     case 'bridge_list_tabs':
       return asJson(await hub.call(workspace, 'listTabs'));
     case 'bridge_list_containers':
@@ -187,11 +187,14 @@ async function runZenTool(
       const pay = allowPayment === true;
       // allowDestructive is the add-on's old name for the same override.
       const click = (override: boolean) => hub.call<{ refused?: string; label?: string }>(workspace, 'click', { tabId, ...rest, allowPayment: override, allowDestructive: override });
-      let result = await click(pay);
+      let result = await click(pay) as { refused?: string; label?: string; noVisibleEffect?: boolean; hint?: string };
       // An add-on from before the rule changed still refuses sign-out and delete-account
       // controls. That guard is gone, so go past it — but never past a payment button.
       if (result && result.refused === 'destructive') {
         result = COMMITTING.test(result.label ?? '') && !pay ? paymentRefusal(result.label ?? '') : await click(true);
+      }
+      if (result && result.noVisibleEffect) {
+        result.hint = 'Nothing on the page changed after this click. The site may ignore synthetic input, which is all these tools can send. Do this step in the cobrowser panel (new_page, then click there), where input is real, or hand it to the human.';
       }
       return asJson(result);
     }

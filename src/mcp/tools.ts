@@ -183,7 +183,12 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     async ({ uid, selector, dblClick, allowPayment, pageId: id }) => {
       const s = await getSession();
       const r = await s.run(() => s.click({ uid, selector, dblClick, allowPayment, pageId: id }), id);
-      return asText('clicked' in r ? `clicked ${JSON.stringify(r.clicked)}` : JSON.stringify(r, null, 2));
+      if (!('clicked' in r)) return asText(JSON.stringify(r, null, 2));
+      return asText(
+        r.noVisibleEffect
+          ? `clicked ${JSON.stringify(r.clicked)}, but nothing on the page changed within half a second — it may have missed its target or the page may still be working. Check with read_page or take_snapshot before repeating it.`
+          : `clicked ${JSON.stringify(r.clicked)}`,
+      );
     },
   );
 
@@ -236,15 +241,18 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
   server.registerTool(
     'wait_for',
     {
-      description: 'Block until all given strings appear in the page text.',
-      inputSchema: { text: z.array(z.string()), timeout: z.number().optional(), pageId },
+      description:
+        'Wait until all given strings appear in the page text, and/or (settle: true) until the page stops changing — no DOM change for quietMs, default 500. Use settle after a click or navigation in a single-page app, so you read the page once it has finished updating rather than a half-rendered one.',
+      inputSchema: { text: z.array(z.string()).optional(), settle: z.boolean().optional(), quietMs: z.number().optional(), timeout: z.number().optional(), pageId },
     },
-    async ({ text, timeout, pageId: id }) => {
+    async ({ text, settle, quietMs, timeout, pageId: id }) => {
       const s = await getSession();
+      const want = text ?? [];
+      if (!want.length && !settle) return asText('nothing to wait for: pass text, settle: true, or both');
       // No outer run(): waitFor queues each poll itself and frees the queue
       // between polls, so a long wait doesn't freeze human input / other actions.
-      await s.waitFor(text, timeout, id);
-      return asText(`found: ${text.join(', ')}`);
+      const r = await s.waitFor(want, timeout, id, { settle, quietMs });
+      return asText([want.length ? `found: ${want.join(', ')}` : '', r.settled ? 'the page has stopped changing' : ''].filter(Boolean).join('; '));
     },
   );
 

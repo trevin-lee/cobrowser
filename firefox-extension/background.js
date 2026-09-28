@@ -346,9 +346,12 @@ async function dispatch(conn, method, params) {
           why: 'This submits a payment or places an order. The human owns that click.',
         };
       }
+      await runInTab(params.tabId, PAGE_SCRIPTS.effectStart, []).catch(() => null);
       const clicked = await runInTab(params.tabId, PAGE_SCRIPTS.click, [found ? found.ref : (params.ref ?? null), params.selector ?? null]);
+      await sleep(500);
+      const effect = await runInTab(params.tabId, PAGE_SCRIPTS.effectRead, []).catch(() => ({ changed: true }));
       await markTabActivity(params.tabId, 'clicked');
-      return clicked;
+      return effect && effect.changed === false ? { ...clicked, noVisibleEffect: true } : clicked;
     }
 
     case 'fill': {
@@ -413,18 +416,28 @@ async function dispatch(conn, method, params) {
     case 'waitFor': {
       await assertInScope(conn, params.tabId);
       const deadline = Date.now() + Math.min(Number(params.timeoutMs) || 15000, 60000);
+      // settle: also wait until the page has stopped changing (no DOM change for quietMs).
+      const quietMs = params.settle ? Math.max(200, Number(params.quietMs) || 500) : 0;
+      const wantsMatch = params.text != null || params.selector != null;
+      if (quietMs) await runInTab(params.tabId, PAGE_SCRIPTS.watch, []).catch(() => null);
       for (;;) {
-        const hit = await runInTab(params.tabId, PAGE_SCRIPTS.probe, [
-          params.text ?? null,
-          params.selector ?? null,
-        ]).catch(() => null);
-        if (hit && hit.found) return hit;
+        const hit = wantsMatch
+          ? await runInTab(params.tabId, PAGE_SCRIPTS.probe, [params.text ?? null, params.selector ?? null]).catch(() => null)
+          : { found: true };
+        if (hit && hit.found) {
+          if (!quietMs) return hit;
+          const q = await runInTab(params.tabId, PAGE_SCRIPTS.quiet, []).catch(() => null);
+          if (q && q.quietFor >= quietMs) return { ...hit, settled: true, url: q.url };
+          if (!q || q.lost) await runInTab(params.tabId, PAGE_SCRIPTS.watch, []).catch(() => null); // it navigated
+        }
         if (Date.now() > deadline) {
           throw new Error(
-            `timed out waiting for ${params.text ? `text ${JSON.stringify(params.text)}` : `selector ${params.selector}`}`,
+            quietMs && (!wantsMatch || (hit && hit.found))
+              ? 'timed out waiting for the page to stop changing'
+              : `timed out waiting for ${params.text ? `text ${JSON.stringify(params.text)}` : `selector ${params.selector}`}`,
           );
         }
-        await sleep(400);
+        await sleep(quietMs ? 150 : 400);
       }
     }
 
@@ -637,6 +650,49 @@ const PAGE_SCRIPTS = {
   },
 
   /** Cheap existence check, used by waitFor. */
+  // Watch the page for changes, so waitFor can tell when it has stopped changing (a single-page
+  // app that swaps content after the URL changes is only readable once it settles).
+  watch: () => {
+    const prev = window.__cobrowserWatch;
+    if (prev) prev.obs.disconnect();
+    const w = { last: Date.now(), obs: null };
+    w.obs = new MutationObserver(() => { w.last = Date.now(); });
+    w.obs.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+    window.__cobrowserWatch = w;
+    return { url: location.href };
+  },
+
+  quiet: () => {
+    const w = window.__cobrowserWatch;
+    if (!w) return { lost: true, url: location.href };
+    return { quietFor: Date.now() - w.last, url: location.href };
+  },
+
+  // Notice whether a click changed anything. These tools can only send synthetic input, which
+  // some sites ignore; a click that changed nothing is reported instead of assumed to work.
+  effectStart: () => {
+    // Checking a box or picking a radio changes a property, not the DOM: compare form state too.
+    const formState = () => Array.from(document.querySelectorAll('input, select, textarea'), (f) => (f.checked ? '1' : '0') + (f.type === 'password' ? f.value.length : f.value) + '/' + (f.selectedIndex ?? '')).join('|');
+    const prev = window.__cobrowserEffect;
+    if (prev) prev.obs.disconnect();
+    const e = { n: 0, url: location.href, form: formState(), obs: null };
+    e.obs = new MutationObserver((recs) => { e.n += recs.length; });
+    e.obs.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+    window.__cobrowserEffect = e;
+    return true;
+  },
+
+  effectRead: () => {
+    const formState = () => Array.from(document.querySelectorAll('input, select, textarea'), (f) => (f.checked ? '1' : '0') + (f.type === 'password' ? f.value.length : f.value) + '/' + (f.selectedIndex ?? '')).join('|');
+    const e = window.__cobrowserEffect;
+    if (!e) return { changed: true }; // a new document: the click navigated
+    e.obs.disconnect();
+    window.__cobrowserEffect = null;
+    const a = document.activeElement;
+    const editing = !!a && (a.isContentEditable || a.tagName === 'TEXTAREA' || (a.tagName === 'INPUT' && !['radio', 'checkbox', 'button', 'submit', 'reset'].includes(a.type)));
+    return { changed: e.n > 0 || location.href !== e.url || editing || formState() !== e.form, mutations: e.n };
+  },
+
   probe: (text, selector) => {
     if (selector) {
       const el = document.querySelector(selector);
@@ -658,7 +714,7 @@ const PAGE_SCRIPTS = {
 
   snapshot: (opts) => {
     const o = opts || {};
-    const SEL = 'a[href], button, input, select, textarea, [role="button"], [role="link"], [contenteditable="true"]';
+    const SEL = 'a[href], button, input, select, textarea, label, [role="button"], [role="link"], [role="radio"], [role="checkbox"], [role="switch"], [role="tab"], [role="menuitem"], [role="option"], [role="combobox"], [contenteditable="true"]';
 
     // Walk open shadow roots. Sites built from web components (Chase's <mds-*> elements, for
     // one) put every control inside a shadow root, so a flat querySelectorAll finds nothing
@@ -678,7 +734,28 @@ const PAGE_SCRIPTS = {
     const out = [];
     let n = 0;
     let skippedUnlabeled = 0;
-    for (const el of found) {
+    // A radio or checkbox drawn by the page: the real input is hidden (a pixel wide, clipped or
+    // transparent) and a label is what the human sees and clicks. List the label, so the ref
+    // points at something that can be clicked; its state comes from the input.
+    const controlFor = (el) => {
+      if (el.tagName !== 'INPUT' || (el.type !== 'radio' && el.type !== 'checkbox')) return el;
+      const r = el.getBoundingClientRect();
+      const st = getComputedStyle(el);
+      const hidden = r.width <= 2 || r.height <= 2 || st.opacity === '0' || (st.clip && st.clip !== 'auto') || (st.clipPath && st.clipPath !== 'none');
+      const lab = hidden && el.labels && el.labels[0];
+      if (lab) {
+        const lr = lab.getBoundingClientRect();
+        if (lr.width > 2 && lr.height > 2) return lab;
+      }
+      return el;
+    };
+    const seenControls = new Set();
+    for (const found_el of found) {
+      const el = controlFor(found_el);
+      // A label is listed once, for its input, never again on its own.
+      if (el.tagName === 'LABEL' && (el === found_el ? !(el.control && (el.control.type === 'radio' || el.control.type === 'checkbox')) || controlFor(el.control) !== el : false)) continue;
+      if (seenControls.has(el)) continue;
+      seenControls.add(el);
       const box = el.getBoundingClientRect();
       if (!box.width || !box.height) continue;
       const style = getComputedStyle(el);
@@ -707,12 +784,22 @@ const PAGE_SCRIPTS = {
         tag: el.tagName.toLowerCase(),
         type: el.getAttribute('type') || undefined,
         label,
-        value: 'value' in el && typeof el.value === 'string' ? el.value.slice(0, 120) : undefined,
+        // A password field's value is never returned: that is what the human typed.
+        value: el.type === 'password' ? (el.value ? '(filled)' : undefined) : 'value' in el && typeof el.value === 'string' ? el.value.slice(0, 120) : undefined,
         disabled: !!el.disabled,
       };
       // The destination, so twenty identical "View order detail" links can be navigated
       // directly instead of clicked one at a time through pagination that resets.
       if (el.tagName === 'A' && el.href) item.href = el.href;
+      // Radios and checkboxes (native, drawn through a label, or ARIA) carry their state.
+      const input = el.tagName === 'LABEL' ? el.control : el;
+      if (input && input.tagName === 'INPUT' && (input.type === 'radio' || input.type === 'checkbox')) {
+        item.control = input.type;
+        item.checked = !!input.checked;
+      } else if (['radio', 'checkbox', 'switch', 'tab', 'option', 'menuitemcheckbox', 'menuitemradio'].includes(el.getAttribute('role'))) {
+        item.control = el.getAttribute('role');
+        item.checked = el.getAttribute('aria-checked') === 'true' || el.getAttribute('aria-selected') === 'true';
+      }
       if (el.id) item.id = el.id;
       if (el.getAttribute('name')) item.name = el.getAttribute('name');
       // Options, so the agent can choose by visible text rather than guessing a value.
@@ -750,7 +837,7 @@ const PAGE_SCRIPTS = {
     if (ref) el = document.querySelector(`[data-cobrowser-ref="${ref}"]`);
     else if (selector) el = document.querySelector(selector);
     else if (text) {
-      const SEL = 'a[href], button, input, select, textarea, [role="button"], [role="link"], [contenteditable="true"]';
+      const SEL = 'a[href], button, input, select, textarea, label, [role="button"], [role="link"], [role="radio"], [role="checkbox"], [role="switch"], [role="tab"], [role="menuitem"], [role="option"], [role="combobox"], [contenteditable="true"]';
       const all = [];
       const collect = (root, depth) => {
         if (depth > 8) return;

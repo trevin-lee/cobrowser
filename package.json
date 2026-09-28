@@ -2,7 +2,7 @@
   "name": "cobrowser",
   "displayName": "Cobrowser",
   "description": "An agent-controllable browser inside your editor — rendered offscreen by a companion app, co-driven by you (webview) and your AI agent (MCP).",
-  "version": "0.9.3",
+  "version": "0.9.4",
   "publisher": "trevin-lee",
   "private": true,
   "license": "MIT",

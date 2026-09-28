@@ -2,6 +2,20 @@
 
 Release notes for earlier versions are on the [GitHub releases page](https://github.com/trevin-lee/cobrowser/releases).
 
+## 0.9.4
+
+### Added
+
+- **The agent can tell when a click did nothing.** In both the panel and your own browser, a click after which nothing on the page changed (no DOM change, no URL change, no form field changed) is reported, and in your own browser the report points the agent to the panel, where input is real.
+- **A settle wait**, in both: wait until the page has stopped changing, so a single-page app is read once it has finished updating.
+
+### Fixed
+
+- Radios and checkboxes a page draws over hidden inputs are listed as their visible label, with their checked state, in both snapshots, so the agent clicks what a person would; ARIA radios, checkboxes, tabs and options are listed in your own browser too.
+- Your own browser's snapshot returned what was typed in a password field; it now shows only that the field is filled.
+- Two copies of the browser app, and two menu-bar icons, could still appear when editor windows started it at the same moment: Electron's single-instance lock sometimes let both through. A lock file of the app's own now lets exactly one start (20 of 20 three-way races), and a crashed app's leftover lock does not block the next start.
+- The own-browser tools say what they cannot do (real clicks, real keystrokes) and to use the panel for it.
+
 ## 0.9.3
 
 ### Changed
