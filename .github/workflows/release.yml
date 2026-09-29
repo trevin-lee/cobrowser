@@ -197,6 +197,7 @@ jobs:
 
       # cobrowser runs on macOS only. Any other platform's package on Open VSX (0.9.6 went out
       # as one package for every platform) is removed, so no one is offered one that cannot run.
+      # A removal that fails only warns: the release itself is already out.
       - name: Remove packages for other platforms
         if: steps.creds.outputs.ok == 'true'
         run: |
@@ -207,7 +208,13 @@ jobs:
             for target in $(curl -sf "https://open-vsx.org/api/$ns/$name/$v" | node -e 'console.log(Object.keys(JSON.parse(require("fs").readFileSync(0, "utf8")).downloads || {}).join(" "))'); do
               case "$target" in
                 darwin-*) ;;
-                *) echo "removing $ns.$name $v ($target)"; npx --yes ovsx@1 unpublish "$ns.$name" --versions "$v" --target "$target" --force -p "$OVSX_PAT" ;;
+                *)
+                  echo "removing $ns.$name $v ($target)"
+                  # open-vsx.org cannot delete from the command line until it runs registry 1.2;
+                  # until then this warns, and the version is deleted from its page by hand.
+                  npx --yes ovsx@1 unpublish "$ns.$name" --versions "$v" --target "$target" --force -p "$OVSX_PAT" \
+                    || echo "::warning title=Open VSX still lists $v for $target::Delete it from https://open-vsx.org/extension/$ns/$name/$v (signed in as its publisher); open-vsx.org cannot delete from the command line yet."
+                  ;;
               esac
             done
           done

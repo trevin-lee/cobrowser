@@ -6,7 +6,7 @@ Release notes for earlier versions are on the [GitHub releases page](https://git
 
 ### Changed
 
-- **macOS only on Open VSX, everywhere.** Each release removes any package for another platform from Open VSX, so 0.9.6's package for every platform is gone and no one is offered a build that cannot run.
+- **macOS only on Open VSX.** Releases remove any Open VSX package for a platform other than macOS, so no one is offered a build that cannot run. open-vsx.org cannot delete from the command line yet (it needs a newer registry), so until it can, a release warns about each one left, and 0.9.6's package for every platform is deleted from its Open VSX page by hand.
 
 ### Fixed
 
