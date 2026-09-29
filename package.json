@@ -58,8 +58,7 @@
       },
       {
         "command": "cobrowser.bindFirefoxContainer",
-        "title": "Cobrowser: Bind Firefox Container to This Workspace",
-        "category": "Cobrowser"
+        "title": "Cobrowser: Bind Firefox Container to This Workspace"
       },
       {
         "command": "cobrowser.addLogin",
@@ -79,8 +78,7 @@
       },
       {
         "command": "cobrowser.bindChromeTabGroup",
-        "title": "Cobrowser: Bind Chrome Tab Group to This Workspace",
-        "category": "Cobrowser"
+        "title": "Cobrowser: Bind Chrome Tab Group to This Workspace"
       },
       {
         "command": "cobrowser.closeTab",
@@ -105,6 +103,18 @@
       {
         "command": "cobrowser.disablePasskeys",
         "title": "Cobrowser: Turn Off Passkeys"
+      },
+      {
+        "command": "cobrowser.sitePermissions",
+        "title": "Cobrowser: Site Permissions for This Workspace"
+      },
+      {
+        "command": "cobrowser.clearBrowsingData",
+        "title": "Cobrowser: Clear Browsing Data for This Workspace"
+      },
+      {
+        "command": "cobrowser.forgetWorkspace",
+        "title": "Cobrowser: Forget Another Workspace's Browser"
       }
     ],
     "menus": {

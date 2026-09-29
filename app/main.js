@@ -152,37 +152,45 @@ const USER_AGENT = identity.userAgent(CHROME_FULL, VERSION);
 const ACCEPT_LANGUAGES = identity.acceptLanguages(app.getPreferredSystemLanguages ? app.getPreferredSystemLanguages() : ['en-US']);
 const UA_METADATA = identity.metadata({ chromeVersion: CHROME_FULL, appVersion: VERSION, osVersion: process.getSystemVersion(), arch: process.arch });
 
-// Site permissions: a real browser asks. Decisions are remembered per origin + permission;
-// until asked, a site has nothing (Notification.permission reads "denied", not "granted").
+// Site permissions: a real browser asks. Decisions are remembered per workspace, origin and
+// permission (each workspace is its own browser); until asked, a site has nothing
+// (Notification.permission reads "denied", not "granted").
+const sitePermissions = require('./site-permissions.js');
 const PERMISSIONS_FILE = path.join(DATA_DIR, 'permissions.json');
 const AUTO_ALLOW = new Set(['fullscreen', 'pointerLock', 'clipboard-sanitized-write', 'keyboardLock', 'background-sync']);
 const PERMISSION_VERB = { media: 'use your camera or microphone', geolocation: 'know your location', notifications: 'show notifications', midi: 'use MIDI devices', midiSysex: 'use MIDI devices', 'clipboard-read': 'read your clipboard', 'display-capture': 'capture your screen', 'idle-detection': 'know when you are idle', openExternal: 'open another application', hid: 'use a HID device', serial: 'use a serial port', usb: 'use a USB device', 'window-management': 'manage windows', 'speaker-selection': 'choose an audio output', 'storage-access': 'use its cookies while embedded', 'top-level-storage-access': 'use its cookies while embedded', 'deprecated-sync-clipboard-read': 'read your clipboard' };
 let permissions = null;
 function loadPermissions() {
-  if (!permissions) { try { permissions = JSON.parse(fs.readFileSync(PERMISSIONS_FILE, 'utf8')); } catch { permissions = {}; } }
+  if (!permissions) {
+    let raw = null; try { raw = JSON.parse(fs.readFileSync(PERMISSIONS_FILE, 'utf8')); } catch { /* none yet */ }
+    permissions = sitePermissions.migrate(raw, knownWorkspaces());
+  }
   return permissions;
 }
-function permissionKey(origin, permission, details) {
-  const kind = details?.mediaTypes?.slice().sort().join('+') || details?.mediaType || '';
-  return `${origin}|${permission}${kind ? ':' + kind : ''}`;
-}
-function permissionDecision(origin, permission, details) {
-  return loadPermissions()[permissionKey(origin, permission, details)];
-}
-function rememberPermission(origin, permission, details, allowed) {
-  loadPermissions()[permissionKey(origin, permission, details)] = allowed;
+function savePermissions() {
   try { fs.writeFileSync(PERMISSIONS_FILE, JSON.stringify(permissions, null, 2)); } catch { /* best effort */ }
 }
+function permissionDecision(workspaceId, origin, permission, details) {
+  return sitePermissions.decision(loadPermissions(), workspaceId, origin, permission, details);
+}
+function rememberPermission(workspaceId, origin, permission, details, allowed) {
+  sitePermissions.remember(loadPermissions(), workspaceId, origin, permission, details, allowed);
+  savePermissions();
+}
+/** What a permission lets a site do, as the ask dialog and the review list say it. */
+function permissionVerb(permission, kind) {
+  if (permission === 'media' && kind) return `use your ${kind.split('+').map((k) => (k === 'video' ? 'camera' : k === 'audio' ? 'microphone' : k)).join(' and ')}`;
+  return PERMISSION_VERB[permission] || `use "${permission}"`;
+}
 const pendingPermission = new Map(); // key -> Promise<boolean>, so one dialog serves parallel asks
-function askPermission(origin, permission, details) {
-  const key = permissionKey(origin, permission, details);
+function askPermission(workspaceId, origin, permission, details) {
+  const key = `${workspaceId}\n${sitePermissions.permissionKey(origin, permission, details)}`;
   if (pendingPermission.has(key)) return pendingPermission.get(key);
-  const kind = details?.mediaTypes ? details.mediaTypes.join(' and ') : '';
-  const verb = permission === 'media' && kind ? `use your ${kind.replace('video', 'camera').replace('audio', 'microphone')}` : PERMISSION_VERB[permission] || `use "${permission}"`;
+  const verb = permissionVerb(permission, details?.mediaTypes ? details.mediaTypes.join('+') : '');
   let host = origin; try { host = new URL(origin).host; } catch { /* keep */ }
   focusApp();
-  const p = dialog.showMessageBox({ type: 'question', message: `${host} wants to ${verb}`, detail: 'cobrowser remembers this choice for the site.', buttons: ['Allow', 'Block'], defaultId: 1, cancelId: 1 })
-    .then(({ response }) => { const ok = response === 0; rememberPermission(origin, permission, details, ok); return ok; })
+  const p = dialog.showMessageBox({ type: 'question', message: `${host} wants to ${verb}`, detail: `cobrowser remembers this choice for the site in the ${path.basename(workspaceId)} workspace.`, buttons: ['Allow', 'Block'], defaultId: 1, cancelId: 1 })
+    .then(({ response }) => { const ok = response === 0; rememberPermission(workspaceId, origin, permission, details, ok); return ok; })
     .catch(() => false)
     .finally(() => pendingPermission.delete(key));
   pendingPermission.set(key, p);
@@ -833,14 +841,16 @@ ipcMain.on('cobrowser:dialog', async (e, d) => {
 // ---------------------------------------------------------------------------------------
 // Certificate warnings and login boxes. Both are asked of the human the way Chrome asks.
 // ---------------------------------------------------------------------------------------
-/** Host + certificate → allowed, for this app session (Chromium remembers it too). */
+/** Workspace + host + certificate → allowed, for this app session. Each workspace is its own
+ *  browser (Chromium's own memory of it is per partition too). */
 const certDecisions = new Map();
 const pendingCert = new Map();
 app.on('certificate-error', (event, contents, url, error, certificate, callback) => {
   event.preventDefault();
   let host = '';
   try { host = new URL(url).host; } catch { /* keep */ }
-  const key = `${host}|${certificate.fingerprint}`;
+  const tab = tabOf(contents);
+  const key = `${tab?.workspace.id || ''}|${host}|${certificate.fingerprint}`;
   if (certDecisions.has(key)) return callback(certDecisions.get(key));
   // Only what the human navigated to gets a question: a bad certificate on an embedded
   // resource of another host is just refused, as Chrome does.
@@ -855,13 +865,12 @@ app.on('certificate-error', (event, contents, url, error, certificate, callback)
   }
   if (pendingCert.has(key)) { pendingCert.get(key).push(callback); return; }
   pendingCert.set(key, [callback]);
-  const tab = tabOf(contents);
   if (tab) tab.pendingDialogs++;
   focusApp();
   dialog.showMessageBox({
     type: 'warning',
     message: `Your connection to ${host} is not private`,
-    detail: `${error.replace(/^net::/, '')}\n\nThe certificate is for "${certificate.subjectName}", issued by "${certificate.issuerName}". This is normal for a device on your own network; on the internet it can mean someone is intercepting the connection. Proceeding allows it for ${host} until cobrowser quits.`,
+    detail: `${error.replace(/^net::/, '')}\n\nThe certificate is for "${certificate.subjectName}", issued by "${certificate.issuerName}". This is normal for a device on your own network; on the internet it can mean someone is intercepting the connection. Proceeding allows it for ${host}${tab ? ` in the ${path.basename(tab.workspace.id)} workspace` : ''} until cobrowser quits.`,
     buttons: ['Proceed anyway', 'Go back'], defaultId: 1, cancelId: 1,
   }).then(({ response }) => {
     const ok = response === 0;
@@ -1502,10 +1511,47 @@ document.getElementById('c').onclick=()=>{document.title='cancel'};addEventListe
   }
 }
 
+/** A workspace's browser profile: its session partition, and where that lives on disk. */
+function partitionOf(id) {
+  const name = `ws-${crypto.createHash('sha1').update(id).digest('hex').slice(0, 16)}`;
+  return { partition: `persist:${name}`, dir: path.join(DATA_DIR, 'Partitions', name) };
+}
+
+/** Everything a workspace's browser kept: cookies and sign-ins, site storage, cache. */
+async function clearBrowsingData(ses) {
+  await ses.clearStorageData();
+  await ses.clearCache();
+  await ses.clearAuthCache();
+  await ses.clearHostResolverCache();
+}
+
+/**
+ * Forget a workspace: its tabs, browsing data, site permissions and certificate exceptions,
+ * and its place in the list. Its logins stay in the vault (a login may be allowed in several
+ * workspaces; the Logins window changes that). Refused while an editor window has it open.
+ */
+async function forgetWorkspace(id) {
+  const w = workspaces.get(id);
+  if (w && w.sockets.size) throw new Error(`${path.basename(id)} is open in an editor window; use Clear Browsing Data there instead`);
+  if (w) {
+    w.closeAll();
+    await clearBrowsingData(session.fromPartition(w.partition));
+    workspaces.delete(id);
+  } else {
+    // Never loaded since the app started, so no session holds the files: remove them.
+    fs.rmSync(partitionOf(id).dir, { recursive: true, force: true });
+  }
+  sitePermissions.dropWorkspace(loadPermissions(), id); savePermissions();
+  for (const k of [...certDecisions.keys()]) if (k.startsWith(id + '|')) certDecisions.delete(k);
+  const list = knownWorkspaces().filter((x) => x !== id);
+  fs.writeFileSync(WORKSPACES_FILE, JSON.stringify(list, null, 2));
+  log(`forgot workspace ${id}`);
+}
+
 class Workspace {
   constructor(id) {
     this.id = id;
-    this.partition = `persist:ws-${crypto.createHash('sha1').update(id).digest('hex').slice(0, 16)}`;
+    this.partition = partitionOf(id).partition;
     this.tabs = new Map();
     this.sockets = new Set();
     const ses = session.fromPartition(this.partition);
@@ -1527,15 +1573,15 @@ class Workspace {
     });
     ses.setPermissionCheckHandler((_wc, permission, origin, details) => {
       if (AUTO_ALLOW.has(permission)) return true;
-      return permissionDecision(origin, permission, details) === true;
+      return permissionDecision(id, origin, permission, details) === true;
     });
     ses.setPermissionRequestHandler((wc, permission, callback, details) => {
       if (AUTO_ALLOW.has(permission)) return callback(true);
       const origin = details?.requestingUrl ? new URL(details.requestingUrl).origin : (wc && !wc.isDestroyed() ? new URL(wc.getURL()).origin : '');
       if (!origin || origin === 'null') return callback(false);
-      const decided = permissionDecision(origin, permission, details);
+      const decided = permissionDecision(id, origin, permission, details);
       if (typeof decided === 'boolean') return callback(decided);
-      askPermission(origin, permission, details).then(callback, () => callback(false));
+      askPermission(id, origin, permission, details).then(callback, () => callback(false));
     });
     // Several passkeys for one site: without a listener Chromium cancels the request. The
     // page is offscreen, so ask with a native dialog instead of in-page UI.
@@ -1645,6 +1691,42 @@ async function handle(ws, state, m) {
       }
     } catch (e) {
       log('vault', m.type, e);
+      return reply({ error: e.message || String(e) });
+    }
+  }
+  // The human's housekeeping from the editor: site permissions, browsing data, workspaces.
+  if (typeof m.type === 'string' && m.type.startsWith('profile.')) {
+    const reply = (obj) => ws.send(JSON.stringify({ ...obj, requestId: m.requestId }));
+    const w = state.workspace;
+    try {
+      switch (m.type) {
+        case 'profile.permissions': {
+          if (!w) return reply({ error: 'no workspace' });
+          return reply({ permissions: sitePermissions.list(loadPermissions(), w.id).map((p) => ({ ...p, label: permissionVerb(p.permission, p.kind) })) });
+        }
+        case 'profile.forgetPermissions': {
+          if (!w) return reply({ error: 'no workspace' });
+          const n = sitePermissions.forget(loadPermissions(), w.id, Array.isArray(m.keys) ? m.keys.map(String) : []); savePermissions();
+          return reply({ forgotten: n });
+        }
+        case 'profile.clearBrowsingData': {
+          if (!w) return reply({ error: 'no workspace' });
+          await clearBrowsingData(session.fromPartition(w.partition));
+          log(`cleared browsing data for ${w.id}`);
+          return reply({ ok: true });
+        }
+        case 'profile.workspaces': {
+          return reply({ workspaces: knownWorkspaces().map((id) => ({ id, tabs: workspaces.get(id)?.tabs.size || 0, open: (workspaces.get(id)?.sockets.size || 0) > 0 })) });
+        }
+        case 'profile.forgetWorkspace': {
+          if (!knownWorkspaces().includes(String(m.id))) return reply({ error: 'no such workspace' });
+          await forgetWorkspace(String(m.id));
+          return reply({ ok: true });
+        }
+        default: return reply({ error: `unknown ${m.type}` });
+      }
+    } catch (e) {
+      log('profile', m.type, e);
       return reply({ error: e.message || String(e) });
     }
   }

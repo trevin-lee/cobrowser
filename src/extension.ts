@@ -601,6 +601,66 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         void vscode.window.showErrorMessage(`Cobrowser: could not lock the vault — ${String((err as Error).message ?? err)}`);
       }
     }),
+    vscode.commands.registerCommand('cobrowser.sitePermissions', async () => {
+      try {
+        const perms = await withApp((c) => c.sitePermissions());
+        if (!perms.length) {
+          void vscode.window.showInformationMessage('Cobrowser: no site has asked for a permission in this workspace yet. Sites ask the first time they need one.');
+          return;
+        }
+        const picked = await vscode.window.showQuickPick(
+          perms.map((p) => ({ label: `${p.allowed ? '$(check)' : '$(circle-slash)'} ${p.origin.replace(/^https?:\/\//, '')}`, description: `${p.allowed ? 'allowed' : 'blocked'} to ${p.label}`, key: p.key })),
+          { canPickMany: true, title: 'Site permissions in this workspace', placeHolder: 'Pick the ones to forget; those sites ask again next time' },
+        );
+        if (!picked?.length) return;
+        const n = await withApp((c) => c.forgetSitePermissions(picked.map((p) => p.key)));
+        void vscode.window.showInformationMessage(`Cobrowser: forgot ${n} permission${n === 1 ? '' : 's'}; ${n === 1 ? 'that site asks' : 'those sites ask'} again next time.`);
+      } catch (err) {
+        void vscode.window.showErrorMessage(`Cobrowser: could not read site permissions — ${String((err as Error).message ?? err)}`);
+      }
+    }),
+    vscode.commands.registerCommand('cobrowser.clearBrowsingData', async () => {
+      const ok = await vscode.window.showWarningMessage(
+        'Clear browsing data for this workspace?',
+        { modal: true, detail: "Its cookies, sign-ins, site storage and cache are deleted, so every site in this workspace's browser is signed out. Open tabs stay open. Logins in the vault, site permissions and other workspaces are not touched." },
+        'Clear',
+      );
+      if (ok !== 'Clear') return;
+      try {
+        await withApp((c) => c.clearBrowsingData());
+        void vscode.window.showInformationMessage('Cobrowser: browsing data cleared for this workspace. Reload a tab to see it signed out.');
+      } catch (err) {
+        void vscode.window.showErrorMessage(`Cobrowser: could not clear browsing data — ${String((err as Error).message ?? err)}`);
+      }
+    }),
+    vscode.commands.registerCommand('cobrowser.forgetWorkspace', async () => {
+      try {
+        const all = (await withApp((c) => c.knownWorkspaces())).filter((w) => w.id !== workspaceId);
+        if (!all.length) {
+          void vscode.window.showInformationMessage('Cobrowser: no other workspace has a browser.');
+          return;
+        }
+        const pick = await vscode.window.showQuickPick(
+          all.map((w) => ({ label: path.basename(w.id), description: w.id, detail: w.open ? 'open in an editor window: clear its data from there instead' : w.tabs ? `${w.tabs} tab${w.tabs === 1 ? '' : 's'} open in the app` : undefined, id: w.id, open: w.open })),
+          { title: "Forget a workspace's browser", placeHolder: 'Its tabs, cookies, sign-ins, site data and permissions are deleted' },
+        );
+        if (!pick) return;
+        if (pick.open) {
+          void vscode.window.showInformationMessage(`Cobrowser: ${pick.label} is open in another editor window. Run Clear Browsing Data for This Workspace there.`);
+          return;
+        }
+        const ok = await vscode.window.showWarningMessage(
+          `Forget ${pick.label}'s browser?`,
+          { modal: true, detail: `Its tabs, cookies, sign-ins, site data, cache and site permissions are deleted, and it leaves the workspace list. Logins in the vault are kept: change where they may be used in the Logins window. Opening ${pick.label} again starts its browser signed out of every site.` },
+          'Forget',
+        );
+        if (ok !== 'Forget') return;
+        await withApp((c) => c.forgetWorkspace(pick.id));
+        void vscode.window.showInformationMessage(`Cobrowser: forgot ${pick.label}'s browser.`);
+      } catch (err) {
+        void vscode.window.showErrorMessage(`Cobrowser: could not forget the workspace — ${String((err as Error).message ?? err)}`);
+      }
+    }),
     vscode.commands.registerCommand('cobrowser.restartBrowser', async () => {
       await disposeSession(context);
       await getSession();

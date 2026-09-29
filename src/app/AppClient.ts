@@ -23,6 +23,17 @@ export interface ScreenInfo {
   y: number;
 }
 
+/** A site permission a person decided, in one workspace. */
+export interface SitePermission {
+  key: string;
+  origin: string;
+  permission: string;
+  kind: string;
+  allowed: boolean;
+  /** What it lets the site do: "know your location". */
+  label: string;
+}
+
 export interface AppTabInfo {
   tabId: string;
   url: string;
@@ -250,6 +261,31 @@ export class AppConnection {
   }
   async vaultFill(tabId: string, opts: { usernameUid?: string; passwordUid?: string; username?: string }): Promise<{ filled: string[]; username?: string; error?: string; candidates?: string[] }> {
     return (await this.request({ type: 'vault.fill', tabId, ...opts }, 120000)) as unknown as { filled: string[]; username?: string; error?: string; candidates?: string[] };
+  }
+  private async profile(type: string, extra: Record<string, unknown> = {}, timeoutMs = 30000): Promise<Record<string, unknown>> {
+    const r = await this.request({ type: `profile.${type}`, ...extra }, timeoutMs);
+    if (r.error) throw new Error(String(r.error));
+    return r;
+  }
+  /** This workspace's remembered site permissions (allowed or blocked). */
+  async sitePermissions(): Promise<SitePermission[]> {
+    return (await this.profile('permissions')).permissions as SitePermission[];
+  }
+  /** Forget permission decisions, so those sites ask again. */
+  async forgetSitePermissions(keys: string[]): Promise<number> {
+    return Number((await this.profile('forgetPermissions', { keys })).forgotten) || 0;
+  }
+  /** Clear this workspace's cookies, sign-ins, site storage and cache. */
+  async clearBrowsingData(): Promise<void> {
+    await this.profile('clearBrowsingData', {}, 120000);
+  }
+  /** Every workspace the app has a browser for. */
+  async knownWorkspaces(): Promise<{ id: string; tabs: number; open: boolean }[]> {
+    return (await this.profile('workspaces')).workspaces as { id: string; tabs: number; open: boolean }[];
+  }
+  /** Delete another workspace's browser: tabs, browsing data, permissions (not its logins). */
+  async forgetWorkspace(id: string): Promise<void> {
+    await this.profile('forgetWorkspace', { id }, 120000);
   }
   /** Strip any unlocked password out of text bound for the agent. */
   async scrub(text: string): Promise<string> {
