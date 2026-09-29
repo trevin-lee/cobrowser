@@ -74,12 +74,21 @@ log(`releasing ${id}: ${from} → ${to}`);
 // 1) Bump. Written before packaging so the VSIX carries the new version.
 log(`write package.json version = ${to}`);
 if (!dry) writeFileSync(pkgPath, JSON.stringify({ ...pkg, version: to }, null, 2) + '\n');
+// The bridge add-ons are released with the extension and carry its version, which is how the
+// daemon notices an add-on that needs updating.
+for (const ext of ['chrome-extension', 'firefox-extension']) {
+  const file = path.join(root, ext, 'manifest.json');
+  log(`write ${ext}/manifest.json version = ${to}`);
+  if (!dry) writeFileSync(file, readFileSync(file, 'utf8').replace(/"version":\s*"[^"]*"/, `"version": "${to}"`));
+}
 
 // 2) Typecheck — fail before producing an artifact, not after.
 run('npm', ['run', 'typecheck']);
 
-// 3) Package (vsce runs vscode:prepublish → esbuild --production).
+// 3) Package (vsce runs vscode:prepublish → esbuild --production), and the Chrome add-on's
+//    zip for the GitHub release.
 run('npm', ['run', 'package']);
+run('npm', ['run', 'package:chrome']);
 
 // 4) Install into Cursor (replaces the active version).
 for (const e of editors) run(e.cli, ['--install-extension', vsix, '--force']);

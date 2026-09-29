@@ -1,6 +1,9 @@
 import * as vscode from 'vscode';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import { execFile } from 'node:child_process';
 import { BrowserSession } from './browser/BrowserSession';
 import { startMcpHttpServer, type McpHttp } from './mcp/server';
 import { BrowserPanel } from './webview/BrowserPanel';
@@ -47,6 +50,30 @@ interface SavedTab {
   col?: number;
   /** Who opened it: the agent's tabs stay the agent's to tidy up after a restart. */
   by?: 'agent' | 'human';
+}
+
+/** Where Chrome loads the bridge from: a fixed folder, so "Load unpacked" survives updates
+ *  (this extension's own install folder is renamed with every version). */
+const CHROME_BRIDGE_DIR = path.join(os.homedir(), '.cobrowser', 'chrome-extension');
+
+const manifestVersion = (dir: string): string | undefined => {
+  try {
+    return (JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8')) as { version?: string }).version;
+  } catch {
+    return undefined;
+  }
+};
+
+/** Copy the shipped Chrome bridge to CHROME_BRIDGE_DIR: always when installing, otherwise only
+ *  to refresh a copy that is already there and out of date. */
+function copyChromeBridge(context: vscode.ExtensionContext, install: boolean): { changed: boolean; from?: string; to?: string } {
+  const src = path.join(context.extensionUri.fsPath, 'chrome-extension');
+  const to = manifestVersion(src);
+  const from = manifestVersion(CHROME_BRIDGE_DIR);
+  if (!to || (!install && (!from || from === to))) return { changed: false, from, to };
+  fs.mkdirSync(CHROME_BRIDGE_DIR, { recursive: true });
+  fs.cpSync(src, CHROME_BRIDGE_DIR, { recursive: true, force: true });
+  return { changed: from !== to, from, to };
 }
 
 let session: BrowserSession | undefined;
@@ -96,6 +123,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   output = vscode.window.createOutputChannel('Cobrowser');
   context.subscriptions.push(output);
   const log = (m: string) => output.appendLine(m);
+
+  // Keep an installed Chrome bridge in step with this release. Chrome picks the new files up
+  // when it restarts, or at once with the extension's reload button.
+  try {
+    const r = copyChromeBridge(context, false);
+    if (r.changed) log(`Chrome bridge updated in ${CHROME_BRIDGE_DIR} (${r.from} → ${r.to}); reload it in chrome://extensions.`);
+  } catch (err) {
+    log(`Chrome bridge update failed: ${String(err)}`);
+  }
 
   // Cache the webview assets now, while this version's install dir is guaranteed present —
   // a later release prunes old dirs, and a panel opened afterward must not read from a
@@ -424,19 +460,39 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           'paste it into the add-on (toolbar button → Endpoints) only if that did not happen — or into the Chrome extension, which has no manifest.',
       );
     }),
+    vscode.commands.registerCommand('cobrowser.installChromeBridge', async () => {
+      try {
+        copyChromeBridge(context, true);
+      } catch (err) {
+        void vscode.window.showErrorMessage(`Cobrowser: could not copy the Chrome extension — ${String((err as Error).message ?? err)}`);
+        return;
+      }
+      await vscode.env.clipboard.writeText(CHROME_BRIDGE_DIR);
+      const shown = CHROME_BRIDGE_DIR.replace(os.homedir(), '~');
+      const next = await vscode.window.showInformationMessage(
+        `Cobrowser: the Chrome extension is in ${shown} (path copied). In chrome://extensions, turn on Developer mode, click Load unpacked and choose that folder. ` +
+          'Then run "Cobrowser: Bind Chrome Tab Group to This Workspace", and paste the URL from "Cobrowser: Copy Bridge URL" into the extension\'s toolbar popup. ' +
+          'Updates to cobrowser update that folder; Chrome loads them when it restarts.',
+        'Open Chrome Extensions',
+      );
+      if (next === 'Open Chrome Extensions') execFile('open', ['-a', 'Google Chrome', 'chrome://extensions'], () => undefined);
+    }),
     vscode.commands.registerCommand('cobrowser.bindFirefoxContainer', async () => {
       // Per-workspace, stored in workspaceState: the binding decides what an agent may touch
       // in the human's real browser, and it should not require a file in their repo.
       const containers = listFirefoxContainers();
-      const current = context.workspaceState.get<string>(FIREFOX_CONTAINER_KEY)?.trim() ?? '';
+      const bound = context.workspaceState.get<string>(FIREFOX_CONTAINER_KEY)?.trim() ?? '';
+      const current = bridgeBrowser() === 'firefox' ? bound : '';
+      // A workspace drives one browser at a time: binding Firefox ends a Chrome binding.
+      const replacing = bridgeBrowser() === 'chrome' ? bound : '';
       const items: vscode.QuickPickItem[] = containers.map((c) => ({
         label: c.name,
         description: c.name === current ? 'currently bound' : undefined,
         detail: `container ${c.userContextId} in profile ${c.profile}`,
       }));
-      items.push({ label: '$(circle-slash) Unbind', detail: 'Hide the firefox_* tools in this workspace' });
+      items.push({ label: '$(circle-slash) Unbind', detail: 'Hide the bridge_* tools in this workspace' });
       const picked = await vscode.window.showQuickPick(items, {
-        title: 'Bind this workspace to one Firefox container',
+        title: replacing ? `Bind this workspace to one Firefox container (replaces the Chrome tab group "${replacing}")` : 'Bind this workspace to one Firefox container',
         placeHolder: containers.length
           ? 'The agent will be able to drive ONLY this container'
           : 'No containers found — create one in Firefox first, then run this again',
@@ -447,15 +503,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await context.workspaceState.update(BRIDGE_BROWSER_KEY, 'firefox');
       syncBridge(); // takes effect now: the daemon re-hellos the add-on's socket, no reload
       void vscode.window.showInformationMessage(
-        next ? `Cobrowser: this workspace is bound to the "${next}" container.` : 'Cobrowser: Firefox container unbound for this workspace.',
+        next
+          ? `Cobrowser: this workspace is bound to the "${next}" container${replacing ? ` instead of the Chrome tab group "${replacing}"` : ''}.`
+          : 'Cobrowser: Firefox container unbound for this workspace.',
       );
       log(next ? `Firefox bridge: bound to container "${next}".` : 'Firefox bridge: unbound.');
     }),
     vscode.commands.registerCommand('cobrowser.bindChromeTabGroup', async () => {
       // Chrome has no containers; a tab group's title (or "profile" for every tab) is the scope.
-      const current = bridgeBrowser() === 'chrome' ? context.workspaceState.get<string>(FIREFOX_CONTAINER_KEY) ?? '' : '';
+      const bound = context.workspaceState.get<string>(FIREFOX_CONTAINER_KEY)?.trim() ?? '';
+      const current = bridgeBrowser() === 'chrome' ? bound : '';
+      const replacing = bridgeBrowser() === 'firefox' ? bound : '';
       const next = await vscode.window.showInputBox({
-        title: 'Bind this workspace to a Chrome tab group',
+        title: replacing ? `Bind this workspace to a Chrome tab group (replaces the Firefox container "${replacing}")` : 'Bind this workspace to a Chrome tab group',
         prompt: 'The tab group\'s name as shown in Chrome\'s tab strip, or "profile" for every tab. Empty unbinds.',
         value: current,
         placeHolder: 'profile',
@@ -466,7 +526,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       syncBridge();
       void vscode.window.showInformationMessage(
         next.trim()
-          ? `Cobrowser: bound to Chrome tab group "${next.trim()}". If the extension is not connected yet, run "Cobrowser: Copy Bridge URL" and paste it into its popup.`
+          ? `Cobrowser: bound to Chrome tab group "${next.trim()}"${replacing ? ` instead of the Firefox container "${replacing}"` : ''}. If the extension is not connected yet, run "Cobrowser: Copy Bridge URL" and paste it into its popup.`
           : 'Cobrowser: Chrome tab group unbound for this workspace.',
       );
     }),

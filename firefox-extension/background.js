@@ -32,9 +32,12 @@ const SESSION_REQUEST_CAP = 100;
 /** How long to wait out a server that has started pushing back. */
 const BACKOFF_ON_REFUSAL_MS = 60000;
 
+// The background page is persistent, so these last as long as the browser session does.
 let requestCount = 0;
 let lastRequestAt = 0;
 let backoffUntil = 0;
+/** Tabs the agent opened (bridge_new_tab): the only ones it may close. */
+const agentTabs = new Set();
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -43,7 +46,8 @@ async function pace() {
   if (requestCount >= SESSION_REQUEST_CAP) {
     throw new Error(
       `request cap reached (${SESSION_REQUEST_CAP} this session). This is a safety stop, not a site error — ` +
-        'tell the human what you have collected so far and ask before continuing.',
+        'tell the human what you have collected so far and ask before continuing. Only the human can reset it, ' +
+        'from the Cobrowser Bridge toolbar button.',
     );
   }
   const now = Date.now();
@@ -191,7 +195,7 @@ async function handleMessage(conn, msg) {
     try {
       conn.scope = await resolveContainer(msg.container);
       conn.workspace = msg.workspace ?? null;
-      send(conn, { type: 'ready', container: conn.scope, browser: 'firefox' });
+      send(conn, { type: 'ready', container: conn.scope, browser: 'firefox', version: api.runtime.getManifest().version });
     } catch (err) {
       conn.scope = null;
       conn.error = String(err && err.message ? err.message : err);
@@ -261,6 +265,7 @@ const publicTab = (t) => ({
   windowId: t.windowId,
   pinned: t.pinned,
   lastAccessed: t.lastAccessed,
+  openedBy: agentTabs.has(t.id) ? 'agent' : 'human',
 });
 
 // ------------------------------------------------------------------ methods
@@ -282,8 +287,14 @@ async function dispatch(conn, method, params) {
 
     case 'navigate': {
       await assertInScope(conn, params.tabId);
-      await api.tabs.update(params.tabId, { url: params.url });
-      const settled = await waitForLoad(params.tabId);
+      await pace();
+      const type = params.type || 'url';
+      const loaded = waitForLoad(params.tabId);
+      if (type === 'back') await api.tabs.goBack(params.tabId);
+      else if (type === 'forward') await api.tabs.goForward(params.tabId);
+      else if (type === 'reload') await api.tabs.reload(params.tabId);
+      else await api.tabs.update(params.tabId, { url: params.url });
+      const settled = await loaded;
       // After the load: a marker drawn before navigating would be thrown away with the page.
       await markTabActivity(params.tabId, 'navigated');
       return publicTab(settled);
@@ -291,12 +302,23 @@ async function dispatch(conn, method, params) {
 
     case 'newTab': {
       const scope = requireScope(conn);
+      await pace();
       const tab = await api.tabs.create({
         cookieStoreId: scope.cookieStoreId,
         url: params.url,
         active: params.active !== false,
       });
+      agentTabs.add(tab.id);
       return publicTab(tab);
+    }
+
+    case 'closeTab': {
+      await assertInScope(conn, params.tabId);
+      if (!agentTabs.has(params.tabId)) {
+        return { refused: 'not-yours', needsUserAction: 'the human opened this tab; leave it, or ask them to close it', why: 'The agent closes only the tabs it opened.' };
+      }
+      await api.tabs.remove(params.tabId);
+      return { closed: params.tabId };
     }
 
     case 'activate': {
@@ -335,7 +357,7 @@ async function dispatch(conn, method, params) {
       if (found && found.ambiguous) {
         throw new Error(
           `"${params.text}" matches ${found.count} elements: ${found.samples.join(' | ')}. ` +
-            'Pass exact:true, a more specific text, or use a ref from bridge_snapshot.',
+            'Pass exact:true, a more specific text, or use a uid from bridge_snapshot.',
         );
       }
       if (found && found.committing && params.allowPayment !== true && params.allowDestructive !== true) {
@@ -582,7 +604,11 @@ const PAGE_SCRIPTS = {
       try {
         // Indirect eval: evaluates in the isolated realm, no access to page globals.
         const value = (0, eval)(`(${expression})`);
-        return pack(value && typeof value.then === 'function' ? undefined : value);
+        // An async function's result: wait for it (the browser waits for a returned promise).
+        if (value && typeof value.then === 'function') {
+          return Promise.resolve(value).then(pack, (e) => ({ __cobrowserError: `evaluate rejected: ${e && e.message ? e.message : e}` }));
+        }
+        return pack(value);
       } catch (e) {
         return { __cobrowserError: `isolated-world evaluate failed: ${e && e.message ? e.message : e}` };
       }
@@ -698,8 +724,10 @@ const PAGE_SCRIPTS = {
       const el = document.querySelector(selector);
       return { found: !!el, url: location.href };
     }
+    // Any of several texts, like the panel's wait_for.
     const hay = (document.body ? document.body.innerText : '') || '';
-    return { found: hay.includes(text), url: location.href };
+    const hit = [].concat(text).find((t) => typeof t === 'string' && hay.includes(t));
+    return { found: hit !== undefined, text: hit, url: location.href };
   },
 
   readPage: (maxText) => {
@@ -1027,12 +1055,29 @@ function updateBadge() {
   }
 }
 
-api.runtime.onMessage.addListener((msg) => {
+/** Only the extension's own page, opened by the human, may reset the cap: scripts the agent
+ *  runs in a tab can message this background page too, and must not lift their own limit. */
+const fromOptionsPage = (sender) => !!sender && sender.id === api.runtime.id && typeof sender.url === 'string' && sender.url.startsWith(api.runtime.getURL('options.html'));
+
+function usage() {
+  return { requests: requestCount, cap: SESSION_REQUEST_CAP, backoffSeconds: Math.max(0, Math.ceil((backoffUntil - Date.now()) / 1000)) };
+}
+
+api.runtime.onMessage.addListener((msg, sender) => {
   if (msg && msg.type === 'status') return Promise.resolve(statusList());
   if (msg && msg.type === 'reconcile') return reconcile().then(() => statusList());
   if (msg && msg.type === 'containers') return api.contextualIdentities.query({});
+  if (msg && msg.type === 'usage') return Promise.resolve(usage());
+  if (msg && msg.type === 'resetCap') {
+    if (!fromOptionsPage(sender)) return Promise.resolve({ error: 'refused: only the Cobrowser Bridge page can reset the request cap' });
+    requestCount = 0;
+    backoffUntil = 0;
+    return Promise.resolve(usage());
+  }
   return undefined;
 });
+
+api.tabs.onRemoved.addListener((tabId) => { agentTabs.delete(tabId); });
 
 api.storage.onChanged.addListener((changes, area) => {
   // BOTH areas matter. Cobrowser writes the managed manifest when a workspace activates,

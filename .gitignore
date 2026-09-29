@@ -5,6 +5,7 @@ dist/
 *.log
 dist-test/
 *.xpi
+cobrowser-bridge-*.zip
 .env.amo
 web-ext-artifacts/
 app/node_modules/

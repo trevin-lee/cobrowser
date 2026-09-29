@@ -56,6 +56,11 @@ suite('bridge-scripts', async (r) => {
       await sleep(1600);
       const still = await run<{ quietFor: number }>('PAGE_SCRIPTS.quiet()');
       r.check(`[${ext}] settle sees a page that is still changing, then one that has stopped`, busy.quietFor < 200 && still.quietFor >= 400, { busy, still });
+      const awaited = await run<unknown>('PAGE_SCRIPTS.evaluate("(async (n) => { await new Promise((r) => setTimeout(r, 50)); return n * 2; })(...[21])", "isolated")');
+      r.check(`[${ext}] an async function's result is awaited, not dropped`, awaited === 42, awaited);
+      const any = await run<{ found: boolean; text?: string }>('PAGE_SCRIPTS.probe(["no such text", "Workers"], null)');
+      const none2 = await run<{ found: boolean }>('PAGE_SCRIPTS.probe(["no such text"], null)');
+      r.check(`[${ext}] waiting for any of several texts finds the one that is there`, any.found && any.text === 'Workers' && !none2.found, { any, none2 });
       await s.run(() => s.closePage(page.pageId), page.pageId).catch(() => undefined);
       await sleep(300);
     }

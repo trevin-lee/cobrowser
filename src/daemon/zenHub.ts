@@ -18,6 +18,8 @@ interface Pending {
 interface Conn {
   ws: WebSocket;
   browser: BridgeBrowser;
+  /** The add-on's version, from its ready message (older add-ons do not send one). */
+  version: string | undefined;
   container: FirefoxContainer | undefined;
   lastError: string | undefined;
   pending: Map<number, Pending>;
@@ -52,6 +54,8 @@ export class ZenHub {
     /** A workspace's current binding (undefined: not bound / no window). */
     private readonly bindingFor: (workspace: string) => { browser: BridgeBrowser; container: string } | undefined,
     private readonly log: (message: string) => void,
+    /** The add-on version this editor ships (they are released together). */
+    private readonly expectedVersion?: string,
   ) {}
 
   attach(httpServer: http.Server): void {
@@ -95,10 +99,21 @@ export class ZenHub {
     }
   }
 
-  status(workspace: string): { connected: boolean; browser?: BridgeBrowser; container?: FirefoxContainer; error?: string } {
+  status(workspace: string): { connected: boolean; browser?: BridgeBrowser; container?: FirefoxContainer; error?: string; version?: string; stale?: boolean } {
     const c = this.bound(workspace);
     if (!c || c.ws.readyState !== WebSocket.OPEN) return { connected: false };
-    return { connected: true, browser: c.browser, container: c.container, error: c.lastError };
+    return { connected: true, browser: c.browser, container: c.container, error: c.lastError, version: c.version, stale: this.isStale(c) };
+  }
+
+  /** The connected add-on for a workspace, and whether it is older than this editor. */
+  addon(workspace: string): { browser: BridgeBrowser; version: string | undefined; expected: string; stale: boolean } | undefined {
+    const c = this.bound(workspace);
+    if (!c || c.ws.readyState !== WebSocket.OPEN || !this.expectedVersion) return undefined;
+    return { browser: c.browser, version: c.version, expected: this.expectedVersion, stale: this.isStale(c) };
+  }
+
+  private isStale(c: Conn): boolean {
+    return !!this.expectedVersion && c.version !== this.expectedVersion;
   }
 
   /** Call a method in the add-on on behalf of a workspace. */
@@ -111,7 +126,7 @@ export class ZenHub {
         new Error(
           `No ${which} browser is connected for this workspace. Install the Cobrowser Bridge extension in ${which}` +
             (b?.browser === 'chrome'
-              ? ' and paste this workspace\'s bridge URL into it (Cobrowser: Copy Bridge URL).'
+              ? ' (Cobrowser: Install Chrome Bridge Extension) and paste this workspace\'s bridge URL into it (Cobrowser: Copy Bridge URL).'
               : '; it configures itself from the managed manifest the editor writes.'),
         ),
       );
@@ -154,7 +169,7 @@ export class ZenHub {
       this.log(`zen: ${workspace} [${browser}] — a new connection replaced the previous one`);
       prev.ws.close();
     }
-    const c: Conn = { ws, browser, container: undefined, lastError: undefined, pending: new Map() };
+    const c: Conn = { ws, browser, version: undefined, container: undefined, lastError: undefined, pending: new Map() };
     this.conns.set(key, c);
 
     ws.on('message', (data: Buffer) => {
@@ -192,8 +207,9 @@ export class ZenHub {
   private handle(workspace: string, c: Conn, msg: Record<string, unknown>): void {
     if (msg.type === 'ready') {
       c.container = msg.container as FirefoxContainer;
+      c.version = typeof msg.version === 'string' ? msg.version : undefined;
       c.lastError = undefined;
-      this.log(`zen: ${workspace} [${c.browser}] — bound to "${c.container.name}"`);
+      this.log(`zen: ${workspace} [${c.browser}] — bound to "${c.container.name}" (add-on ${c.version ?? 'unversioned'}${this.isStale(c) ? `, expected ${this.expectedVersion}` : ''})`);
       return;
     }
     if (msg.type === 'error') {

@@ -36,15 +36,36 @@ const BACKOFF_ON_REFUSAL_MS = 60000;
 let requestCount = 0;
 let lastRequestAt = 0;
 let backoffUntil = 0;
+/** Tabs the agent opened (bridge_new_tab): the only ones it may close. */
+const agentTabs = new Set();
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * The count and the agent's tabs live in session storage: Chrome stops an idle service
+ * worker and starts a fresh one, which would otherwise reset the cap to zero mid-session.
+ * Session storage lasts until the browser quits, the same "session" the cap means.
+ */
+let restored;
+function restoreSession() {
+  restored ||= api.storage.session.get(['requestCount', 'agentTabs']).then((s) => {
+    requestCount = Math.max(requestCount, Number(s.requestCount) || 0);
+    for (const id of s.agentTabs || []) agentTabs.add(id);
+  }, () => undefined);
+  return restored;
+}
+function persistSession() {
+  void api.storage.session.set({ requestCount, agentTabs: [...agentTabs] }).catch(() => undefined);
+}
+
 /** Called before anything that reaches a site. Throws rather than silently proceeding. */
 async function pace() {
+  await restoreSession();
   if (requestCount >= SESSION_REQUEST_CAP) {
     throw new Error(
       `request cap reached (${SESSION_REQUEST_CAP} this session). This is a safety stop, not a site error — ` +
-        'tell the human what you have collected so far and ask before continuing.',
+        'tell the human what you have collected so far and ask before continuing. Only the human can reset it, ' +
+        'from the Cobrowser Bridge toolbar button.',
     );
   }
   const now = Date.now();
@@ -59,6 +80,7 @@ async function pace() {
   if (since < jitter) await sleep(jitter - since);
   lastRequestAt = Date.now();
   requestCount += 1;
+  persistSession();
 }
 
 /** A refusal or challenge means stop, not retry harder. */
@@ -194,7 +216,7 @@ async function handleMessage(conn, msg) {
     try {
       conn.scope = await resolveScope(msg.container);
       conn.workspace = msg.workspace ?? null;
-      send(conn, { type: 'ready', container: conn.scope, browser: BROWSER });
+      send(conn, { type: 'ready', container: conn.scope, browser: BROWSER, version: api.runtime.getManifest().version });
     } catch (err) {
       conn.scope = null;
       conn.error = String(err && err.message ? err.message : err);
@@ -269,6 +291,7 @@ const publicTab = (t) => ({
   windowId: t.windowId,
   pinned: t.pinned,
   lastAccessed: t.lastAccessed,
+  openedBy: agentTabs.has(t.id) ? 'agent' : 'human',
 });
 
 // ------------------------------------------------------------------ methods
@@ -281,6 +304,7 @@ async function dispatch(conn, method, params) {
 
     case 'listTabs': {
       const scope = requireScope(conn);
+      await restoreSession();
       const all = await api.tabs.query({});
       const tabs = scope.groupId === null ? all : all.filter((t) => t.groupId === scope.groupId);
       return { container: scope.name, tabs: tabs.map(publicTab) };
@@ -288,17 +312,36 @@ async function dispatch(conn, method, params) {
 
     case 'navigate': {
       await assertInScope(conn, params.tabId);
-      await api.tabs.update(params.tabId, { url: params.url });
-      const settled = await waitForLoad(params.tabId);
+      await pace();
+      const type = params.type || 'url';
+      const loaded = waitForLoad(params.tabId);
+      if (type === 'back') await api.tabs.goBack(params.tabId);
+      else if (type === 'forward') await api.tabs.goForward(params.tabId);
+      else if (type === 'reload') await api.tabs.reload(params.tabId);
+      else await api.tabs.update(params.tabId, { url: params.url });
+      const settled = await loaded;
       await markTabActivity(params.tabId, 'navigated');
       return publicTab(settled);
     }
 
     case 'newTab': {
       const scope = requireScope(conn);
+      await pace();
       const tab = await api.tabs.create({ url: params.url, active: params.active !== false });
       if (scope.groupId !== null) await api.tabs.group({ tabIds: [tab.id], groupId: scope.groupId });
+      agentTabs.add(tab.id);
+      persistSession();
       return publicTab(await api.tabs.get(tab.id));
+    }
+
+    case 'closeTab': {
+      await assertInScope(conn, params.tabId);
+      await restoreSession();
+      if (!agentTabs.has(params.tabId)) {
+        return { refused: 'not-yours', needsUserAction: 'the human opened this tab; leave it, or ask them to close it', why: 'The agent closes only the tabs it opened.' };
+      }
+      await api.tabs.remove(params.tabId);
+      return { closed: params.tabId };
     }
 
     case 'activate': {
@@ -330,7 +373,7 @@ async function dispatch(conn, method, params) {
       ]);
       if (found && found.__cobrowserError) throw new Error(found.__cobrowserError);
       if (found && found.ambiguous) {
-        throw new Error(`"${params.text}" matches ${found.count} elements: ${found.samples.join(' | ')}. Pass exact:true, a more specific text, or use a ref from bridge_snapshot.`);
+        throw new Error(`"${params.text}" matches ${found.count} elements: ${found.samples.join(' | ')}. Pass exact:true, a more specific text, or use a uid from bridge_snapshot.`);
       }
       if (found && found.committing && params.allowPayment !== true && params.allowDestructive !== true) {
         return { refused: 'committing', label: found.label, needsUserAction: `the human should click "${found.label}" themselves; re-issue with allowPayment: true only if they asked you to complete this payment`, why: 'This submits a payment or places an order. The human owns that click.' };
@@ -528,7 +571,11 @@ const PAGE_SCRIPTS = {
       try {
         // Indirect eval: evaluates in the isolated realm, no access to page globals.
         const value = (0, eval)(`(${expression})`);
-        return pack(value && typeof value.then === 'function' ? undefined : value);
+        // An async function's result: wait for it (the browser waits for a returned promise).
+        if (value && typeof value.then === 'function') {
+          return Promise.resolve(value).then(pack, (e) => ({ __cobrowserError: `evaluate rejected: ${e && e.message ? e.message : e}` }));
+        }
+        return pack(value);
       } catch (e) {
         return { __cobrowserError: `isolated-world evaluate failed: ${e && e.message ? e.message : e}` };
       }
@@ -644,8 +691,10 @@ const PAGE_SCRIPTS = {
       const el = document.querySelector(selector);
       return { found: !!el, url: location.href };
     }
+    // Any of several texts, like the panel's wait_for.
     const hay = (document.body ? document.body.innerText : '') || '';
-    return { found: hay.includes(text), url: location.href };
+    const hit = [].concat(text).find((t) => typeof t === 'string' && hay.includes(t));
+    return { found: hit !== undefined, text: hit, url: location.href };
   },
 
   readPage: (maxText) => {
@@ -964,6 +1013,15 @@ function statusList() {
   }));
 }
 
+/** Only the extension's own page, opened by the human, may reset the cap: scripts the agent
+ *  runs in a tab can message this worker too, and must not lift their own limit. */
+const fromOptionsPage = (sender) => !!sender && sender.id === api.runtime.id && typeof sender.url === 'string' && sender.url.startsWith(api.runtime.getURL('options.html'));
+
+async function usage() {
+  await restoreSession();
+  return { requests: requestCount, cap: SESSION_REQUEST_CAP, backoffSeconds: Math.max(0, Math.ceil((backoffUntil - Date.now()) / 1000)) };
+}
+
 function updateBadge() {
   const live = statusList().filter((s) => s.connected && s.container).length;
   try {
@@ -981,7 +1039,19 @@ api.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg && msg.type === 'status') return reply(statusList());
   if (msg && msg.type === 'reconcile') return reply(reconcile().then(() => statusList()));
   if (msg && msg.type === 'containers') return reply(listScopes());
+  if (msg && msg.type === 'usage') return reply(usage());
+  if (msg && msg.type === 'resetCap') {
+    if (!fromOptionsPage(_sender)) return reply({ error: 'refused: only the Cobrowser Bridge page can reset the request cap' });
+    requestCount = 0;
+    backoffUntil = 0;
+    persistSession();
+    return reply(usage());
+  }
   return false;
+});
+
+api.tabs.onRemoved.addListener((tabId) => {
+  if (agentTabs.delete(tabId)) persistSession();
 });
 
 api.storage.onChanged.addListener((changes, area) => {

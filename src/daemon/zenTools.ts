@@ -7,6 +7,10 @@ import type { ZenHub } from './zenHub';
  * Chrome (scoped to one tab group, or the profile) — through the Cobrowser Bridge extension.
  * Served by the daemon so the add-on's endpoint never moves with an editor window. Schemas are
  * plain JSON because the daemon speaks the low-level MCP server, not the zod-based one.
+ *
+ * The parameters use the panel tools' words (uid, function/args, timeout, elements, navigate
+ * type), so an agent that learned one family knows the other. The add-on's older names (ref,
+ * expression, timeoutMs, fields) are still accepted.
  */
 
 const num = { type: 'number' } as const;
@@ -18,15 +22,16 @@ export const ZEN_TOOLS: Tool[] = [
   {
     name: 'bridge_evaluate_script',
     description:
-      "Evaluate a JS expression in a tab and get JSON back. THIS IS THE TOOL FOR BULK READS: to collect 50 order links, evaluate `[...document.querySelectorAll('a[href*=\"/orders/\"]')].map(a => a.href)` in ONE call rather than snapshotting and clicking 50 times. Runs in the ISOLATED world by default (shares the DOM, not the page's JavaScript). Pass world:\"page\" only when you need the site's own globals or framework internals — that is logged. Treat it as READ-ONLY: it can technically touch the DOM, but use click/fill for changes so the human's guards apply. Every call is throttled.",
+      "Run a JS function in a tab and get its JSON-serializable result back (an async function is awaited), like the panel's evaluate_script. THIS IS THE TOOL FOR BULK READS: to collect 50 order links, run `() => [...document.querySelectorAll('a[href*=\"/orders/\"]')].map(a => a.href)` in ONE call rather than snapshotting and clicking 50 times. Runs in the ISOLATED world by default (shares the DOM, not the page's JavaScript). Pass world:\"page\" only when you need the site's own globals or framework internals — that is logged. Treat it as READ-ONLY: it can technically touch the DOM, but use click/fill for changes so the human's guards apply. Every call is throttled.",
     inputSchema: {
       type: 'object',
       properties: {
         tabId,
-        expression: { ...str, description: 'A JS expression, e.g. "document.title" or "[...document.links].map(a=>a.href)". Not a statement block.' },
+        function: { ...str, description: 'A function, e.g. "() => document.title" or "(sel) => document.querySelectorAll(sel).length".' },
+        args: { type: 'array', description: 'Arguments passed to the function (JSON values).' },
         world: { type: 'string', enum: ['isolated', 'page'] },
       },
-      required: ['tabId', 'expression'],
+      required: ['tabId', 'function'],
     },
   },
   {
@@ -42,13 +47,13 @@ export const ZEN_TOOLS: Tool[] = [
   {
     name: 'bridge_wait_for',
     description:
-      'Wait until text or a selector appears in a tab, and/or (settle: true) until the page stops changing — no DOM change for quietMs, default 500 — instead of guessing when a single-page app has finished rendering. Use settle after a click or navigation so you read the page once it is done updating. Errors at the timeout.',
-    inputSchema: { type: 'object', properties: { tabId, text: str, selector: str, settle: bool, quietMs: num, timeoutMs: num }, required: ['tabId'] },
+      'Wait until any of the given texts (or a selector) appears in a tab, and/or (settle: true) until the page stops changing — no DOM change for quietMs, default 500 — instead of guessing when a single-page app has finished rendering. Use settle after a click or navigation so you read the page once it is done updating. timeout is in ms (default 15000, at most 60000); errors at the timeout.',
+    inputSchema: { type: 'object', properties: { tabId, text: { type: 'array', items: str }, selector: str, settle: bool, quietMs: num, timeout: num }, required: ['tabId'] },
   },
   {
     name: 'bridge_list_tabs',
     description:
-      "List the tabs open in the human's OWN browser (Firefox or Chrome), limited to the container / tab group this workspace is bound to. Start here: these are real tabs with real sessions, so you can take over work already in progress instead of navigating from scratch. Returns a tabId for each, used by every other bridge_ tool.",
+      "List the tabs open in the human's OWN browser (Firefox or Chrome), limited to the container / tab group this workspace is bound to. Start here: these are real tabs with real sessions, so you can take over work already in progress instead of navigating from scratch. Returns a tabId for each, used by every other bridge_ tool, and openedBy: 'agent' for the tabs you opened — close those with bridge_close_tab when you are done with them; the rest are the human's.",
     inputSchema: { type: 'object', properties: {} },
   },
   {
@@ -59,8 +64,13 @@ export const ZEN_TOOLS: Tool[] = [
   },
   {
     name: 'bridge_new_tab',
-    description: 'Open a new tab inside the bound container / tab group, optionally at a URL.',
+    description: "Open a new tab inside the bound container / tab group, optionally at a URL. It is yours: close it with bridge_close_tab when you no longer need it, so the human's browser is not left full of your tabs.",
     inputSchema: { type: 'object', properties: { url: str, active: bool } },
+  },
+  {
+    name: 'bridge_close_tab',
+    description: "Close a tab you opened with bridge_new_tab (openedBy: 'agent' in bridge_list_tabs). Tabs the human opened are refused: leave those, or ask the human.",
+    inputSchema: { type: 'object', properties: { tabId }, required: ['tabId'] },
   },
   {
     name: 'bridge_activate_tab',
@@ -69,8 +79,8 @@ export const ZEN_TOOLS: Tool[] = [
   },
   {
     name: 'bridge_navigate',
-    description: 'Navigate a tab and wait for it to finish loading. Returns the SETTLED url/title, so redirects and failures are detectable.',
-    inputSchema: { type: 'object', properties: { tabId, url: str }, required: ['tabId', 'url'] },
+    description: 'Navigate a tab to a url, or back, forward or reload it, and wait for it to finish loading. Returns the SETTLED url/title, so redirects and failures are detectable.',
+    inputSchema: { type: 'object', properties: { tabId, type: { type: 'string', enum: ['url', 'back', 'forward', 'reload'] }, url: str }, required: ['tabId'] },
   },
   {
     name: 'bridge_read_page',
@@ -80,7 +90,7 @@ export const ZEN_TOOLS: Tool[] = [
   {
     name: 'bridge_snapshot',
     description:
-      "Interactive elements in a tab, each with a `ref` for click/fill. Includes `href` for links — so twenty identical \"View order detail\" links can be navigated directly instead of clicked one at a time through pagination that resets. Sees into open shadow roots (sites built from web components). Lists <select> options so you can choose by visible text. Filter it: an unfiltered order-history page is 200+ mostly-unlabeled icon buttons — pass labeledOnly, textContains, role, withinSelector or limit. For bulk extraction prefer bridge_evaluate_script.",
+      "Interactive elements in a tab, each with a `uid` for click/fill. Includes `href` for links — so twenty identical \"View order detail\" links can be navigated directly instead of clicked one at a time through pagination that resets. Sees into open shadow roots (sites built from web components). Lists <select> options so you can choose by visible text. Filter it: an unfiltered order-history page is 200+ mostly-unlabeled icon buttons — pass labeledOnly, textContains, role, withinSelector or limit. For bulk extraction prefer bridge_evaluate_script.",
     inputSchema: {
       type: 'object',
       properties: { tabId, labeledOnly: bool, textContains: str, role: str, withinSelector: str, limit: num },
@@ -90,10 +100,10 @@ export const ZEN_TOOLS: Tool[] = [
   {
     name: 'bridge_click',
     description:
-      "Click an element by `ref` (from bridge_snapshot), CSS `selector`, or visible `text` — text is usually what you want, e.g. {text: 'Load more orders', exact: true}. Sees into open shadow roots. REFUSES buttons that pay or place an order, returning `needsUserAction` so you can hand that click to the human; pass allowPayment only if they asked you to complete the payment. Input here is synthetic (isTrusted: false) — no browser extension can send real clicks — and some sites ignore it: Google's and Cloudflare's consoles, among others. The result says noVisibleEffect when nothing on the page changed. When that happens, do the task in the cobrowser panel instead (new_page, then click/fill there), where input is real; the human signs in there once (fill_credentials for the password, the human for 2FA).",
+      "Click an element by `uid` (from bridge_snapshot), CSS `selector`, or visible `text` — text is usually what you want, e.g. {text: 'Load more orders', exact: true}. Sees into open shadow roots. REFUSES buttons that pay or place an order, returning `needsUserAction` so you can hand that click to the human; pass allowPayment only if they asked you to complete the payment. Input here is synthetic (isTrusted: false) — no browser extension can send real clicks — and some sites ignore it: Google's and Cloudflare's consoles, among others. The result says noVisibleEffect when nothing on the page changed. When that happens, do the task in the cobrowser panel instead (new_page, then click/fill there), where input is real; the human signs in there once (fill_credentials for the password, the human for 2FA).",
     inputSchema: {
       type: 'object',
-      properties: { tabId, ref: str, selector: str, text: str, exact: bool, allowPayment: bool },
+      properties: { tabId, uid: str, selector: str, text: str, exact: bool, allowPayment: bool },
       required: ['tabId'],
     },
   },
@@ -105,13 +115,13 @@ export const ZEN_TOOLS: Tool[] = [
       type: 'object',
       properties: {
         tabId,
-        fields: {
+        elements: {
           type: 'array',
-          items: { type: 'object', properties: { ref: str, selector: str, value: str }, required: ['value'] },
+          items: { type: 'object', properties: { uid: str, selector: str, value: str }, required: ['value'] },
         },
         allowCredentials: bool,
       },
-      required: ['tabId', 'fields'],
+      required: ['tabId', 'elements'],
     },
   },
   {
@@ -137,6 +147,16 @@ const currentNames = (text: string): string => text.replace(/\bfirefox_([a-z_]+)
 
 const asJson = (v: unknown): { content: Content[] } => ({ content: [{ type: 'text', text: currentNames(JSON.stringify(v, null, 2)) }] });
 
+/** When the add-on is older than this editor, what to tell the human. */
+function staleNote(hub: ZenHub, workspace: string): string | undefined {
+  const a = hub.addon?.(workspace);
+  if (!a?.stale) return undefined;
+  const how = a.browser === 'chrome'
+    ? 'update cobrowser, then reload Cobrowser Bridge in chrome://extensions'
+    : 'install the new signed Cobrowser Bridge .xpi in Firefox';
+  return `The Cobrowser Bridge add-on in ${a.browser === 'chrome' ? 'Chrome' : 'Firefox'} is ${a.version ? `version ${a.version}` : 'an older version'}; this editor expects ${a.expected}. Some tools may not work until the human updates it (${how}).`;
+}
+
 /** Run one bridge_* tool for a workspace through its bridge connection. */
 export async function callZenTool(
   hub: ZenHub,
@@ -147,9 +167,18 @@ export async function callZenTool(
   try {
     return await runZenTool(hub, workspace, name, args);
   } catch (e) {
-    throw new Error(currentNames((e as Error).message ?? String(e)));
+    const note = staleNote(hub, workspace);
+    throw new Error(currentNames((e as Error).message ?? String(e)) + (note ? ` (${note})` : ''));
   }
 }
+
+/** The add-on still says ref; the tools say uid, as the panel's do. */
+const withUids = (snap: unknown): unknown => {
+  const s = snap as { elements?: Record<string, unknown>[] } | null;
+  if (!s || !Array.isArray(s.elements)) return snap;
+  return { ...s, elements: s.elements.map(({ ref, ...rest }) => (ref === undefined ? rest : { uid: ref, ...rest })) };
+};
+const refOf = (o: Record<string, unknown>): unknown => o.uid ?? o.ref;
 
 async function runZenTool(
   hub: ZenHub,
@@ -159,14 +188,30 @@ async function runZenTool(
 ): Promise<{ content: Content[]; isError?: boolean }> {
   const { tabId } = args as { tabId?: number };
   switch (name) {
-    case 'bridge_evaluate_script':
-      return asJson(await hub.call(workspace, 'evaluate', { tabId, expression: args.expression, world: args.world }));
+    case 'bridge_evaluate_script': {
+      let expression = args.expression;
+      if (typeof args.function === 'string' && args.function.trim()) {
+        const fnArgs = Array.isArray(args.args) ? args.args : [];
+        expression = `(${args.function})(...${JSON.stringify(fnArgs)})`;
+      }
+      if (typeof expression !== 'string' || !expression.trim()) throw new Error('bridge_evaluate_script needs a function, e.g. "() => document.title"');
+      return asJson(await hub.call(workspace, 'evaluate', { tabId, expression, world: args.world }));
+    }
     case 'bridge_fetch':
       return asJson(await hub.call(workspace, 'fetchUrl', { tabId, url: args.url, method: args.method, headers: args.headers, body: args.body }));
-    case 'bridge_wait_for':
-      return asJson(await hub.call(workspace, 'waitFor', { tabId, text: args.text, selector: args.selector, settle: args.settle, quietMs: args.quietMs, timeoutMs: args.timeoutMs }));
-    case 'bridge_list_tabs':
-      return asJson(await hub.call(workspace, 'listTabs'));
+    case 'bridge_wait_for': {
+      const texts = Array.isArray(args.text) ? args.text.map(String) : typeof args.text === 'string' ? [args.text] : [];
+      // An add-on older than several-texts support reads one string.
+      const text = texts.length === 0 ? undefined : texts.length === 1 || hub.addon?.(workspace)?.stale ? texts[0] : texts;
+      return asJson(await hub.call(workspace, 'waitFor', { tabId, text, selector: args.selector, settle: args.settle, quietMs: args.quietMs, timeoutMs: args.timeout ?? args.timeoutMs }));
+    }
+    case 'bridge_list_tabs': {
+      const listed = await hub.call<Record<string, unknown>>(workspace, 'listTabs');
+      const note = staleNote(hub, workspace);
+      return asJson(note ? { ...listed, addonUpdate: note } : listed);
+    }
+    case 'bridge_close_tab':
+      return asJson(await hub.call(workspace, 'closeTab', { tabId }));
     case 'bridge_list_containers':
       return asJson(await hub.call(workspace, 'listContainers'));
     case 'bridge_new_tab':
@@ -174,16 +219,22 @@ async function runZenTool(
     case 'bridge_activate_tab':
       await hub.call(workspace, 'activate', { tabId });
       return { content: [{ type: 'text', text: `activated tab ${tabId}` }] };
-    case 'bridge_navigate':
-      return asJson(await hub.call(workspace, 'navigate', { tabId, url: args.url }));
+    case 'bridge_navigate': {
+      const type = typeof args.type === 'string' ? args.type : 'url';
+      if (type === 'url' && (typeof args.url !== 'string' || !args.url)) throw new Error('bridge_navigate: url is required for type "url"');
+      // An older add-on ignores type and would treat back/forward/reload as a url-less load.
+      if (type !== 'url' && hub.addon?.(workspace)?.stale) throw new Error(`bridge_navigate type "${type}" needs the current Cobrowser Bridge add-on`);
+      return asJson(await hub.call(workspace, 'navigate', { tabId, type, url: args.url }));
+    }
     case 'bridge_read_page':
       return asJson(await hub.call(workspace, 'readPage', { tabId }));
     case 'bridge_snapshot': {
       const { tabId: _t, ...options } = args;
-      return asJson(await hub.call(workspace, 'snapshot', { tabId, options }));
+      return asJson(withUids(await hub.call(workspace, 'snapshot', { tabId, options })));
     }
     case 'bridge_click': {
-      const { tabId: _t, allowPayment, ...rest } = args;
+      const { tabId: _t, allowPayment, uid: _u, ...others } = args;
+      const rest = { ...others, ref: refOf(args) };
       const pay = allowPayment === true;
       // allowDestructive is the add-on's old name for the same override.
       const click = (override: boolean) => hub.call<{ refused?: string; label?: string }>(workspace, 'click', { tabId, ...rest, allowPayment: override, allowDestructive: override });
@@ -198,8 +249,11 @@ async function runZenTool(
       }
       return asJson(result);
     }
-    case 'bridge_fill':
-      return asJson(await hub.call(workspace, 'fill', { tabId, fields: args.fields, allowCredentials: args.allowCredentials }));
+    case 'bridge_fill': {
+      const list = (Array.isArray(args.elements) ? args.elements : Array.isArray(args.fields) ? args.fields : []) as Record<string, unknown>[];
+      const fields = list.map((f) => ({ ref: refOf(f), selector: f.selector, value: f.value }));
+      return asJson(await hub.call(workspace, 'fill', { tabId, fields, allowCredentials: args.allowCredentials }));
+    }
     case 'bridge_screenshot': {
       const shot = await hub.call<{ data: string; mimeType: string }>(workspace, 'screenshot', { tabId, format: args.format });
       return { content: [{ type: 'image', data: shot.data, mimeType: shot.mimeType }] };

@@ -76,6 +76,7 @@ const zen = new ZenHub(
     return r?.container ? { browser: r.browser ?? 'firefox', container: r.container } : undefined;
   },
   log,
+  VERSION,
 );
 
 // ---------------------------------------------------------------------------------------

@@ -63,9 +63,23 @@ async function refreshGroups() {
   }
 }
 
+async function refreshUsage() {
+  const u = await api.runtime.sendMessage({ type: 'usage' });
+  if (!u || u.error) return;
+  $('usage').textContent = `${u.requests} of ${u.cap} this browser session` + (u.backoffSeconds ? ` · paused ${u.backoffSeconds}s after a refusal` : '');
+}
+
+async function resetCap() {
+  const u = await api.runtime.sendMessage({ type: 'resetCap' });
+  if (u && u.error) $('usage').textContent = u.error;
+  else await refreshUsage();
+}
+
 $('save').addEventListener('click', () => void save());
+$('reset').addEventListener('click', () => void resetCap());
 
 void loadEndpoints();
 void refreshStatus();
 void refreshGroups();
-setInterval(() => void refreshStatus(), 3000);
+void refreshUsage();
+setInterval(() => { void refreshStatus(); void refreshUsage(); }, 3000);
