@@ -354,17 +354,21 @@ Allowing lets that workspace's agent fill this login into the page; it never see
     });
     mode = response === 0 ? 'workspace' : response === 1 ? 'once' : 'denied';
   } else {
+    // Several logins for the site: pick one, and choose once or from now on, the same
+    // choices a single login gets.
     const names = matches.slice(0, 3).map((e) => e.username || '(no username)');
     focusApp();
-    const { response } = await dialog.showMessageBox({
+    const { response, checkboxChecked } = await dialog.showMessageBox({
       type: 'question',
       message: `The agent in "${name}" asks to use a login on ${label} — which one?`,
       detail: `${why}
 
-Choosing one allows it in this workspace from now on; the agent never sees the password. Workspace: ${workspaceId}`,
+The agent never sees the password. Workspace: ${workspaceId}`,
       buttons: [...names, 'Deny'], defaultId: names.length, cancelId: names.length,
+      checkboxLabel: 'Allow in this workspace from now on (otherwise, just this once)',
+      checkboxChecked: false,
     });
-    if (response < names.length) { entry = matches[response]; mode = 'workspace'; } else mode = 'denied';
+    if (response < names.length) { entry = matches[response]; mode = checkboxChecked ? 'workspace' : 'once'; } else mode = 'denied';
   }
   if (mode === 'workspace') {
     entry.scope = normalizeScope([...(entry.scope === 'all' ? [] : entry.scope), workspaceId]);
@@ -658,7 +662,7 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser logins
     if (mode === 'add' || mode === 'import' || mode === 'edit') {
       const importing = mode === 'import', editing = mode === 'edit';
       const t = el('div', 'title'); const id = el('div', 'id'); id.append(el('h2', null, importing ? 'Import logins' : editing ? 'Edit login' : 'New login')); t.append(id); wrap.append(t);
-      if (importing) wrap.append(el('p', 'hint', 'New logins get the workspaces you choose here. A login already in the vault gets the password from the file, keeps its workspaces and gains these. You can change each one afterwards.'));
+      if (importing) wrap.append(el('p', 'hint', 'Logins exported from cobrowser keep the workspaces the file notes for them; the others get the ones you choose here. A login already in the vault gets the password from the file, keeps its workspaces and gains the new ones. You can change each one afterwards.'));
       else {
         const f = el('div', 'fields');
         for (const [key, label, ph, type] of [['host', 'Site', 'costco.com, or 192.168.1.50:8080', 'text'], ['user', 'Username', 'you@example.com', 'text'], ['pass', 'Password', editing ? 'unchanged' : '', 'password']]) {

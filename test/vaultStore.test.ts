@@ -106,10 +106,10 @@ test('export writes every login in a form other managers and this vault read bac
   assert.deepEqual(pairs(back), pairs(v), 'the same logins, each with the workspaces it had');
 });
 
-test('an import adds its chosen workspaces to the ones the file noted; a note from elsewhere is ignored', () => {
+test('a row from a cobrowser export keeps exactly its workspaces; the chosen ones go to rows without a note', () => {
   const v = empty();
   const csv = 'name,url,username,password,note\na,https://a.com,me,1,"cobrowser-workspaces: [""/x""]"\nb,https://b.com,me,2,remember the dog\n';
   store.importCsv(v, csv, ['/y']);
-  assert.deepEqual(store.findEntry(v, 'a.com', 'me')?.scope, ['/x', '/y']);
+  assert.deepEqual(store.findEntry(v, 'a.com', 'me')?.scope, ['/x']);
   assert.deepEqual(store.findEntry(v, 'b.com', 'me')?.scope, ['/y']);
 });

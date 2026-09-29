@@ -125,9 +125,10 @@ function workspacesFromNote(note) {
   }
 }
 
-/** Import a CSV export. New logins get `scope`, plus the workspaces a cobrowser export noted
- *  for them; existing ones get their password replaced and their workspaces widened to include
- *  those, never narrowed. */
+/** Import a CSV export. A row from a cobrowser export carries its workspaces (the note), and a
+ *  new login gets exactly those, so exporting and importing back restores the vault; a row
+ *  without one gets `scope`. A login already in the vault gets the password from the file and
+ *  keeps its workspaces, widened by the row's, never narrowed. */
 function importCsv(vault, text, scope) {
   const rows = parseCsv(text);
   const result = { count: 0, added: 0, replaced: 0 };
@@ -140,7 +141,7 @@ function importCsv(vault, text, scope) {
     const url = r[iu], user = r[in_], pass = r[ip];
     if (!url || !pass) continue;
     const noted = inote >= 0 ? workspacesFromNote(r[inote]) : undefined;
-    const { replaced } = upsertLogin(vault, url, user || '', pass, noted === undefined ? scope : mergeScope(noted, normalizeScope(scope)), { mergeScope: true });
+    const { replaced } = upsertLogin(vault, url, user || '', pass, noted === undefined ? scope : noted, { mergeScope: true });
     result.count++;
     if (replaced) result.replaced++; else result.added++;
   }
