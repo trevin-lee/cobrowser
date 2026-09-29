@@ -2,6 +2,30 @@
 
 Release notes for earlier versions are on the [GitHub releases page](https://github.com/trevin-lee/cobrowser/releases).
 
+## 0.9.7
+
+### Added
+
+- **Touch ID or your Mac's password** for every vault check, from the same macOS prompt Safari uses before it shows a password. A Mac whose Touch ID is out of reach (lid closed, a desktop without Apple's Touch ID keyboard) can now show and export passwords, and no longer falls back to a plain Allow button.
+- **Cobrowser: Manage Logins** opens the Logins window from the editor.
+- Exported logins keep the workspaces each may be used in (in the CSV's note column), so importing the file back restores them.
+- Clicking a tab in the sidebar shows it, and the sidebar says how to start a browser when none is running.
+
+### Changed
+
+- **One rule for closing tabs,** in the panel and in your own browser: the agent closes the tabs it opened, and one of yours only when you asked (`allowHumanTab`). Closing a tab that does not exist is an error instead of "closed".
+- **`wait_for` waits for any of its texts**, in both tool families, and says which one appeared.
+- The own-browser tools are always listed, so an agent that is already running can use them once you bind; in an unbound workspace, a call says how to bind.
+- Adding a login that already exists, in the Logins window, starts from the workspaces it has now.
+- Open VSX gets macOS builds only (Apple silicon and Intel), so no other platform is offered one it cannot run.
+- The development host (F5) runs its own browser app, profiles and vault, so it no longer restarts yours.
+- The `cobrowser.firefoxContainer` setting is gone; a value set there becomes the workspace's Firefox binding once. Settings are read when used, and say when they take effect.
+- Back, Forward, Reload Tab and Close Browser Tab appear in the Command Palette only while a browser tab is focused.
+
+### Fixed
+
+- Forgetting another workspace's browser now also drops the tabs that workspace's editor had saved, and the Logins window shows forgotten workspaces on logins that still list them, so they can be removed.
+
 ## 0.9.6
 
 ### Changed
@@ -29,7 +53,7 @@ Release notes for earlier versions are on the [GitHub releases page](https://git
 ### Changed
 
 - Every change to the vault (add, edit, remove, workspaces, import) asks for Touch ID again, or for a click when Touch ID is unavailable.
-- Adding a login that already exists warns before saving and replaces it, instead of silently overwriting; adding or importing it again widens the workspaces that may use it and never narrows them. An import reports how many logins were new and how many it replaced.
+- Adding a login that already exists warns before saving and replaces it, instead of silently overwriting. Added again with the Add Login command or an import, it keeps its workspaces and gains the new one; in the Logins window you set them yourself. An import reports how many logins were new and how many it replaced.
 - Navigating and opening tabs in your own browser are paced like every other call. In Chrome the request count now survives the extension's background worker restarting.
 - The Bind commands say when binding one browser replaces the other.
 - The vault commands no longer open this workspace's browser to run, and Lock Vault says when the app is not running.

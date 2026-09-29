@@ -81,7 +81,7 @@ removed on first run.
 
 ## Where you watch it
 
-Every tab is an editor tab in a dedicated pane, streamed from the app at up to 60 fps. There is no OS window to show — the page is rendered offscreen — so prompts that need one (an extension's toolbar popup) cannot appear. Passkeys fail fast to a password by default (`cobrowser.autoFallbackPasskeys`) until you enable them.
+Every tab is an editor tab in a dedicated pane, streamed from the app at up to 60 fps. The **Cobrowser** icon in the Activity Bar lists this workspace's tabs (a filled dot marks the one the agent is working in); clicking one shows it. There is no OS window to show — the page is rendered offscreen — so prompts that need one (an extension's toolbar popup) cannot appear. Passkeys fail fast to a password by default (`cobrowser.autoFallbackPasskeys`) until you enable them.
 
 ### How it identifies itself
 
@@ -89,7 +89,9 @@ Cobrowser says what it is. The user agent is the standard reduced Chromium UA wi
 
 ### Logins
 
-The app keeps a local vault (encrypted through the OS keychain, unlocked with Touch ID) that the agent fills from without ever seeing a password: `list_credentials` shows the sites and usernames this workspace may use, `fill_credentials` types a login into the fields the agent picked, and the app checks the page is really on that site first. Add logins from the menu-bar **Logins…** window, with **Cobrowser: Add Login to Vault**, or by CSV import (**Import CSV…** in the window, or **Cobrowser: Import Logins from CSV**), and scope each one to the workspaces that may use it, or to all. In the window, **Edit** changes a login's site, username, password or workspaces (a blank password keeps the saved one), and adding a login that already exists says it will replace that login's password before you save. An import says how many logins were new and how many replaced; a login it replaces keeps its workspaces and gains the import's. Every change (add, edit, remove, workspaces, import) asks for Touch ID again, or for a click when Touch ID is unavailable, rather than riding on the unlock. **Export CSV…**, or **Cobrowser: Export Logins to CSV**, writes every login to a CSV other password managers import (asking for Touch ID each time); the file is plain text, so delete it once it is imported. **Cobrowser: Lock Vault** locks it until a login is next needed.
+The app keeps a local vault (encrypted through the OS keychain, unlocked with Touch ID or your Mac's password) that the agent fills from without ever seeing a password: `list_credentials` shows the sites and usernames this workspace may use, `fill_credentials` types a login into the fields the agent picked, and the app checks the page is really on that site first. The **Logins** window (**Cobrowser: Manage Logins**, or **Logins…** in the menu-bar icon) is where the vault lives: add, edit and remove logins, and choose for each the workspaces that may use it, or all. **Edit** changes a login's site, username, password or workspaces (a blank password keeps the saved one). Adding a login that already exists says so before you save, and fills in the workspaces it has now, so saving replaces the password and changes the workspaces only if you do. The editor has shortcuts too: **Cobrowser: Add Login to Vault** (a login added again this way keeps its workspaces and gains this one) and **Cobrowser: Import Logins from CSV** (or **Import CSV…** in the window), which says how many logins were new and how many it replaced; a login it replaces keeps its workspaces and gains the import's.
+
+Every vault check is Touch ID, or your Mac's password when Touch ID is out of reach (a closed lid, a desktop without Apple's Touch ID keyboard), from the same macOS prompt Safari uses before it shows a password. Unlocking asks once per app session; every change, and every time a password is shown or exported, asks again. **Export CSV…**, or **Cobrowser: Export Logins to CSV**, writes every login to a CSV other password managers import. Each login's note records the workspaces it may be used in, so importing the file back into cobrowser restores them. The file is plain text, so delete it once it is imported. **Cobrowser: Lock Vault** locks the vault until a login is next needed.
 
 When an agent needs a login its workspace is not scoped for, it calls `request_credential` with the site and a one-line reason. You get a native dialog naming the workspace and the login: **Allow in this workspace** adds the workspace to the login's scope, **Allow once** permits a single fill, **Deny** does nothing. The agent only learns the outcome, and a denial is indistinguishable from there being no such login, so a workspace still cannot enumerate what others hold.
 
@@ -130,7 +132,7 @@ Enable Passkeys asks which of your teams signs it and for an app identifier the 
 
 ## Your own Chrome or Firefox
 
-The panel is where the agent works best, but sometimes the work is already open in your own browser, signed in. The **bridge** is a small browser extension that lets the agent reach it: the `bridge_*` tools (`bridge_list_tabs`, `bridge_new_tab`, `bridge_close_tab`, `bridge_activate_tab`, `bridge_navigate`, `bridge_read_page`, `bridge_snapshot`, `bridge_click`, `bridge_fill`, `bridge_wait_for`, `bridge_evaluate_script`, `bridge_fetch`, `bridge_screenshot`, `bridge_list_containers`). They take the same words as the panel's tools (`uid`, `function`/`args`, `timeout`, `elements`, and `back`/`forward`/`reload`), and appear only in a workspace you bind.
+The panel is where the agent works best, but sometimes the work is already open in your own browser, signed in. The **bridge** is a small browser extension that lets the agent reach it: the `bridge_*` tools (`bridge_list_tabs`, `bridge_new_tab`, `bridge_close_tab`, `bridge_activate_tab`, `bridge_navigate`, `bridge_read_page`, `bridge_snapshot`, `bridge_click`, `bridge_fill`, `bridge_wait_for`, `bridge_evaluate_script`, `bridge_fetch`, `bridge_screenshot`, `bridge_list_containers`). They take the same words as the panel's tools (`uid`, `function`/`args`, `timeout`, `elements`, and `back`/`forward`/`reload`) and follow the same rules. Every agent sees them; in a workspace that is not bound yet, a call says how you bind it, so binding works for an agent that is already running.
 
 A workspace is bound to one scope: one **Chrome tab group** (or the whole Chrome profile), or one **Firefox container**, never both. The extension refuses anything outside it. A tab group limits what the agent can reach, not what the browser knows: every Chrome tab shares the profile's logins.
 
@@ -142,7 +144,7 @@ What to expect:
 
 - **Input is synthetic.** No extension can send real clicks or keystrokes, and some sites ignore synthetic ones. A click that changed nothing on the page comes back saying so, and the agent moves that step to the panel.
 - **It goes at a hand's pace.** Everything that reaches a site waits 1 to 3 seconds, stops at 100 requests in a browser session, and pauses for a minute when a site refuses or shows a challenge. The count and a **Reset** button are in the extension's toolbar popup; only you can reset it.
-- **It tidies up after itself.** `bridge_list_tabs` marks the tabs the agent opened, and `bridge_close_tab` closes only those.
+- **It tidies up after itself.** `bridge_list_tabs` marks the tabs the agent opened, and `bridge_close_tab` closes those; one of yours only when you ask (the agent passes `allowHumanTab`), as in the panel.
 - **It is released with cobrowser.** The extension carries cobrowser's version; when it is older, the agent's results say so and how to update it.
 - The same rule as the panel: no paying and no typing secrets unless you say so. The vault does not reach your own browser; you sign in there yourself.
 
@@ -156,10 +158,13 @@ the working tree, and it is fully isolated from your installed cobrowser:
 | daemon port | 39273 | **39274** |
 | daemon token | `~/.cobrowser/daemon-token` | `~/.cobrowser/dev-daemon-token` |
 | client entry | `cobrowser` | `cobrowser-dev` |
+| browser app state | `~/.cobrowser` | `~/.cobrowser/dev` |
+| browser profiles and vault | `~/Library/Application Support/cobrowser` | `~/Library/Application Support/cobrowser-dev` |
 
-So a rebuild never restarts the daemon your other windows are registered with, never rewrites
-their config entry, and never touches the repo files they use. Point an agent at
-`cobrowser-dev` to drive the build you are working on.
+So a rebuild never restarts the daemon or the browser app your other windows use, never
+rewrites their config entry, and never touches their tabs, profiles or vault. The dev host's
+app is a second menu-bar icon ("cobrowser (development)"). Point an agent at `cobrowser-dev`
+to drive the build you are working on.
 
 `npm run release`, by contrast, is a *global* install: it replaces the extension in every
 window and restarts the shared daemon, which drops every other window's MCP auth until each
@@ -170,7 +175,9 @@ release cannot drag everyone backwards.
 
 ## MCP tools
 
-`list_pages`, `new_page`, `select_page`, `close_page`, `navigate_page`, `read_page`, `take_snapshot`, `take_screenshot`, `click`, `fill`, `fill_form`, `type_text`, `wait_for`, `evaluate_script`, `list_console_messages`, `list_network_requests`, `list_credentials`, `fill_credentials`, `request_credential`, `get_activity`, `get_editor_layout`, and for unscoped clients `list_workspaces`. A workspace bound to your own browser also gets the `bridge_*` tools ([below](#your-own-chrome-or-firefox)).
+`list_pages`, `new_page`, `select_page`, `close_page`, `navigate_page`, `read_page`, `take_snapshot`, `take_screenshot`, `click`, `fill`, `fill_form`, `type_text`, `wait_for`, `evaluate_script`, `list_console_messages`, `list_network_requests`, `list_credentials`, `fill_credentials`, `request_credential`, `get_activity`, `get_editor_layout`, `list_workspaces` (the open workspaces, or the one a scoped session is bound to), and the `bridge_*` tools for your own browser ([above](#your-own-chrome-or-firefox)).
+
+`wait_for` waits for any of the texts it is given, and says which one appeared, so one call covers "Saved" or "Error". `close_page` closes the tabs the agent opened; one of yours only when you asked it to (the agent passes `allowHumanTab`), and never the last one.
 
 Every page tool takes an optional `pageId`, and the agent and the human each have their own current tab. Tabs are independent offscreen windows, so the agent can work in a background tab while you read another: switching tabs in your editor never retargets the agent, and the agent switching tabs (`select_page`) never moves your view unless it passes `bringToFront`. `list_pages` reports both (`selected` is the agent's tab, `humanViewing` yours), actions on different tabs run in parallel while actions on one tab stay in order, and the app remembers which tabs the agent opened, so they stay the agent's to tidy up across reloads.
 
@@ -222,21 +229,23 @@ Scripts: `npm run watch` (rebuild on change), `npm run typecheck`.
 
 ## Security notes
 
-Each workspace's browser profile holds live session cookies — treat it as credentials. Profiles live in the app's data folder (`~/Library/Application Support/cobrowser`), outside every repo. The vault is encrypted with a key in your login keychain and unlocks with Touch ID; showing or exporting passwords asks for Touch ID every time, and a stored password is never sent back out to the editor or the agent. The daemon binds `127.0.0.1` only and is gated by tokens stored with owner-only permissions under `~/.cobrowser`: a daemon-wide one for unscoped clients and one per workspace for scoped sessions. It also rejects any request whose `Host` header is not a loopback address. No remote debugging port is ever opened, so no other process can attach to the browser. Seed each profile only with the accounts your automation needs; don't put high-value logins (primary email, bank) in an agent-driven browser.
+Each workspace's browser profile holds live session cookies — treat it as credentials. Profiles live in the app's data folder (`~/Library/Application Support/cobrowser`), outside every repo. The vault is encrypted with a key in your login keychain and unlocks with Touch ID or your Mac's password; every change, and showing or exporting passwords, asks again every time, and a stored password is never sent back out to the editor or the agent. The daemon binds `127.0.0.1` only and is gated by tokens stored with owner-only permissions under `~/.cobrowser`: a daemon-wide one for unscoped clients and one per workspace for scoped sessions. It also rejects any request whose `Host` header is not a loopback address. No remote debugging port is ever opened, so no other process can attach to the browser. Seed each profile only with the accounts your automation needs; don't put high-value logins (primary email, bank) in an agent-driven browser.
 
 ## Uninstall
 
-Quit the app (menu-bar icon → Quit), then uninstall the extension (`code --uninstall-extension trevin-lee.cobrowser`, or `cursor --uninstall-extension trevin-lee.cobrowser`). What it leaves behind, all of which is safe to delete:
+Quit the app (menu-bar icon → Quit), then uninstall the extension from the Extensions view, or with `code --uninstall-extension trevin-lee.cobrowser` (`cursor`, `codium`). What it leaves behind, all of which is safe to delete:
 
 - `~/Library/Application Support/cobrowser`: every workspace's browser profile (cookies, sign-ins), the vault (`vault.bin`), site permissions and the app's log.
 - `~/.cobrowser`: the daemon's and app's tokens and state, and the Chrome bridge folder.
-- `~/Library/Application Support/Code/User/globalStorage/trevin-lee.cobrowser` (Cursor: `~/Library/Application Support/Cursor/User/globalStorage/trevin-lee.cobrowser`): the downloaded browser.
+- `~/Library/Application Support/Code/User/globalStorage/trevin-lee.cobrowser` (Cursor and VSCodium: the same path under `Cursor` or `VSCodium`): the downloaded browser.
 - The `cobrowser` entries in `~/.claude.json` and `~/.cursor/mcp.json`.
 - `~/Library/Application Support/Mozilla/ManagedStorage/cobrowser-bridge@trevin.dev.json`, if you used the Firefox bridge; remove the extensions from Chrome and Firefox themselves.
 - In Keychain Access: the **cobrowser Safe Storage** item (the vault's key), and any passkeys you created in cobrowser.
+- If you enabled passkeys: the provisioning profile Xcode keeps for your cobrowser identifier in `~/Library/Developer/Xcode/UserData/Provisioning Profiles`, and the identifier itself (and this Mac, if nothing else uses it) under Certificates, Identifiers & Profiles at developer.apple.com.
+- If you worked on cobrowser: `~/Library/Application Support/cobrowser-dev` and `~/.cobrowser/dev`, the development host's app.
 
 ## Requirements
 
-- **VS Code or Cursor**, and an agent that speaks MCP over HTTP (Claude Code, Cursor, or VS Code's agent).
+- **VS Code, Cursor or VSCodium**, and an agent that speaks MCP over HTTP (Claude Code, Cursor, or VS Code's agent).
 - **No browser setup.** On first run the extension downloads the pinned Electron into `globalStorage` (checksum-verified against the release's `SHASUMS256.txt`) and runs the bundled app with it. Nothing depends on what you have installed.
 - **macOS** only for now (arm64 and x64).

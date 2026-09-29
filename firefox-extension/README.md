@@ -50,14 +50,13 @@ profile.
 
 In the editor, run **Cobrowser: Bind Firefox Container to This Workspace** and pick the
 container. That's all: cobrowser registers the workspace through Firefox's managed-storage
-manifest (`~/Library/Application Support/Mozilla/ManagedStorage/`, Linux
-`~/.mozilla/managed-storage/`) and the add-on connects within half a minute. Any number of
+manifest (`~/Library/Application Support/Mozilla/ManagedStorage/`) and the add-on connects
+within half a minute. Any number of
 workspaces, each bound to its own container, share the one add-on. The toolbar badge shows how
 many are connected.
 
-If a workspace does not connect (Windows keeps managed storage in the registry, which cobrowser
-does not write), run **Cobrowser: Copy Bridge URL** and paste it into the add-on's toolbar
-popup under *Endpoints*.
+If a workspace does not connect, run **Cobrowser: Copy Bridge URL** and paste it into the
+add-on's toolbar popup under *Endpoints*.
 
 A workspace drives one browser at a time: binding a Firefox container replaces a Chrome tab
 group binding, and the other way round.
