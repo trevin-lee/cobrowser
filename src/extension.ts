@@ -45,6 +45,8 @@ const BRIDGE_BROWSER_KEY = 'cobrowser.bridgeBrowser';
 interface SavedTab {
   url: string;
   col?: number;
+  /** Who opened it: the agent's tabs stay the agent's to tidy up after a restart. */
+  by?: 'agent' | 'human';
 }
 
 let session: BrowserSession | undefined;
@@ -183,7 +185,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const entries = s
         .pageEntries()
         .filter((e) => e.url && e.url !== 'about:blank')
-        .map((e) => ({ url: e.url, col: BrowserPanel.columnOf(e.id) }));
+        .map((e) => ({ url: e.url, col: BrowserPanel.columnOf(e.id), by: e.by }));
       void context.workspaceState.update(TABS_KEY, entries);
     };
     s.onPagesChanged(() => {
@@ -222,11 +224,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const restoreTabs = async (s: BrowserSession, tabs: SavedTab[]): Promise<void> => {
     try {
       if (s.pageEntries().length > 0) return; // the app still had our tabs
-      const urls = tabs.map((t) => t.url).filter((u) => u && u !== 'about:blank');
-      if (urls.length) log(`Restoring ${urls.length} saved tab(s).`);
-      // Restored tabs are the human's: they must not read as the agent's to tidy up.
-      await s.run(() => s.newPage(urls[0] ?? 'about:blank', { byAgent: false }));
-      for (const u of urls.slice(1)) await s.run(() => s.newPage(u, { background: true, byAgent: false }));
+      const saved = tabs.filter((t) => t.url && t.url !== 'about:blank');
+      if (saved.length) log(`Restoring ${saved.length} saved tab(s).`);
+      // Restoring is the human's act (the agent's target does not move), but each tab keeps
+      // its owner: one the agent opened is still the agent's to close when done.
+      const [first, ...rest] = saved;
+      await s.run(() => s.newPage(first?.url ?? 'about:blank', { byAgent: false, owner: first?.by ?? 'human' }));
+      for (const t of rest) await s.run(() => s.newPage(t.url, { background: true, byAgent: false, owner: t.by ?? 'human' }));
     } catch (err) {
       log(`Tab restore failed: ${String(err)}`);
     } finally {

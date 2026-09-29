@@ -75,6 +75,12 @@ suite('tabs', async (r) => {
     const again = await L.reconnect();
     const own = (await again.session.listPages()).map((p) => `${p.url.split('/').pop()}:${p.openedBy}`).sort();
     r.check('who opened each tab survives a reconnect', JSON.stringify(own) === JSON.stringify(['A:agent', 'B:human', 'C:agent', 'popup-B:human', 'popup-C:agent']), own);
+    // After an app restart the extension reopens the saved tabs itself (restoreTabs): the
+    // human's act, so the agent stays put, but each tab keeps its saved owner.
+    const target = (await again.session.listPages()).find((p) => p.selected)?.pageId;
+    const restored = await again.session.run(() => again.session.newPage(srv.base + '/R', { background: true, byAgent: false, owner: 'agent' }));
+    const after = await again.session.listPages();
+    r.check('a restored tab keeps its owner without taking the agent\'s focus', restored.openedBy === 'agent' && after.find((p) => p.pageId === restored.pageId)?.openedBy === 'agent' && after.find((p) => p.selected)?.pageId === target, { restored, target, after });
     await again.session.dispose().catch(() => undefined);
   } finally {
     srv.close(); await L.stop();

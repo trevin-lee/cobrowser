@@ -467,12 +467,15 @@ export class BrowserSession {
    * new-tab command, "open link in new tab", restoring saved tabs): `byAgent: false`, so it
    * is theirs and the agent's target does not move.
    */
-  async newPage(url?: string, opts?: { background?: boolean; byAgent?: boolean }): Promise<PageInfo> {
+  async newPage(url?: string, opts?: { background?: boolean; byAgent?: boolean; owner?: 'agent' | 'human' }): Promise<PageInfo> {
     const byAgent = opts?.byAgent !== false;
+    // Whose tab it is, which can differ from who is opening it: restoring saved tabs is the
+    // human's act, but a tab the agent had opened is still the agent's to tidy up.
+    const owner = opts?.owner ?? (byAgent ? 'agent' : 'human');
     if (byAgent) this.markAgent();
     const [w, h] = this.defaultSize;
-    const page = this.adopt(await this.app.openTab('about:blank', w, h, byAgent ? 'agent' : 'human'));
-    if (byAgent) this.agentPages.add(page);
+    const page = this.adopt(await this.app.openTab('about:blank', w, h, owner));
+    if (owner === 'agent') this.agentPages.add(page);
     await this.prepPage(page); // fail-fast passkeys before navigating anywhere
     if (url) await page.goto(url).catch(() => undefined);
     if (byAgent || !this.agentActive) this.setAgentTarget(page, byAgent ? 'agent' : 'human');
@@ -485,7 +488,7 @@ export class BrowserSession {
       title: page.title(),
       selected: page === this.agentActive,
       humanViewing: page === this.humanActive,
-      openedBy: byAgent ? 'agent' : 'human',
+      openedBy: owner,
     };
   }
 
@@ -883,8 +886,8 @@ export class BrowserSession {
 
   /** Current pages (stable id + URL) in creation order, synchronously — for persisting the
    *  open-tab list + panel layout so a reload can restore both. */
-  pageEntries(): { id: string; url: string }[] {
-    return [...this.pages.values()].filter((p) => !p.isClosed()).map((p) => ({ id: p.id, url: p.url() }));
+  pageEntries(): { id: string; url: string; by: 'agent' | 'human' }[] {
+    return [...this.pages.values()].filter((p) => !p.isClosed()).map((p) => ({ id: p.id, url: p.url(), by: this.agentPages.has(p) ? 'agent' : 'human' }));
   }
 
   /** Detach, leaving the tabs alive in the app for the next connection (a reload). */
