@@ -5,7 +5,9 @@ name: Release
 #   - cobrowser-bridge-chrome-<version>.zip       the Chrome bridge (loaded unpacked)
 #   - cobrowser-bridge-firefox-<version>.xpi      the Firefox bridge, signed by Mozilla
 #   - firefox-updates.json                        where installed Firefox add-ons look for updates
-# and publishes the .vsix to Open VSX (where Cursor and VSCodium install extensions from).
+# and publishes it to Open VSX (where Cursor and VSCodium install extensions from) as two
+# macOS packages, Apple silicon and Intel, so no other platform is offered one it cannot run.
+# It runs on macOS: the vault's Touch-ID-or-password helper is built with Xcode's Swift.
 #
 # Cutting one: bump package.json and both add-on manifests to the same version (npm run
 # release does it), add its CHANGELOG entry, then `git tag vX.Y.Z && git push origin main vX.Y.Z`.
@@ -34,7 +36,9 @@ env:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
+    env:
+      COBROWSER_REQUIRE_AUTH_HELPER: '1'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -68,6 +72,20 @@ jobs:
         run: |
           npm run package
           npm run package:chrome
+          unzip -l cobrowser-*.vsix | grep -q 'extension/dist/app/cobrowser-auth$' || { echo "::error::the .vsix has no cobrowser-auth"; exit 1; }
+
+      - name: Package the macOS builds for Open VSX
+        run: |
+          mkdir -p "$RUNNER_TEMP/targets"
+          for target in darwin-arm64 darwin-x64; do
+            npx vsce package --target "$target" -o "$RUNNER_TEMP/targets/"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openvsx-packages
+          path: ${{ runner.temp }}/targets/*.vsix
+          if-no-files-found: error
 
       - name: Create or update the GitHub Release
         uses: softprops/action-gh-release@v2
@@ -155,17 +173,24 @@ jobs:
         with:
           node-version: 22
 
-      # The .vsix attached to the release, not a rebuild: what Open VSX serves is exactly what
-      # the release carries. A version already there is left alone (Open VSX refuses repeats).
-      - name: Publish the release's .vsix
+      # Built in the release job from the same commit as the release's own .vsix. A version
+      # already there for a platform is left alone (Open VSX refuses repeats).
+      - uses: actions/download-artifact@v4
+        if: steps.creds.outputs.ok == 'true'
+        with:
+          name: openvsx-packages
+          path: ${{ runner.temp }}/targets
+
+      - name: Publish the macOS packages
         if: steps.creds.outputs.ok == 'true'
         run: |
-          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p '*.vsix' -D "$RUNNER_TEMP/vsix"
-          vsix="$(ls "$RUNNER_TEMP"/vsix/*.vsix)"
-          read -r ns name version < <(unzip -p "$vsix" extension/package.json | node -e 'const p = JSON.parse(require("fs").readFileSync(0, "utf8")); console.log(p.publisher, p.name, p.version)')
-          if curl -sf -o /dev/null "https://open-vsx.org/api/$ns/$name/$version"; then
-            echo "$ns.$name $version is already on Open VSX"
-            exit 0
-          fi
-          npx --yes ovsx@1 verify-pat "$ns" -p "$OVSX_PAT"
-          npx --yes ovsx@1 publish "$vsix" -p "$OVSX_PAT"
+          for vsix in "$RUNNER_TEMP"/targets/*.vsix; do
+            read -r ns name version < <(unzip -p "$vsix" extension/package.json | node -e 'const p = JSON.parse(require("fs").readFileSync(0, "utf8")); console.log(p.publisher, p.name, p.version)')
+            target="$(unzip -p "$vsix" extension.vsixmanifest | sed -n 's/.*TargetPlatform="\([^"]*\)".*/\1/p' | head -1)"
+            if curl -sf -o /dev/null "https://open-vsx.org/api/$ns/$name/$target/$version"; then
+              echo "$ns.$name $version ($target) is already on Open VSX"
+              continue
+            fi
+            npx --yes ovsx@1 verify-pat "$ns" -p "$OVSX_PAT"
+            npx --yes ovsx@1 publish "$vsix" -p "$OVSX_PAT"
+          done

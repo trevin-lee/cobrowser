@@ -8,7 +8,11 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # macOS: the vault's Touch-ID-or-password helper is built with Xcode's Swift, and the
+    # extension only runs on macOS.
+    runs-on: macos-latest
+    env:
+      COBROWSER_REQUIRE_AUTH_HELPER: '1'
     steps:
       - uses: actions/checkout@v4
 
@@ -21,6 +25,9 @@ jobs:
 
       - name: Typecheck
         run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
 
       - name: Package VSIX
         run: npm run package
