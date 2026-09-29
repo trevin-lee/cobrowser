@@ -194,3 +194,20 @@ jobs:
             npx --yes ovsx@1 verify-pat "$ns" -p "$OVSX_PAT"
             npx --yes ovsx@1 publish "$vsix" -p "$OVSX_PAT"
           done
+
+      # cobrowser runs on macOS only. Any other platform's package on Open VSX (0.9.6 went out
+      # as one package for every platform) is removed, so no one is offered one that cannot run.
+      - name: Remove packages for other platforms
+        if: steps.creds.outputs.ok == 'true'
+        run: |
+          vsix="$(ls "$RUNNER_TEMP"/targets/*.vsix | head -1)"
+          read -r ns name < <(unzip -p "$vsix" extension/package.json | node -e 'const p = JSON.parse(require("fs").readFileSync(0, "utf8")); console.log(p.publisher, p.name)')
+          versions="$(curl -sf "https://open-vsx.org/api/$ns/$name/versions?size=100" | node -e 'console.log(Object.keys(JSON.parse(require("fs").readFileSync(0, "utf8")).versions).join(" "))')"
+          for v in $versions; do
+            for target in $(curl -sf "https://open-vsx.org/api/$ns/$name/$v" | node -e 'console.log(Object.keys(JSON.parse(require("fs").readFileSync(0, "utf8")).downloads || {}).join(" "))'); do
+              case "$target" in
+                darwin-*) ;;
+                *) echo "removing $ns.$name $v ($target)"; npx --yes ovsx@1 unpublish "$ns.$name" --versions "$v" --target "$target" --force -p "$OVSX_PAT" ;;
+              esac
+            done
+          done
