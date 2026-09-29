@@ -216,14 +216,19 @@ export class AppConnection {
   // --- vault: the agent can use logins without seeing them; passwords never cross this socket
   //     outbound except INTO the app (add/import), and never come back.
   /** `scope` defaults to this connection's workspace inside the app. */
-  async vaultAdd(host: string, username: string, password: string, scope?: 'all' | string[]): Promise<void> {
+  /** Resolves whether it replaced an existing login's password (same site and username). */
+  async vaultAdd(host: string, username: string, password: string, scope?: 'all' | string[]): Promise<{ replaced: boolean }> {
     const r = await this.request({ type: 'vault.add', host, username, password, ...(scope ? { scope } : {}) }, 120000);
     if (r.error) throw new Error(String(r.error));
+    return { replaced: r.replaced === true };
   }
   async vaultImport(csv: string, scope?: 'all' | string[]): Promise<number> {
+    return (await this.vaultImportDetailed(csv, scope)).count;
+  }
+  async vaultImportDetailed(csv: string, scope?: 'all' | string[]): Promise<{ count: number; added: number; replaced: number }> {
     const r = await this.request({ type: 'vault.import', csv, ...(scope ? { scope } : {}) }, 120000);
     if (r.error) throw new Error(String(r.error));
-    return Number(r.count) || 0;
+    return { count: Number(r.count) || 0, added: Number(r.added) || 0, replaced: Number(r.replaced) || 0 };
   }
   async vaultList(): Promise<{ host: string; username: string }[]> {
     const r = await this.request({ type: 'vault.list' }, 120000);

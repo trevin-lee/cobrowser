@@ -195,6 +195,16 @@ function askPermission(origin, permission, details) {
 // the page over this process's debugger. Nothing here ever returns a password to a client.
 // ---------------------------------------------------------------------------------------
 const VAULT_FILE = path.join(DATA_DIR, 'vault.bin');
+// The logins themselves live in vault-store.js (pure, tested); these bind it to the open vault.
+const store = require('./vault-store.js');
+const { normalizeScope, allowed, publicEntry, parseCsv } = store;
+const upsertLogin = (site, username, password, scope, opts) => store.upsertLogin(vault, site, username, password, scope, opts);
+const updateLogin = (from, fields) => store.updateLogin(vault, from, fields);
+const findEntry = (label, username) => store.findEntry(vault, label, username);
+const setScope = (host, username, scope) => store.setScope(vault, host, username, scope);
+const removeLogin = (host, username) => store.removeLogin(vault, host, username);
+const importCsv = (text, scope) => store.importCsv(vault, text, scope);
+const exportCsv = () => store.exportCsv(vault);
 let vault = null; // { entries: [{ id, host, username, password, updatedAt }] } while unlocked
 
 // Test-only: the UI tests run an isolated instance nobody is sitting at, so they cannot
@@ -213,13 +223,29 @@ async function promptBiometrics(reason) {
   ]);
 }
 
+/**
+ * A person must be there: Touch ID when the Mac can show it, and otherwise (lid closed, no
+ * sensor) a dialog someone has to click — the vault never opens, or changes, with nobody
+ * present. Rejects when they cancel. Test instances skip it, logged.
+ */
+async function confirmPresence(reason) {
+  if (SKIP_BIOMETRICS) { log('vault: TEST MODE — presence check skipped for: ' + reason); return; }
+  if (process.platform === 'darwin' && systemPreferences.canPromptTouchID()) return promptBiometrics(reason);
+  focusApp();
+  const { response } = await dialog.showMessageBox({ type: 'question', message: `cobrowser wants to ${reason}`, detail: 'Touch ID is not available (the lid is closed, or this Mac has no sensor), so confirm here instead.', buttons: ['Allow', 'Cancel'], defaultId: 1, cancelId: 1 });
+  if (response !== 0) throw new Error('cancelled');
+}
+
+/** Before any change to the vault: one fresh confirmation, which also unlocks it if needed.
+ *  Changes never ride on an earlier unlock. */
+async function authorizeChange(reason) {
+  if (!vault) return void (await unlockVault(reason));
+  await confirmPresence(reason);
+}
+
 async function unlockVault(reason) {
   if (vault) return vault;
-  if (process.platform === 'darwin' && systemPreferences.canPromptTouchID()) {
-    await promptBiometrics(reason || 'unlock the cobrowser vault'); // rejects on cancel/failure
-  } else {
-    log('vault: Touch ID unavailable (lid closed / no sensor) — unlocking without biometrics');
-  }
+  await confirmPresence(reason || 'unlock the cobrowser vault'); // rejects on cancel/failure
   if (!safeStorage.isEncryptionAvailable()) throw new Error('OS keychain encryption is unavailable');
   vault = fs.existsSync(VAULT_FILE)
     ? JSON.parse(safeStorage.decryptString(fs.readFileSync(VAULT_FILE)))
@@ -245,16 +271,6 @@ function rememberWorkspace(id) {
   fs.writeFileSync(WORKSPACES_FILE, JSON.stringify(list, null, 2));
 }
 
-/** A login's scope is 'all' or a list of workspace paths. A workspace can only list and
- *  fill logins in its scope; it cannot learn that others exist. */
-function normalizeScope(scope) {
-  if (scope === 'all') return 'all';
-  if (Array.isArray(scope)) return [...new Set(scope.filter((w) => typeof w === 'string' && w))];
-  return [];
-}
-function allowed(entry, workspaceId) {
-  return entry.scope === 'all' || (Array.isArray(entry.scope) && entry.scope.includes(workspaceId));
-}
 
 // One-time grants from the request dialog ("Allow once"): entry id + workspace, consumed by
 // the next successful fill. Never persisted — they die with the app.
@@ -324,65 +340,8 @@ Choosing one allows it in this workspace from now on; the agent never sees the p
   if (mode === 'denied') return { granted: 'denied', error: `no login for ${label} was granted` };
   return { granted: mode, host: label, username: entry.username };
 }
-function publicEntry(e) { return { host: siteLabel(e), username: e.username, scope: e.scope }; }
 
-function upsertLogin(site, username, password, scope) {
-  const { host, port } = parseSite(site);
-  if (!host) throw new Error('site is required');
-  const existing = vault.entries.find((e) => e.host === host && (e.port || '') === port && e.username === username);
-  if (existing) {
-    existing.password = password; existing.updatedAt = Date.now();
-    if (scope !== undefined) existing.scope = normalizeScope(scope);
-    return existing;
-  }
-  const e = { id: crypto.randomBytes(6).toString('hex'), host, port, username, password, scope: normalizeScope(scope), updatedAt: Date.now() };
-  vault.entries.push(e);
-  return e;
-}
-function findEntry(label, username) {
-  const { host, port } = parseSite(label);
-  return vault.entries.find((x) => x.host === host && (x.port || '') === port && x.username === username);
-}
-function setScope(host, username, scope) {
-  const e = findEntry(host, username);
-  if (e) e.scope = normalizeScope(scope);
-  return !!e;
-}
 
-/** Minimal RFC 4180 CSV → rows of strings. Apple Passwords, Bitwarden and Chrome exports
- *  all carry url/username/password columns under slightly different headers. */
-function parseCsv(text) {
-  const rows = []; let row = []; let cell = ''; let q = false;
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    if (q) {
-      if (ch === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else q = false; }
-      else cell += ch;
-    } else if (ch === '"') q = true;
-    else if (ch === ',') { row.push(cell); cell = ''; }
-    else if (ch === '\n' || ch === '\r') { if (ch === '\r' && text[i + 1] === '\n') i++; row.push(cell); rows.push(row); row = []; cell = ''; }
-    else cell += ch;
-  }
-  if (cell.length || row.length) { row.push(cell); rows.push(row); }
-  return rows.filter((r) => r.some((c) => c.trim()));
-}
-/** Every login as a CSV in Chrome's export format (name,url,username,password), which Apple
- *  Passwords, Bitwarden, 1Password, Chrome and this vault's own import all read. Scopes are a
- *  cobrowser idea with no column to go in; they are not exported. */
-function exportCsv() {
-  const q = (v) => (/[",\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
-  const rows = [['name', 'url', 'username', 'password']];
-  for (const e of vault.entries) {
-    const label = siteLabel(e);
-    // The vault keeps host and port, not the scheme, and other managers match on it: a device
-    // on the network (an IP address, or a one-word host like a router's) is usually plain
-    // http, anything with a domain https.
-    const local = isIp(e.host) || !String(e.host).includes('.');
-    const url = /^https?:\/\//.test(label) ? label : `${local ? 'http' : 'https'}://${label}`;
-    rows.push([label, url, e.username || '', e.password || '']);
-  }
-  return rows.map((r) => r.map((c) => q(String(c))).join(',')).join('\n') + '\n';
-}
 
 /**
  * Export the vault to a CSV file the human chooses. Every password leaves the keychain's
@@ -407,21 +366,6 @@ async function exportVault(parent) {
   return { count: vault.entries.length, file };
 }
 
-function importCsv(text, scope) {
-  const rows = parseCsv(text);
-  if (rows.length < 2) return 0;
-  const header = rows[0].map((h) => h.trim().toLowerCase());
-  const col = (...names) => header.findIndex((h) => names.includes(h));
-  const iu = col('url', 'login_uri', 'website'), in_ = col('username', 'login_username', 'user'), ip = col('password', 'login_password');
-  if (iu < 0 || in_ < 0 || ip < 0) throw new Error(`CSV needs url/username/password columns; found: ${header.join(', ')}`);
-  let n = 0;
-  for (const r of rows.slice(1)) {
-    const url = r[iu], user = r[in_], pass = r[ip];
-    if (!url || !pass) continue;
-    upsertLogin(url, user || '', pass, scope); n++;
-  }
-  return n;
-}
 
 /** Replace any unlocked password that appears in `text` — what keeps evaluate_script and
  *  snapshots from carrying a filled value back to the agent. */
@@ -463,12 +407,6 @@ async function fillCredentials(tab, { usernameUid, passwordUid, username }) {
   return { filled, username: entry.username };
 }
 
-function removeLogin(host, username) {
-  const before = vault.entries.length;
-  const target = findEntry(host, username);
-  vault.entries = vault.entries.filter((e) => e !== target);
-  return before - vault.entries.length;
-}
 
 // ---------------------------------------------------------------------------------------
 // Vault window: the menu-bar way to add, remove and import logins. A real (visible) window;
@@ -592,7 +530,13 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser logins
 <script>
   const $ = (id) => document.getElementById(id);
   let known = [], rows = [], unlocked = false, unlocking = false, lastError = '', sel = null, mode = 'view';
-  const draft = { host: '', user: '', pass: '', scope: [] };
+  const draft = { host: '', user: '', pass: '', scope: [], from: null };
+  const resetDraft = () => Object.assign(draft, { host: '', user: '', pass: '', scope: [], from: null });
+  // A typed site, reduced to what a login's label shows, to spot a login that already exists.
+  // The same reading as the vault's own (site.js parseSite), so the window's "replaces" is the vault's.
+  const siteKey = (h) => { const v = String(h || '').trim(); if (!v) return ''; try { const u = new URL(v.includes('://') ? v : 'https://' + v); return u.hostname.toLowerCase() + (u.port ? ':' + u.port : ''); } catch { return v.toLowerCase(); } };
+  const existingFor = () => rows.find((r) => siteKey(r.host) === siteKey(draft.host) && r.username === draft.user.trim());
+  const failed = (e) => (String(e && e.message || e).includes('cancelled') ? 'Nothing changed.' : String(e && e.message || e).replace(/^Error invoking remote method '[^']*': (Error: )?/, ''));
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
   const base = (p) => p.split('/').filter(Boolean).slice(-1)[0] || p;
   const dir = (p) => ('/' + p.split('/').filter(Boolean).slice(0, -1).join('/')).replace(new RegExp('^/Users/[^/]+'), '~');
@@ -668,17 +612,17 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser logins
       const lc = el('div', 'lockcard');
       lc.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>';
       const b = el('button', 'primary', unlocking ? 'Waiting for Touch ID…' : 'Unlock'); b.disabled = unlocking; b.onclick = refresh;
-      lc.append(el('div', null, 'Locked. Unlock to see logins; changes always ask for Touch ID.'), b);
+      lc.append(el('div', null, 'Locked. Unlock to see logins. Every change asks for Touch ID again.'), b);
       if (lastError && !unlocking) lc.append(el('p', 'hint', lastError));
       wrap.append(lc); return;
     }
-    if (mode === 'add' || mode === 'import') {
-      const importing = mode === 'import';
-      const t = el('div', 'title'); const id = el('div', 'id'); id.append(el('h2', null, importing ? 'Import logins' : 'New login')); t.append(id); wrap.append(t);
-      if (importing) wrap.append(el('p', 'hint', 'Every imported login gets the workspaces you choose here. You can change each one afterwards.'));
+    if (mode === 'add' || mode === 'import' || mode === 'edit') {
+      const importing = mode === 'import', editing = mode === 'edit';
+      const t = el('div', 'title'); const id = el('div', 'id'); id.append(el('h2', null, importing ? 'Import logins' : editing ? 'Edit login' : 'New login')); t.append(id); wrap.append(t);
+      if (importing) wrap.append(el('p', 'hint', 'New logins get the workspaces you choose here. A login already in the vault gets the password from the file, keeps its workspaces and gains these. You can change each one afterwards.'));
       else {
         const f = el('div', 'fields');
-        for (const [key, label, ph, type] of [['host', 'Site', 'costco.com, or 192.168.1.50:8080', 'text'], ['user', 'Username', 'you@example.com', 'text'], ['pass', 'Password', '', 'password']]) {
+        for (const [key, label, ph, type] of [['host', 'Site', 'costco.com, or 192.168.1.50:8080', 'text'], ['user', 'Username', 'you@example.com', 'text'], ['pass', 'Password', editing ? 'unchanged' : '', 'password']]) {
           const row = el('div', 'field'); const inp = el('input', key === 'pass' ? '' : 'mono'); inp.type = type; inp.placeholder = ph; inp.value = draft[key]; inp.autocomplete = 'off'; inp.spellcheck = false;
           inp.oninput = () => { draft[key] = inp.value; sync(); }; inp.onkeydown = (e) => { if (e.key === 'Enter' && canSave()) save(); };
           row.append(el('label', null, label), inp); f.append(row);
@@ -687,8 +631,8 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser logins
       }
       wrap.append(section('Where the agent may use it', scopeEditor(() => draft.scope, (v) => { draft.scope = v; sync(); }), true));
       const a = el('div', 'actions'); const st = el('div'); st.id = 'status'; a.append(st, el('span', 'spacer'));
-      const cancel = el('button', 'quiet', 'Cancel'); cancel.onclick = () => { Object.assign(draft, { host: '', user: '', pass: '', scope: [] }); mode = 'view'; render(); };
-      const ok = el('button', 'primary', importing ? 'Choose CSV…' : 'Save login'); ok.id = 'save'; ok.onclick = importing ? doImport : save;
+      const cancel = el('button', 'quiet', 'Cancel'); cancel.onclick = () => { resetDraft(); mode = 'view'; render(); };
+      const ok = el('button', 'primary', importing ? 'Choose CSV…' : editing ? 'Save changes' : 'Save login'); ok.id = 'save'; ok.onclick = importing ? doImport : editing ? saveEdit : save;
       a.append(cancel, ok); wrap.append(a); sync();
       if (!importing) wrap.querySelector('input').focus();
       return;
@@ -697,7 +641,11 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser logins
 
     const t = el('div', 'title'); const id = el('div', 'id'); const h2 = el('h2', 'mono'); const [pre, dom] = hostParts(sel.host); h2.append(el('em', null, pre), dom);
     id.append(h2, el('div', 'user mono', sel.username || '(no username)')); t.append(id);
-    const acts = el('div', 'acts'); const rm = el('button', 'quiet danger', 'Remove'); rm.onclick = async () => { await vault.remove(sel.host, sel.username); sel = null; await refresh(); }; acts.append(rm); t.append(acts); wrap.append(t);
+    const acts = el('div', 'acts');
+    const ed = el('button', 'quiet', 'Edit'); ed.onclick = () => { Object.assign(draft, { host: sel.host, user: sel.username, pass: '', scope: sel.scope, from: { host: sel.host, username: sel.username } }); mode = 'edit'; render(); };
+    // Removing asks for Touch ID (or a click, without it), which is the confirmation.
+    const rm = el('button', 'quiet danger', 'Remove'); rm.onclick = async () => { try { await vault.remove(sel.host, sel.username); sel = null; await refresh(); } catch (e) { say(failed(e)); } };
+    acts.append(ed, rm); t.append(acts); wrap.append(t);
 
     const pw = el('div', 'fields'); const prow = el('div', 'field'); prow.style.gridTemplateColumns = '1fr';
     const pval = el('div', 'pw'); const dots = el('span', 'mono', '••••••••••'); pval.append(dots);
@@ -714,21 +662,31 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser logins
     wrap.append(section('Where the agent may use it', scopeEditor(() => sel.scope, async (v) => { sel.scope = v; renderList(); try { await vault.setScope(sel.host, sel.username, v); } catch (e) { say(e.message); } }), true));
     const a = el('div', 'actions'); const st = el('div'); st.id = 'status'; a.append(st); wrap.append(a);
   }
-  const canSave = () => !!(draft.host.trim() && draft.pass && (draft.scope === 'all' || draft.scope.length));
+  const canSave = () => !!(draft.host.trim() && (draft.pass || mode === 'edit') && (draft.scope === 'all' || draft.scope.length));
   const sync = () => {
     const b = $('save'); if (!b) return;
     const scoped = draft.scope === 'all' || draft.scope.length > 0;
-    b.disabled = mode === 'add' ? !canSave() : !scoped;
+    b.disabled = mode === 'add' || mode === 'edit' ? !canSave() : !scoped;
+    // Adding a login that already exists replaces its password: say so before, not after.
+    const replacing = mode === 'add' && !!existingFor();
+    if (mode === 'add') b.textContent = replacing ? 'Replace login' : 'Save login';
     // Say why Save is off, once the rest is filled in — the missing piece is otherwise invisible.
-    const st = $('status'); if (st && (mode !== 'add' || (draft.host.trim() && draft.pass))) st.textContent = scoped ? '' : 'Choose a workspace, or Everywhere.';
+    const st = $('status'); if (st && (mode !== 'add' || (draft.host.trim() && draft.pass))) st.textContent = !scoped ? 'Choose a workspace, or Everywhere.' : replacing ? 'A login for this site and username exists; saving replaces its password and workspaces.' : '';
   };
   async function save() {
-    try { await vault.add(draft.host.trim(), draft.user.trim(), draft.pass, draft.scope); const h = draft.host.trim().toLowerCase(); Object.assign(draft, { host: '', user: '', pass: '', scope: [] }); mode = 'view'; await refresh(); sel = rows.find((r) => h.includes(r.host.split(':')[0])) || null; render(); }
-    catch (e) { say(e.message); }
+    try { const u = draft.user.trim(); const k = siteKey(draft.host); await vault.add(draft.host.trim(), u, draft.pass, draft.scope); resetDraft(); mode = 'view'; await refresh(); sel = rows.find((r) => siteKey(r.host) === k && r.username === u) || null; render(); }
+    catch (e) { say(failed(e)); }
+  }
+  async function saveEdit() {
+    try { const u = draft.user.trim(); const k = siteKey(draft.host); await vault.update(draft.from, { site: draft.host.trim(), username: u, password: draft.pass || undefined, scope: draft.scope }); resetDraft(); mode = 'view'; await refresh(); sel = rows.find((r) => siteKey(r.host) === k && r.username === u) || null; render(); }
+    catch (e) { say(failed(e)); }
   }
   async function doImport() {
-    try { const n = await vault.importCsv(draft.scope); if (n == null) return; mode = 'view'; draft.scope = []; await refresh(); say('Imported ' + n + ' login' + (n === 1 ? '' : 's') + '.'); }
-    catch (e) { say(e.message); }
+    try {
+      const r = await vault.importCsv(draft.scope); if (r == null) return; mode = 'view'; resetDraft(); await refresh();
+      const n = (k) => k + ' login' + (k === 1 ? '' : 's');
+      say('Imported ' + n(r.count) + ': ' + r.added + ' new, ' + r.replaced + ' already here (password replaced, workspaces kept and added to).');
+    } catch (e) { say(failed(e)); }
   }
   function render() { renderList(); renderDetail(); state(); }
   async function refresh() {
@@ -771,10 +729,18 @@ ipcMain.handle('vault:list', async () => (await unlockVault('show the logins in 
 ipcMain.handle('vault:workspaces', () => knownWorkspaces());
 ipcMain.handle('vault:add', async (_e, { host, username, password, scope }) => {
   if (!host || !password) throw new Error('site and password are required');
-  await unlockVault('add a login to the cobrowser vault'); upsertLogin(host, username || '', password, scope); saveVault();
+  const exists = !!vault && !!findEntry(host, username || '');
+  await authorizeChange(exists ? `replace the saved password for ${username || 'the login'} on ${host}` : `add a login for ${host}`);
+  // The form's scope is the one the human chose for this login, so it replaces the old one.
+  const r = upsertLogin(host, username || '', password, scope, { mergeScope: false }); saveVault();
+  return { replaced: r.replaced };
 });
-ipcMain.handle('vault:setScope', async (_e, { host, username, scope }) => { await unlockVault('change which workspaces may use a login'); setScope(host, username, scope); saveVault(); });
-ipcMain.handle('vault:remove', async (_e, { host, username }) => { await unlockVault('remove a login'); removeLogin(host, username); saveVault(); });
+ipcMain.handle('vault:update', async (_e, { from, site, username, password, scope }) => {
+  await authorizeChange(`change the login for ${from.username || 'the login'} on ${from.host}`);
+  updateLogin(from, { site, username, password: password || undefined, scope }); saveVault();
+});
+ipcMain.handle('vault:setScope', async (_e, { host, username, scope }) => { await authorizeChange(`change which workspaces may use ${username || 'the login'} on ${host}`); setScope(host, username, scope); saveVault(); });
+ipcMain.handle('vault:remove', async (_e, { host, username }) => { await authorizeChange(`remove the login for ${username || 'the login'} on ${host}`); removeLogin(host, username); saveVault(); });
 ipcMain.handle('vault:reveal', async (_e, { host, username }) => {
   // Showing a password is the one thing that must not ride on the session unlock: a fresh
   // biometric check every time, and no fallback when Touch ID cannot be presented.
@@ -789,11 +755,11 @@ ipcMain.handle('vault:reveal', async (_e, { host, username }) => {
 ipcMain.handle('vault:importCsv', async (_e, { scope } = {}) => {
   const r = await dialog.showOpenDialog(vaultWin, { properties: ['openFile'], filters: [{ name: 'CSV', extensions: ['csv'] }], title: 'Import logins (Apple Passwords / Bitwarden / Chrome export)' });
   if (r.canceled || !r.filePaths[0]) return null;
-  await unlockVault('import logins into the cobrowser vault');
-  const n = importCsv(fs.readFileSync(r.filePaths[0], 'utf8'), scope); saveVault();
-  const del = await dialog.showMessageBox(vaultWin, { message: `Imported ${n} login(s).`, detail: 'The CSV is plaintext. Delete it now?', buttons: ['Delete the CSV', 'Keep'], defaultId: 0 });
+  await authorizeChange('import logins from a CSV file');
+  const res = importCsv(fs.readFileSync(r.filePaths[0], 'utf8'), scope); saveVault();
+  const del = await dialog.showMessageBox(vaultWin, { message: `Imported ${res.count} login${res.count === 1 ? '' : 's'} (${res.added} new, ${res.replaced} replaced).`, detail: 'The CSV holds the passwords in plain text. Delete it now?', buttons: ['Delete the CSV', 'Keep'], defaultId: 0 });
   if (del.response === 0) fs.rmSync(r.filePaths[0], { force: true });
-  return n;
+  return res;
 });
 ipcMain.handle('vault:exportCsv', () => exportVault(vaultWin));
 ipcMain.handle('vault:lock', () => lockVault());
@@ -1649,9 +1615,15 @@ async function handle(ws, state, m) {
     try {
       switch (m.type) {
         // Added over the socket, a login defaults to the calling workspace's scope.
-        case 'vault.add': { await unlockVault('add a login to the cobrowser vault'); upsertLogin(m.host, m.username, m.password, m.scope ?? [state.workspace?.id].filter(Boolean)); saveVault(); return reply({ ok: true }); }
+        case 'vault.add': {
+          const exists = !!vault && !!findEntry(m.host, m.username || '');
+          await authorizeChange(exists ? `replace the saved password for ${m.username || 'the login'} on ${m.host}` : `add a login for ${m.host}`);
+          // From a command: widen the login's scope to this workspace, never narrow it.
+          const r = upsertLogin(m.host, m.username || '', m.password, m.scope ?? [state.workspace?.id].filter(Boolean), { mergeScope: true }); saveVault();
+          return reply({ ok: true, replaced: r.replaced });
+        }
         case 'vault.export': { const r = await exportVault(); return reply(r ? { ok: true, ...r } : { ok: false, canceled: true }); }
-        case 'vault.import': { await unlockVault('import logins into the cobrowser vault'); const n = importCsv(String(m.csv || ''), m.scope ?? [state.workspace?.id].filter(Boolean)); saveVault(); return reply({ ok: true, count: n }); }
+        case 'vault.import': { await authorizeChange('import logins from a CSV file'); const r = importCsv(String(m.csv || ''), m.scope ?? [state.workspace?.id].filter(Boolean)); saveVault(); return reply({ ok: true, count: r.count, added: r.added, replaced: r.replaced }); }
         case 'vault.list': {
           const v = await unlockVault('list the logins in the cobrowser vault');
           const wsId = state.workspace?.id;

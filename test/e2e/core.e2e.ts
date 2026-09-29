@@ -77,6 +77,20 @@ suite('core', async (r) => {
     try { await s.run(() => s.click({ uid: 'nope' })); } catch (e) { threw = String((e as Error).message); }
     r.check('a stale uid gives the re-snapshot guidance', /take_snapshot/.test(threw), threw);
 
+    // Passkeys, unsigned: a site's create() and get() must both fail at once (to its password
+    // form), never hang on a prompt nobody can see, and never record a passkey nobody holds.
+    // WebAuthn needs a domain, so this runs on localhost rather than 127.0.0.1.
+    await s.run(() => s.navigate('url', srv.cross + '/second'));
+    const ceremony = await s.evaluateScript(`async () => {
+      const race = (p) => Promise.race([p.then(() => 'CREATED-OR-GOT', (e) => e.name), new Promise((r) => setTimeout(() => r('HUNG'), 5000))]);
+      const t0 = performance.now();
+      const made = await race(navigator.credentials.create({ publicKey: { challenge: new Uint8Array(32), rp: { name: 'e2e', id: 'localhost' }, user: { id: new Uint8Array(8), name: 'u', displayName: 'u' }, pubKeyCredParams: [{ type: 'public-key', alg: -7 }], authenticatorSelection: { residentKey: 'required', userVerification: 'discouraged' } } }));
+      const got = await race(navigator.credentials.get({ publicKey: { challenge: new Uint8Array(32), rpId: 'localhost', userVerification: 'preferred' } }));
+      return { made, got, ms: Math.round(performance.now() - t0) };
+    }`) as { made: string; got: string; ms: number };
+    r.check('passkey create() and get() fail fast to the password form, recording nothing', ceremony.made === 'NotAllowedError' && ceremony.got === 'NotAllowedError' && ceremony.ms < 4000, ceremony);
+    await s.run(() => s.navigate('back'));
+
     await s.run(() => s.closePage('2'));
     await sleep(500);
     r.check('close removes the page and reports it', (await s.listPages()).length === 1 && closed.includes('2'), closed);

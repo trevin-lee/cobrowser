@@ -1,0 +1,107 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+
+type Scope = 'all' | string[];
+type Entry = { id: string; host: string; port: string; username: string; password: string; scope: Scope; updatedAt: number };
+type Vault = { entries: Entry[] };
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const store = require('../app/vault-store.js') as {
+  mergeScope: (a: Scope, b: Scope) => Scope;
+  allowed: (e: Entry, workspaceId: string) => boolean;
+  findEntry: (v: Vault, label: string, username: string) => Entry | undefined;
+  upsertLogin: (v: Vault, site: string, username: string, password: string, scope?: Scope, opts?: { mergeScope?: boolean }) => { entry: Entry; replaced: boolean };
+  updateLogin: (v: Vault, from: { host: string; username: string }, fields: { site?: string; username?: string; password?: string; scope?: Scope }) => Entry;
+  removeLogin: (v: Vault, host: string, username: string) => number;
+  importCsv: (v: Vault, text: string, scope: Scope) => { count: number; added: number; replaced: number };
+  exportCsv: (v: Vault) => string;
+};
+
+const empty = (): Vault => ({ entries: [] });
+
+test('adding a login that exists replaces its password and says so, instead of making a second copy', () => {
+  const v = empty();
+  assert.equal(store.upsertLogin(v, 'https://costco.com/login', 'me', 'one', ['/a']).replaced, false);
+  const again = store.upsertLogin(v, 'costco.com', 'me', 'two', ['/b']);
+  assert.equal(again.replaced, true);
+  assert.equal(v.entries.length, 1);
+  assert.equal(v.entries[0].password, 'two');
+});
+
+test('adding again widens who may use a login (never narrows it); the form, which chose the scope, replaces it', () => {
+  const v = empty();
+  store.upsertLogin(v, 'costco.com', 'me', 'pw', ['/a']);
+  store.upsertLogin(v, 'costco.com', 'me', 'pw', ['/b']);
+  assert.deepEqual(v.entries[0].scope, ['/a', '/b'], 'a command or an import adds its workspace');
+  store.upsertLogin(v, 'costco.com', 'me', 'pw', ['/c'], { mergeScope: false });
+  assert.deepEqual(v.entries[0].scope, ['/c'], 'the Logins window form sets exactly what was ticked');
+  assert.equal(store.mergeScope(['/a'], 'all'), 'all');
+  assert.equal(store.allowed(v.entries[0], '/c'), true);
+  assert.equal(store.allowed(v.entries[0], '/a'), false);
+});
+
+test('a login on another port, or with another username, is a different login', () => {
+  const v = empty();
+  store.upsertLogin(v, '192.168.1.50:8080', 'admin', 'x', 'all');
+  store.upsertLogin(v, '192.168.1.50:9090', 'admin', 'y', 'all');
+  store.upsertLogin(v, '192.168.1.50:8080', 'guest', 'z', 'all');
+  assert.equal(v.entries.length, 3);
+  assert.equal(store.findEntry(v, '192.168.1.50:9090', 'admin')?.password, 'y');
+});
+
+test('editing changes site, username and scope in place, and keeps the password when none is given', () => {
+  const v = empty();
+  store.upsertLogin(v, 'costco.com', 'old@x.com', 'secret', ['/a']);
+  const id = v.entries[0].id;
+  store.updateLogin(v, { host: 'costco.com', username: 'old@x.com' }, { site: 'www.costco.com', username: 'new@x.com', scope: 'all' });
+  assert.equal(v.entries.length, 1);
+  assert.deepEqual({ ...v.entries[0], updatedAt: 0 }, { id, host: 'www.costco.com', port: '', username: 'new@x.com', password: 'secret', scope: 'all', updatedAt: 0 });
+  store.updateLogin(v, { host: 'www.costco.com', username: 'new@x.com' }, { password: 'fresh' });
+  assert.equal(v.entries[0].password, 'fresh');
+});
+
+test('editing refuses to turn one login into a duplicate of another, and to edit one that is gone', () => {
+  const v = empty();
+  store.upsertLogin(v, 'costco.com', 'a', '1', 'all');
+  store.upsertLogin(v, 'costco.com', 'b', '2', 'all');
+  assert.throws(() => store.updateLogin(v, { host: 'costco.com', username: 'b' }, { username: 'a' }), /already a login for a on costco\.com/);
+  assert.equal(store.findEntry(v, 'costco.com', 'b')?.password, '2', 'the refused edit changed nothing');
+  assert.throws(() => store.updateLogin(v, { host: 'nowhere.com', username: 'a' }, { password: 'x' }), /no longer in the vault/);
+});
+
+test('removing takes exactly the one login', () => {
+  const v = empty();
+  store.upsertLogin(v, 'costco.com', 'a', '1', 'all');
+  store.upsertLogin(v, 'costco.com', 'b', '2', 'all');
+  assert.equal(store.removeLogin(v, 'costco.com', 'a'), 1);
+  assert.equal(store.removeLogin(v, 'costco.com', 'a'), 0);
+  assert.deepEqual(v.entries.map((e) => e.username), ['b']);
+});
+
+test('import reports what it added and what it replaced; replaced logins keep their workspaces and gain the new ones', () => {
+  const v = empty();
+  store.upsertLogin(v, 'costco.com', 'me', 'old', ['/a']);
+  const csv = 'Title,URL,Username,Password\nCostco,https://costco.com/,me,new\nBank,"https://bank.co.uk/login",you,"p,w""q"\nNo password,https://x.com,z,\n';
+  assert.deepEqual(store.importCsv(v, csv, ['/b']), { count: 2, added: 1, replaced: 1 });
+  const costco = store.findEntry(v, 'costco.com', 'me')!;
+  assert.equal(costco.password, 'new');
+  assert.deepEqual(costco.scope, ['/a', '/b']);
+  assert.equal(store.findEntry(v, 'bank.co.uk', 'you')?.password, 'p,w"q');
+  assert.deepEqual(store.findEntry(v, 'bank.co.uk', 'you')?.scope, ['/b']);
+  assert.throws(() => store.importCsv(v, 'a,b\n1,2\n', 'all'), /url\/username\/password/);
+});
+
+test('export writes every login in a form other managers and this vault read back identically', () => {
+  const v = empty();
+  store.upsertLogin(v, 'costco.com', 'me', 'p,w"q', ['/a']);
+  store.upsertLogin(v, '192.168.1.1', 'admin', 'r', 'all');
+  store.upsertLogin(v, 'nas:5000', 'admin', 's', 'all');
+  const csv = store.exportCsv(v);
+  assert.match(csv, /^name,url,username,password\n/);
+  assert.match(csv, /,https:\/\/costco\.com,/);
+  assert.match(csv, /,http:\/\/192\.168\.1\.1,/, 'a device on the network is plain http');
+  assert.match(csv, /,http:\/\/nas:5000,/);
+  const back = empty();
+  assert.deepEqual(store.importCsv(back, csv, 'all'), { count: 3, added: 3, replaced: 0 });
+  const pairs = (x: Vault) => x.entries.map((e) => [e.host, e.port, e.username, e.password]).sort();
+  assert.deepEqual(pairs(back), pairs(v));
+});

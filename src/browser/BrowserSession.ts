@@ -325,10 +325,12 @@ export class BrowserSession {
             transport: 'internal',
             hasResidentKey: true,
             hasUserVerification: true,
-            // Auto-resolve the presence/verification check (no OS prompt), so with
-            // no stored credential the get() rejects fast instead of hanging.
+            // Auto-resolve the presence check (no OS prompt), and FAIL user verification:
+            // then both create() and get() reject at once, whatever verification the site
+            // asks for. With verification passing (as before), get() failed fast but
+            // create() succeeded, so a site could record a passkey nobody holds (measured).
             automaticPresenceSimulation: true,
-            isUserVerified: true,
+            isUserVerified: false,
           },
         },
         3000,
