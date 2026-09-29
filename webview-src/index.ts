@@ -496,12 +496,10 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
 
 // ----- toolbar -----
 function navigate(): void {
-  let url = urlInput.value.trim();
-  if (!url) return;
-  if (!/^[a-z]+:\/\//i.test(url)) url = 'https://' + url;
-  // Route through the host (puppeteer goto on this panel's page) rather than a
-  // raw CDP Page.navigate, so it works even before the screencast CDP exists.
-  fire('extension.navigate', { url });
+  const typed = urlInput.value.trim();
+  if (!typed) return;
+  // The host turns what was typed into an address or a search (src/browser/address.ts).
+  fire('extension.navigate', { url: typed });
 }
 urlInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') navigate();

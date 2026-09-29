@@ -74,6 +74,10 @@ suite('core', async (r) => {
     let threw = '';
     try { await s.run(() => s.navigate('url', 'http://127.0.0.1:1/')); } catch (e) { threw = String((e as Error).message); }
     r.check('navigation to a dead host throws with the error', /ERR_CONNECTION_REFUSED|failed/.test(threw), threw);
+    await sleep(300);
+    const shown = await s.run(() => s.readPage({}));
+    const tabUrl = (await s.listPages()).find((p) => p.selected)?.url;
+    r.check('a page that could not load shows an error page, and the tab keeps the address that failed', /This site can't be reached/.test(shown.text) && tabUrl === 'http://127.0.0.1:1/', { text: shown.text.slice(0, 120), tabUrl });
     try { await s.run(() => s.click({ uid: 'nope' })); } catch (e) { threw = String((e as Error).message); }
     r.check('a stale uid gives the re-snapshot guidance', /take_snapshot/.test(threw), threw);
 

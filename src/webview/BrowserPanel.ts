@@ -5,6 +5,7 @@ import type { AppPage } from '../browser/AppPage';
 import type { BrowserSession, ElementBox } from '../browser/BrowserSession';
 import type { AppConnection, ScreenInfo } from '../app/AppClient';
 import { DEFAULT_TAB_TITLE_MAX, fullTabTitle, tabLabel } from './tabTitle';
+import { resolveAddress } from '../browser/address';
 
 /** Default ceiling on rendered pixels per frame (cobrowser.renderBudgetMegapixels). Measured
  *  on an M4 Pro: the app's JPEG encode holds 24fps at 8.2Mpx (a full-height retina laptop
@@ -494,7 +495,9 @@ export class BrowserPanel {
             break;
           case 'extension.navigate': {
             const p = (m.params ?? {}) as { url?: string };
-            if (p.url) await this.session.run(() => this.page.goto(p.url!).then(() => undefined), this.id);
+            // What was typed: an address, or a search. A failure shows the app's error page.
+            const url = p.url ? resolveAddress(p.url) : '';
+            if (url) await this.session.run(() => this.page.goto(url).then(() => undefined), this.id);
             break;
           }
         }

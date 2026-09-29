@@ -1046,6 +1046,12 @@ class Tab {
     // Keep the editor's URL bar, tab title and activity log in step with the page.
     const announce = () => workspace.broadcast({ type: 'tabUpdated', ...this.info() });
     wc.on('did-navigate', announce);
+    // A page that could not load: Electron leaves a blank document, so write an error page
+    // into it (the address stays the one that failed), for the human and for the agent's reads.
+    wc.on('did-fail-load', (_e, code, description, url, isMainFrame) => {
+      if (!isMainFrame || code === -3) return; // -3: aborted, e.g. a new navigation replaced it
+      wc.executeJavaScript(errorPageScript(url, description)).catch(() => undefined);
+    });
     // Fullscreen is the tab itself; the panel hides its toolbar while it lasts, and Escape
     // leaves it (see routeHuman), as in Chrome.
     this.htmlFullscreen = false;
@@ -1593,6 +1599,34 @@ function readForgotten() {
 }
 function writeForgotten(list) {
   try { fs.writeFileSync(FORGOTTEN_FILE, JSON.stringify(list, null, 2)); } catch { /* best effort */ }
+}
+
+/** The error page written into a tab whose page could not load (see did-fail-load). */
+function errorPageScript(url, error) {
+  let host = url;
+  try { host = new URL(url).host || url; } catch { /* keep */ }
+  const code = String(error || 'ERR_FAILED').replace(/^net::/, '');
+  const local = /^(localhost|127\.|\[::1\]|0\.0\.0\.0|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)|\.local(host)?(:|$)/.test(host);
+  const why = {
+    ERR_CONNECTION_REFUSED: `${host} refused to connect.`,
+    ERR_NAME_NOT_RESOLVED: `${host}'s address could not be found.`,
+    ERR_INTERNET_DISCONNECTED: 'You are not connected to the internet.',
+    ERR_CONNECTION_TIMED_OUT: `${host} took too long to respond.`,
+    ERR_TIMED_OUT: `${host} took too long to respond.`,
+    ERR_SSL_PROTOCOL_ERROR: `${host} sent a response that is not HTTPS.`,
+    ERR_CONNECTION_RESET: 'The connection was reset.',
+    ERR_ADDRESS_UNREACHABLE: `${host} is unreachable.`,
+  }[code] || `${host} could not be loaded.`;
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const plain = 'http://' + url.slice('https://'.length);
+  const hint = code === 'ERR_SSL_PROTOCOL_ERROR' && url.startsWith('https://')
+    ? `If it serves plain HTTP (most development servers do), try <a href="${esc(plain)}">${esc(plain)}</a>.`
+    : code === 'ERR_CONNECTION_REFUSED' && local ? 'Is the server running, and on this port?' : '';
+  const html = `<head><meta charset="utf-8"><title>${esc(host)}</title><style>
+    :root{color-scheme:light dark} body{font:15px/1.5 -apple-system,system-ui,sans-serif;margin:0;display:grid;place-items:center;min-height:100vh;color:CanvasText;background:Canvas}
+    main{max-width:560px;padding:32px} h1{font-size:22px;font-weight:600;margin:0 0 8px} p{margin:6px 0;opacity:.85} code{font:12px ui-monospace,Menlo,monospace;opacity:.6} button{margin-top:16px;font:inherit;padding:6px 14px;border-radius:6px;border:1px solid #8886;background:transparent;color:inherit;cursor:pointer}
+  </style></head><body><main><h1>This site can't be reached</h1><p>${esc(why)}</p>${hint ? `<p>${hint}</p>` : ''}<p><code>${esc(code)} · ${esc(url)}</code></p><button onclick="location.reload()">Try again</button></main></body>`;
+  return `document.documentElement.innerHTML = ${JSON.stringify(html)}; 0`;
 }
 
 class Workspace {
