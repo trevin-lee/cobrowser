@@ -23,7 +23,7 @@ No browser setup required — the companion app (a pinned Electron, ~120 MB) dow
 
 ## Why
 
-- **Agent acts as you, but isolated.** Each workspace gets its own browser profile inside the app, never your real Chrome or Firefox profile and never the repo working tree. Manual logins persist there; the agent inherits them.
+- **Agent acts as you, but isolated.** Each workspace gets its own browser profile inside the app, separate from your everyday Chrome or Firefox and outside the repo working tree. Manual logins persist there; the agent inherits them. (If you want the agent in your own browser instead, [the bridge](#your-own-chrome-or-firefox) does that, one tab group or container at a time, when you turn it on.)
 - **No floating browser windows.** Tabs render offscreen — there is no OS window at all — and appear as editor tabs next to your code.
 - **Consistent tool surface.** MCP tool names mirror [`chrome-devtools-mcp`](https://github.com/ChromeDevTools/chrome-devtools-mcp) (`navigate_page`, `take_snapshot`, `click`, `fill`, …).
 
@@ -86,11 +86,11 @@ Every tab is an editor tab in a dedicated pane, streamed from the app at up to 6
 
 ### How it identifies itself
 
-Cobrowser says what it is. The user agent is the standard reduced Chromium UA with a `Cobrowser/<version>` token where Edge and Opera put theirs, the client hints name Chromium and Cobrowser (never Google Chrome), Accept-Language comes from your macOS language list, and the page's `screen` is the real display the pane sits on rather than a fake screen the size of the viewport. Sites asking for a permission (camera, location, notifications, clipboard read) get a native Allow/Block dialog, remembered per site in `permissions.json`; until you answer, they have nothing. `navigator.webdriver` reads false, as it does in any Electron app: nothing is overridden, the process is simply not launched with a debugging port. The agent can read the page's console and request log (`list_console_messages`, `list_network_requests`); a DevTools window is refused because it would take the tab's debugger session away from the app. A native `<select>` cannot drop down in an offscreen page, so a click on one opens a macOS menu at the cursor and the choice is applied to the page; the agent's `fill` picks an option by its visible text. Cross-origin iframes (video players, embedded tools, sign-in widgets) run in their own renderer process, which offscreen input does not reach through the page, so the app attaches to each one and delivers your clicks, scrolling and typing to it directly.
+Cobrowser says what it is. The user agent is the standard reduced Chromium UA with a `Cobrowser/<version>` token where Edge and Opera put theirs, the client hints name Chromium and Cobrowser (never Google Chrome), Accept-Language comes from your macOS language list, and the page's `screen` is the real display the pane sits on rather than a fake screen the size of the viewport. Sites asking for a permission (camera, location, notifications, clipboard read) get a native Allow/Block dialog, remembered per site in that workspace only; until you answer, they have nothing. **Cobrowser: Site Permissions for This Workspace** lists what you allowed and blocked, and forgets the ones you pick, so those sites ask again. `navigator.webdriver` reads false, as it does in any Electron app: nothing is overridden, the process is simply not launched with a debugging port. The agent can read the page's console and request log (`list_console_messages`, `list_network_requests`); a DevTools window is refused because it would take the tab's debugger session away from the app. A native `<select>` cannot drop down in an offscreen page, so a click on one opens a macOS menu at the cursor and the choice is applied to the page; the agent's `fill` picks an option by its visible text. Cross-origin iframes (video players, embedded tools, sign-in widgets) run in their own renderer process, which offscreen input does not reach through the page, so the app attaches to each one and delivers your clicks, scrolling and typing to it directly.
 
 ### Logins
 
-The app keeps a local vault (encrypted through the OS keychain, unlocked with Touch ID) that the agent fills from without ever seeing a password: `list_credentials` shows the sites and usernames this workspace may use, `fill_credentials` types a login into the fields the agent picked, and the app checks the page is really on that site first. Add logins from the menu-bar **Logins…** window or by CSV import, and scope each one to the workspaces that may use it, or to all. **Export CSV…** in the Logins window, or **Cobrowser: Export Logins to CSV**, writes every login to a CSV other password managers import (asking for Touch ID each time); the file is plain text, so delete it once it is imported.
+The app keeps a local vault (encrypted through the OS keychain, unlocked with Touch ID) that the agent fills from without ever seeing a password: `list_credentials` shows the sites and usernames this workspace may use, `fill_credentials` types a login into the fields the agent picked, and the app checks the page is really on that site first. Add logins from the menu-bar **Logins…** window, with **Cobrowser: Add Login to Vault**, or by CSV import (**Import CSV…** in the window, or **Cobrowser: Import Logins from CSV**), and scope each one to the workspaces that may use it, or to all. In the window, **Edit** changes a login's site, username, password or workspaces (a blank password keeps the saved one), and adding a login that already exists says it will replace that login's password before you save. An import says how many logins were new and how many replaced; a login it replaces keeps its workspaces and gains the import's. Every change (add, edit, remove, workspaces, import) asks for Touch ID again, or for a click when Touch ID is unavailable, rather than riding on the unlock. **Export CSV…**, or **Cobrowser: Export Logins to CSV**, writes every login to a CSV other password managers import (asking for Touch ID each time); the file is plain text, so delete it once it is imported. **Cobrowser: Lock Vault** locks it until a login is next needed.
 
 When an agent needs a login its workspace is not scoped for, it calls `request_credential` with the site and a one-line reason. You get a native dialog naming the workspace and the login: **Allow in this workspace** adds the workspace to the login's scope, **Allow once** permits a single fill, **Deny** does nothing. The agent only learns the outcome, and a denial is indistinguishable from there being no such login, so a workspace still cannot enumerate what others hold.
 
@@ -104,7 +104,7 @@ Tabs are hidden offscreen windows, so everything a page would normally show in a
 - **Dropdowns, date, time and color fields** open their picker as a macOS menu or a small window of the app's own at the cursor, and your choice goes back into the page. The agent's `fill` sets them directly.
 - **Downloads** save straight to your Downloads folder (never overwriting), with a notification that opens the file in Finder.
 - **Fullscreen** (a video player's button) fills the tab, with the panel's toolbar hidden; Escape leaves it. Nothing takes over your display.
-- **A self-signed certificate** (a router or a device on your network) gets Chrome's question: proceed anyway, remembered for that host until the app quits.
+- **A self-signed certificate** (a router or a device on your network) gets Chrome's question: proceed anyway, remembered for that host in that workspace until the app quits.
 - **A password asked for by the browser itself** (HTTP basic auth) gets a small sign-in window.
 - **A crashed page** reloads by itself, unless it crashes three times in a minute.
 - **Tabs no panel is showing** draw 4 times a second instead of 60, and at full rate again the moment anything acts on them.
@@ -115,13 +115,37 @@ If the agent's action opens a dialog or a file picker, it is shown to you, and t
 
 The browser runs as a menu-bar app named cobrowser, with its own icon. The Electron it downloads is renamed `cobrowser.app` and given the name, bundle id and icon once, before its first start, then re-sealed: with your identity when it is signed for passkeys, ad hoc otherwise. It is marked menu-bar-only, so it never appears in the Dock or the app switcher. The icon is drawn by `scripts/make-icon.js` from the mark in `media/icon.png`.
 
+The menu-bar icon lists each workspace and its tab count, and quits the app. Quitting closes every workspace's tabs; the next panel or tool call starts it again, and each editor window reopens the tabs it had, each still the agent's or yours. **Cobrowser: Restart Browser** does the same for this workspace alone: its tabs close and reopen, and other workspaces are untouched.
+
+In a panel, the usual browser keys work: ⌘T new tab, ⌘W close, ⌘R reload, ⌘[ and ⌘] (or ⌥← and ⌥→) back and forward.
+
+Each workspace's browser keeps its own cookies, sign-ins, site data and permissions. **Cobrowser: Clear Browsing Data for This Workspace** signs it out of everything (open tabs stay open; the vault and permissions are kept). **Cobrowser: Forget Another Workspace's Browser** deletes another workspace's tabs, browsing data and permissions, for a project you are done with; its logins stay in the vault.
+
 ### Passkeys
 
-Run **Cobrowser: Enable Passkeys (Sign the Browser)** once. Chromium's Touch ID authenticator only works in an app signed with a `keychain-access-groups` entitlement, and Apple only grants that entitlement through a provisioning profile, so the command re-signs the downloaded browser as `dev.trevin.cobrowser` with your Apple Development identity. It builds a stub Xcode project and lets `xcodebuild -allowProvisioningUpdates` mint the profile, which needs Xcode with an Apple ID signed in (Xcode → Settings → Accounts). After that the Touch ID sheet is a system dialog, so it appears even though the page renders offscreen; passkeys are created inside cobrowser (add one from a site's security settings after a password sign-in) and live in this Mac's Secure Enclave keychain — they do not sync, and existing iCloud Keychain passkeys are not visible here, because Apple grants that only to real browsers. USB security keys work too. The browser restarts signed the next time a panel opens. A Developer ID certificate is used instead when present.
+Run **Cobrowser: Enable Passkeys (Sign the Browser)** once. Chromium's Touch ID authenticator only works in an app signed with a `keychain-access-groups` entitlement, and Apple only grants that entitlement through a provisioning profile, so the command re-signs the downloaded browser with your Apple Development identity and an app identifier you choose. It builds a stub Xcode project and lets `xcodebuild -allowProvisioningUpdates` mint the profile, which needs Xcode with an Apple ID signed in (Xcode → Settings → Accounts). After that the Touch ID sheet is a system dialog, so it appears even though the page renders offscreen; passkeys are created inside cobrowser (add one from a site's security settings after a password sign-in) and live in this Mac's Secure Enclave keychain — they do not sync, and existing iCloud Keychain passkeys are not visible here, because Apple grants that only to real browsers. USB security keys work too. The browser restarts signed the next time a panel opens. A Developer ID certificate is used instead when present.
 
 Enable Passkeys asks which of your teams signs it and for an app identifier the team can register (an identifier belongs to the first team that registers it, so a second team needs its own, such as `com.yourcompany.cobrowser`). A free personal team's provisioning profile lasts 7 days; a paid team's lasts a year, so prefer one if you have it. Past expiry macOS refuses to start the signed browser, so before each start the extension checks: an expired signature is renewed with the same team and identifier, and if that fails the browser is signed ad hoc again, so it always starts, passkeys fall back to passwords, and a notification says to run Enable Passkeys. Passkeys belong to the keychain group of the team that signed the browser, so switching teams leaves earlier ones behind.
 
-The menu-bar icon lists each workspace and its tab count, and quits the app. Quitting closes every workspace's tabs; the next panel or tool call starts it again.
+**Cobrowser: Turn Off Passkeys** signs the browser again as it was downloaded; passkeys already saved stay in your keychain and work again if you re-enable with the same team and identifier. While passkeys are off, a site's passkey prompt fails at once, both for signing in and for creating one, so it falls back to its password form and never records a passkey nobody holds.
+
+## Your own Chrome or Firefox
+
+The panel is where the agent works best, but sometimes the work is already open in your own browser, signed in. The **bridge** is a small browser extension that lets the agent reach it: the `bridge_*` tools (`bridge_list_tabs`, `bridge_new_tab`, `bridge_close_tab`, `bridge_activate_tab`, `bridge_navigate`, `bridge_read_page`, `bridge_snapshot`, `bridge_click`, `bridge_fill`, `bridge_wait_for`, `bridge_evaluate_script`, `bridge_fetch`, `bridge_screenshot`, `bridge_list_containers`). They take the same words as the panel's tools (`uid`, `function`/`args`, `timeout`, `elements`, and `back`/`forward`/`reload`), and appear only in a workspace you bind.
+
+A workspace is bound to one scope: one **Chrome tab group** (or the whole Chrome profile), or one **Firefox container**, never both. The extension refuses anything outside it. A tab group limits what the agent can reach, not what the browser knows: every Chrome tab shares the profile's logins.
+
+**Chrome.** Run **Cobrowser: Install Chrome Bridge Extension**: it copies the extension to `~/.cobrowser/chrome-extension` and copies that path. In `chrome://extensions`, turn on Developer mode, click **Load unpacked** and choose the folder. Then run **Cobrowser: Bind Chrome Tab Group to This Workspace**, and paste the URL from **Cobrowser: Copy Bridge URL** into the extension's toolbar popup. Updating cobrowser updates that folder; Chrome loads the new version when it restarts, or at once with the extension's reload button. Each release also carries the extension as `cobrowser-bridge-chrome-<version>.zip`.
+
+**Firefox** (and forks with containers: Zen, LibreWolf, Floorp, Waterfox). Firefox only installs signed add-ons, and Mozilla signs this one for you, unlisted, with your own API key: see [firefox-extension/README.md](firefox-extension/README.md). Then run **Cobrowser: Bind Firefox Container to This Workspace**; the extension finds the workspace by itself.
+
+What to expect:
+
+- **Input is synthetic.** No extension can send real clicks or keystrokes, and some sites ignore synthetic ones. A click that changed nothing on the page comes back saying so, and the agent moves that step to the panel.
+- **It goes at a hand's pace.** Everything that reaches a site waits 1 to 3 seconds, stops at 100 requests in a browser session, and pauses for a minute when a site refuses or shows a challenge. The count and a **Reset** button are in the extension's toolbar popup; only you can reset it.
+- **It tidies up after itself.** `bridge_list_tabs` marks the tabs the agent opened, and `bridge_close_tab` closes only those.
+- **It is released with cobrowser.** The extension carries cobrowser's version; when it is older, the agent's results say so and how to update it.
+- The same rule as the panel: no paying and no typing secrets unless you say so. The vault does not reach your own browser; you sign in there yourself.
 
 ## Working on cobrowser while using it
 
@@ -147,7 +171,7 @@ release cannot drag everyone backwards.
 
 ## MCP tools
 
-`list_pages`, `new_page`, `select_page`, `close_page`, `navigate_page`, `read_page`, `take_snapshot`, `take_screenshot`, `click`, `fill`, `fill_form`, `type_text`, `wait_for`, `evaluate_script`, `list_console_messages`, `list_network_requests`, `list_credentials`, `fill_credentials`, `request_credential`, `get_activity`, `get_editor_layout`.
+`list_pages`, `new_page`, `select_page`, `close_page`, `navigate_page`, `read_page`, `take_snapshot`, `take_screenshot`, `click`, `fill`, `fill_form`, `type_text`, `wait_for`, `evaluate_script`, `list_console_messages`, `list_network_requests`, `list_credentials`, `fill_credentials`, `request_credential`, `get_activity`, `get_editor_layout`, and for unscoped clients `list_workspaces`. A workspace bound to your own browser also gets the `bridge_*` tools ([below](#your-own-chrome-or-firefox)).
 
 Every page tool takes an optional `pageId`, and the agent and the human each have their own current tab. Tabs are independent offscreen windows, so the agent can work in a background tab while you read another: switching tabs in your editor never retargets the agent, and the agent switching tabs (`select_page`) never moves your view unless it passes `bringToFront`. `list_pages` reports both (`selected` is the agent's tab, `humanViewing` yours), actions on different tabs run in parallel while actions on one tab stay in order, and the app remembers which tabs the agent opened, so they stay the agent's to tidy up across reloads.
 
@@ -155,16 +179,15 @@ Every page tool takes an optional `pageId`, and the agent and the human each hav
 
 ## Develop it
 
-**Cobrowser: Turn Off Passkeys** signs the browser again as it was downloaded; passkeys already saved stay in your keychain and work again if you re-enable with the same team and identifier.
-
 ### Tests
 
-`npm test` runs the unit tests. `npm run test:e2e` runs the end-to-end suites in `test/e2e/`: each starts its own isolated copy of the app (scratch state and data dirs, biometrics and dialogs auto-answered) and drives it through the real client and session code — pages, input, native selects, cross-origin iframes, tabs and focus, dialogs and popups, credentials, single-instance, branding. They need `npm run build` first and take about two minutes. `npm run bench:e2e` prints measurements (scroll latency, what a site sees, snapshot sizes) without asserting. Nothing in them can reach your real app, tabs or vault.
+`npm test` runs the unit tests. `npm run test:e2e` runs the end-to-end suites in `test/e2e/`: each starts its own isolated copy of the app (scratch state and data dirs, biometrics and dialogs auto-answered) and drives it through the real client and session code — pages, input, native selects, cross-origin iframes, tabs and focus, dialogs and popups, credentials, per-workspace permissions and browsing data, the bridge extensions' page code, single-instance, branding. They need `npm run build` first and take about two minutes. `npm run bench:e2e` prints measurements (scroll latency, what a site sees, snapshot sizes) without asserting. Nothing in them can reach your real app, tabs or vault.
 
 
 ```bash
 npm install
-npm run build      # esbuild → dist/extension.js + dist/webview.js
+npm --prefix app install   # the pinned Electron, so a checkout needs no download
+npm run build              # esbuild → dist/ (extension, webview, daemon, app)
 ```
 
 Then open this folder in VS Code / Cursor and press **F5** (launches the Extension Development Host). In the dev host:
@@ -192,11 +215,22 @@ Scripts: `npm run watch` (rebuild on change), `npm run typecheck`.
 - **`evaluate_script` runs arbitrary JavaScript in the page.** It is the escape hatch, and it is not subject to the click and fill rule below.
 - **Stateless MCP.** No resumable sessions; each request stands alone.
 - **Your own browser gets synthetic input only.** No browser extension can send real clicks or keystrokes, and some sites (Google's and Cloudflare's consoles among them) ignore synthetic ones. The own-browser tools report a click that changed nothing and point the agent to the panel, where input is real.
-- **The agent does not pay or type secrets on its own.** In both the panel and your own browser, it will not click a button that pays or places an order, or type a password, one-time code or card number, unless you tell it to (`allowPayment`, `allowCredentials`). Saved logins go in through `fill_credentials`, which never shows it the password.
+- **The agent does not pay or type secrets on its own.** In both the panel and your own browser, it will not click a button that pays or places an order, or type a password, one-time code or card number, unless you tell it to (`allowPayment`, `allowCredentials`). In the panel, saved logins go in through `fill_credentials`, which never shows it the password; the vault does not reach your own browser, so there you sign in yourself.
 
 ## Security notes
 
 Each workspace's browser profile holds live session cookies — treat it as credentials. Profiles live in the app's data folder (`~/Library/Application Support/cobrowser`), outside every repo. The vault is encrypted with a key in your login keychain and unlocks with Touch ID; showing or exporting passwords asks for Touch ID every time, and a stored password is never sent back out to the editor or the agent. The daemon binds `127.0.0.1` only and is gated by tokens stored with owner-only permissions under `~/.cobrowser`: a daemon-wide one for unscoped clients and one per workspace for scoped sessions. It also rejects any request whose `Host` header is not a loopback address. No remote debugging port is ever opened, so no other process can attach to the browser. Seed each profile only with the accounts your automation needs; don't put high-value logins (primary email, bank) in an agent-driven browser.
+
+## Uninstall
+
+Quit the app (menu-bar icon → Quit), then uninstall the extension (`code --uninstall-extension trevin-lee.cobrowser`, or `cursor --uninstall-extension trevin-lee.cobrowser`). What it leaves behind, all of which is safe to delete:
+
+- `~/Library/Application Support/cobrowser`: every workspace's browser profile (cookies, sign-ins), the vault (`vault.bin`), site permissions and the app's log.
+- `~/.cobrowser`: the daemon's and app's tokens and state, and the Chrome bridge folder.
+- `~/Library/Application Support/Code/User/globalStorage/trevin-lee.cobrowser` (Cursor: `~/Library/Application Support/Cursor/User/globalStorage/trevin-lee.cobrowser`): the downloaded browser.
+- The `cobrowser` entries in `~/.claude.json` and `~/.cursor/mcp.json`.
+- `~/Library/Application Support/Mozilla/ManagedStorage/cobrowser-bridge@trevin.dev.json`, if you used the Firefox bridge; remove the extensions from Chrome and Firefox themselves.
+- In Keychain Access: the **cobrowser Safe Storage** item (the vault's key), and any passkeys you created in cobrowser.
 
 ## Requirements
 

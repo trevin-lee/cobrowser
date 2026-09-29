@@ -2,6 +2,38 @@
 
 Release notes for earlier versions are on the [GitHub releases page](https://github.com/trevin-lee/cobrowser/releases).
 
+## 0.9.5
+
+### Added
+
+- **Edit a saved login** in the Logins window: its site, username, password or workspaces (a blank password keeps the saved one).
+- **Site permissions per workspace.** Each workspace's browser keeps its own permission choices and certificate exceptions. **Cobrowser: Site Permissions for This Workspace** lists them and forgets the ones you pick. Choices you made before carry over into every workspace.
+- **Cobrowser: Clear Browsing Data for This Workspace** signs that browser out of every site, and **Cobrowser: Forget Another Workspace's Browser** deletes a finished project's tabs, browsing data and permissions.
+- **Your own browser, completed:**
+  - The bridge tools take the panel tools' words (`uid`, `function`/`args`, `timeout`, `elements`) and can go back, forward and reload.
+  - `bridge_close_tab` closes the tabs the agent opened, and only those; `bridge_list_tabs` marks them.
+  - The extensions carry cobrowser's version, and the agent is told when yours is out of date and how to update it.
+  - **Cobrowser: Install Chrome Bridge Extension** puts the Chrome extension in a folder that survives updates and is refreshed by them. Each release carries it as a zip.
+  - The extension's toolbar popup shows the request count, with a Reset that only you can press.
+  - Waits can watch for any of several texts; an async script's result is awaited.
+- An Uninstall section in the README, listing everything cobrowser leaves on disk.
+
+### Changed
+
+- Every change to the vault (add, edit, remove, workspaces, import) asks for Touch ID again, or for a click when Touch ID is unavailable.
+- Adding a login that already exists warns before saving and replaces it, instead of silently overwriting; adding or importing it again widens the workspaces that may use it and never narrows them. An import reports how many logins were new and how many it replaced.
+- Navigating and opening tabs in your own browser are paced like every other call. In Chrome the request count now survives the extension's background worker restarting.
+- The Bind commands say when binding one browser replaces the other.
+- The vault commands no longer open this workspace's browser to run, and Lock Vault says when the app is not running.
+
+### Fixed
+
+- A site you allowed a permission (notifications, location) still read as denied to the page. The saved choice now applies.
+- With passkeys off, a site could create a passkey nobody holds; creating one now fails at once, as signing in with one did.
+- Tabs the agent opened became yours after the app restarted; they stay the agent's to tidy up.
+- The Bind commands appeared as "Cobrowser: Cobrowser: …" in the command palette.
+- The README said `fill_credentials` works in your own browser; it works in the panel only.
+
 ## 0.9.4
 
 ### Added

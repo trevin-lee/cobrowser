@@ -6,16 +6,21 @@ drive the tabs of your own Chrome — scoped to one tab group, or the whole prof
 Same wire protocol as the Firefox add-on, so the editor and the agent cannot tell them apart.
 The `bridge_*` MCP tools work on whichever browser a workspace is bound to.
 
-## Install (unpacked)
+## Install
 
-1. `chrome://extensions` → turn on **Developer mode** → **Load unpacked** → choose this folder.
-2. In your editor, run **Cobrowser: Bind Chrome Tab Group to This Workspace** and pick a group
-   name (or `profile` for every tab).
-3. Run **Cobrowser: Copy Bridge URL**, open the extension's toolbar popup, paste the URL under
+1. In your editor, run **Cobrowser: Install Chrome Bridge Extension**. It copies this folder to
+   `~/.cobrowser/chrome-extension` (a place that survives cobrowser updates, and is refreshed
+   by them) and copies that path.
+2. `chrome://extensions` → turn on **Developer mode** → **Load unpacked** → choose that folder.
+3. Run **Cobrowser: Bind Chrome Tab Group to This Workspace** and give a group name (or
+   `profile` for every tab).
+4. Run **Cobrowser: Copy Bridge URL**, open the extension's toolbar popup, paste the URL under
    *Endpoints*, save. The URL never changes for that workspace, so this is a one-time step.
 
-Chrome has no writable managed-storage manifest outside enterprise policy, which is why step 3
-is by hand here and automatic in Firefox.
+Chrome has no writable managed-storage manifest outside enterprise policy, which is why step 4
+is by hand here and automatic in Firefox. The extension carries cobrowser's version; after an
+update, Chrome loads the new files when it restarts, or at once with the extension's reload
+button, and until then the agent is told the extension is out of date.
 
 ## How scoping works
 
@@ -24,6 +29,13 @@ every call that touches a tab outside that scope. Tab groups are visible and nam
 tab strip, which makes them a good stand-in for Firefox containers — with one honest
 difference: a tab group is not a cookie boundary. Every tab in the profile shares the same
 logins. The group limits what the agent can *reach*, not what the browser *knows*.
+
+## Pace
+
+Everything that reaches a site waits 1 to 3 seconds, stops at 100 requests in a browser
+session, and pauses for a minute when a site refuses or shows a challenge. The count survives
+Chrome stopping and restarting the extension's service worker. The toolbar popup shows it and
+has a **Reset** button; only that page can reset it, not a script in a tab.
 
 ## Differences from the Firefox add-on
 
