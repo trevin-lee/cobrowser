@@ -137,7 +137,7 @@ A workspace is bound to one scope: one **Chrome tab group** (or the whole Chrome
 
 **Chrome.** Run **Cobrowser: Install Chrome Bridge Extension**: it copies the extension to `~/.cobrowser/chrome-extension` and copies that path. In `chrome://extensions`, turn on Developer mode, click **Load unpacked** and choose the folder. Then run **Cobrowser: Bind Chrome Tab Group to This Workspace**, and paste the URL from **Cobrowser: Copy Bridge URL** into the extension's toolbar popup. Updating cobrowser updates that folder; Chrome loads the new version when it restarts, or at once with the extension's reload button. Each release also carries the extension as `cobrowser-bridge-chrome-<version>.zip`.
 
-**Firefox** (and forks with containers: Zen, LibreWolf, Floorp, Waterfox). Firefox only installs signed add-ons, and Mozilla signs this one for you, unlisted, with your own API key: see [firefox-extension/README.md](firefox-extension/README.md). Then run **Cobrowser: Bind Firefox Container to This Workspace**; the extension finds the workspace by itself.
+**Firefox** (and forks with containers: Zen, LibreWolf, Floorp, Waterfox). Download `cobrowser-bridge-firefox-<version>.xpi` from the [latest release](https://github.com/trevin-lee/cobrowser/releases/latest) and install it from `about:addons` → gear → **Install Add-on From File…**. It is signed by Mozilla (unlisted), and Firefox updates it by itself after each release. Then run **Cobrowser: Bind Firefox Container to This Workspace**; the extension finds the workspace by itself. Details in [firefox-extension/README.md](firefox-extension/README.md).
 
 What to expect:
 
@@ -199,6 +199,10 @@ Then open this folder in VS Code / Cursor and press **F5** (launches the Extensi
 The app's source is `app/main.js`, bundled to `dist/app/main.js` by the build; the installed extension runs that bundle with a downloaded Electron, a checkout runs it with the one in `app/node_modules`.
 
 Scripts: `npm run watch` (rebuild on change), `npm run typecheck`.
+
+### Releasing
+
+`npm run release` bumps the version in `package.json` and both add-on manifests (they always match) and installs the build into your editors. Add the version's entry to `CHANGELOG.md`, commit, then tag and push: `git tag vX.Y.Z && git push origin main vX.Y.Z`. The Release workflow checks that the versions match the tag, and publishes the release with the CHANGELOG entry as its notes. It attaches the `.vsix`, the Chrome add-on's zip and the Firefox add-on, signed by Mozilla. Firefox signing needs the `AMO_JWT_ISSUER` and `AMO_JWT_SECRET` repository secrets ([firefox-extension/README.md](firefox-extension/README.md#signing)).
 
 ## Design decisions worth knowing
 

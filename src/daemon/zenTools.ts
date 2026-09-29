@@ -153,7 +153,7 @@ function staleNote(hub: ZenHub, workspace: string): string | undefined {
   if (!a?.stale) return undefined;
   const how = a.browser === 'chrome'
     ? 'update cobrowser, then reload Cobrowser Bridge in chrome://extensions'
-    : 'install the new signed Cobrowser Bridge .xpi in Firefox';
+    : 'install cobrowser-bridge-firefox .xpi from the latest cobrowser release, or in about:addons use Check for Updates';
   return `The Cobrowser Bridge add-on in ${a.browser === 'chrome' ? 'Chrome' : 'Firefox'} is ${a.version ? `version ${a.version}` : 'an older version'}; this editor expects ${a.expected}. Some tools may not work until the human updates it (${how}).`;
 }
 

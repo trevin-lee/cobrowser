@@ -15,17 +15,31 @@ is the one with your sessions in it. An extension is simply there, in the profil
 
 ## Install
 
-Firefox installs only signed add-ons. Mozilla signs this one as **unlisted**: for you alone,
-never published, never publicly reviewed, usually within seconds.
+Download `cobrowser-bridge-firefox-<version>.xpi` from the
+[latest cobrowser release](https://github.com/trevin-lee/cobrowser/releases/latest), then in
+Firefox: `about:addons` → gear → **Install Add-on From File…**
 
-1. Create API credentials at <https://addons.mozilla.org/developers/addon/api/key/> (the secret
-   is shown once) and put them in `.env.amo` at the repo root:
-   `AMO_JWT_ISSUER=user:…` and `AMO_JWT_SECRET=…`
-2. `npm run sign:firefox` writes `cobrowser-bridge-signed.xpi` at the repo root.
-3. In Firefox: `about:addons` → gear → **Install Add-on From File…**
+That is the only time you install it. The add-on carries cobrowser's version and checks the
+latest release for a newer one (`update_url` in the manifest), so Firefox updates it by itself
+within a day of each release, or at once with **Check for Updates** in the same menu. Until it
+has, the agent is told the add-on is older than cobrowser.
 
-The add-on carries cobrowser's version, and Mozilla signs each version once, so sign again
-after updating cobrowser; the agent is told when the installed add-on is older than cobrowser.
+Firefox installs only signed add-ons. Mozilla signs this one as **unlisted**: self-distributed,
+never published on addons.mozilla.org, never publicly reviewed. The release workflow does it
+for every tag (see *Signing* below).
+
+### Signing
+
+`.github/workflows/release.yml` signs the add-on when a release is tagged, using two repository
+secrets from <https://addons.mozilla.org/developers/addon/api/key/>, created by the account that
+owns the add-on: `AMO_JWT_ISSUER` and `AMO_JWT_SECRET`. Without them the release is made without
+the Firefox add-on, and the run says so; add them and run the workflow by hand with the tag.
+Mozilla signs each version once, so a version that is already on its release is left alone.
+
+To sign on your own machine instead (a fork, or a test build), put the same two values in
+`.env.amo` at the repo root and run `npm run sign:firefox`; it writes
+`cobrowser-bridge-signed.xpi`. A version you sign locally cannot be signed again by the
+workflow, so bump it first.
 
 **Unsigned, for testing:** `cd firefox-extension && zip -r ../cobrowser-bridge.xpi .` installs
 only where `xpinstall.signatures.required` is `false` in `about:config` (Zen and some forks honour

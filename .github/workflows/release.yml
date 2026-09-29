@@ -1,21 +1,41 @@
 name: Release
 
-# Cut a GitHub Release with the packaged .vsix whenever a v* tag is pushed, e.g.:
-#   npm version patch      # bumps package.json + creates the tag
-#   git push --follow-tags
+# A pushed v* tag becomes a GitHub Release carrying everything cobrowser ships:
+#   - cobrowser-<version>.vsix                    the editor extension
+#   - cobrowser-bridge-chrome-<version>.zip       the Chrome bridge (loaded unpacked)
+#   - cobrowser-bridge-firefox-<version>.xpi      the Firefox bridge, signed by Mozilla
+#   - firefox-updates.json                        where installed Firefox add-ons look for updates
+#
+# Cutting one: bump package.json and both add-on manifests to the same version (npm run
+# release does it), add its CHANGELOG entry, then `git tag vX.Y.Z && git push origin main vX.Y.Z`.
+#
+# Firefox signing needs two repository secrets, from
+# https://addons.mozilla.org/developers/addon/api/key/ (the account that owns the add-on):
+#   AMO_JWT_ISSUER, AMO_JWT_SECRET
+# Without them the release is still made, and the run warns that Firefox was skipped. Run this
+# workflow by hand with a tag to fill in a release afterwards.
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to (re)build the release for, e.g. v0.9.6'
+        required: true
 
 permissions:
   contents: write
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
 
       - uses: actions/setup-node@v4
         with:
@@ -24,19 +44,87 @@ jobs:
 
       - run: npm ci
 
+      - name: The tag, the extension and both add-ons carry one version
+        run: |
+          v="${TAG#v}"
+          for f in package.json chrome-extension/manifest.json firefox-extension/manifest.json; do
+            got="$(node -p "require('./$f').version")"
+            if [ "$got" != "$v" ]; then echo "::error file=$f::version $got, tag $TAG"; exit 1; fi
+          done
+
+      - name: Release notes from the CHANGELOG
+        run: |
+          # Outside the checkout: anything in it would be packaged into the .vsix.
+          awk -v h="## ${TAG#v}" '$0 == h { f = 1; next } /^## / { f = 0 } f' CHANGELOG.md > "$RUNNER_TEMP/release-notes.md"
+          if ! grep -q '[^[:space:]]' "$RUNNER_TEMP/release-notes.md"; then echo "::error file=CHANGELOG.md::no \"## ${TAG#v}\" entry"; exit 1; fi
+
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Package VSIX
-        run: npm run package
+      - name: Package the extension and the Chrome add-on
+        run: |
+          npm run package
+          npm run package:chrome
 
-      - name: Create GitHub Release
+      - name: Create or update the GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: '*.vsix'
-          generate_release_notes: true
+          tag_name: ${{ env.TAG }}
+          body_path: ${{ runner.temp }}/release-notes.md
+          files: |
+            *.vsix
+            cobrowser-bridge-chrome-*.zip
           fail_on_unmatched_files: true
 
-# Publishing to Open VSX is intentionally NOT wired up yet. When ready, add a step:
-#   - run: npx ovsx publish *.vsix -p ${{ secrets.OVSX_PAT }}
-# (store OVSX_PAT as a repo secret first).
+  firefox:
+    name: Sign the Firefox add-on
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
+      AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Mozilla credentials
+        id: creds
+        run: |
+          if [ -n "$AMO_JWT_ISSUER" ] && [ -n "$AMO_JWT_SECRET" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning title=Firefox add-on not signed::Set the AMO_JWT_ISSUER and AMO_JWT_SECRET repository secrets, then run this workflow by hand with tag $TAG."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.creds.outputs.ok == 'true'
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: actions/setup-node@v4
+        if: steps.creds.outputs.ok == 'true'
+        with:
+          node-version: 22
+
+      # Mozilla signs a version once, so a release that already has its .xpi is left alone
+      # (re-running this workflow must not fail on it).
+      - name: Sign (unlisted) and attach
+        if: steps.creds.outputs.ok == 'true'
+        run: |
+          v="${TAG#v}"
+          xpi="cobrowser-bridge-firefox-$v.xpi"
+          if gh release view "$TAG" --json assets -q '.assets[].name' | grep -qxF "$xpi"; then
+            echo "$xpi is already on the release"
+            exit 0
+          fi
+          npm run sign:firefox
+          mv cobrowser-bridge-signed.xpi "$xpi"
+          # Installed add-ons check update_url (the latest release's firefox-updates.json) daily
+          # and install what it points to: this release's signed .xpi.
+          node -e '
+            const [tag, repo, xpi] = process.argv.slice(1);
+            const id = require("./firefox-extension/manifest.json").browser_specific_settings.gecko.id;
+            const update = { version: tag.slice(1), update_link: `https://github.com/${repo}/releases/download/${tag}/${xpi}` };
+            console.log(JSON.stringify({ addons: { [id]: { updates: [update] } } }, null, 2));
+          ' "$TAG" "$GITHUB_REPOSITORY" "$xpi" > firefox-updates.json
+          gh release upload "$TAG" "$xpi" firefox-updates.json --clobber

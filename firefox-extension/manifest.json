@@ -6,7 +6,8 @@
   "browser_specific_settings": {
     "gecko": {
       "id": "cobrowser-bridge@trevin.dev",
-      "strict_min_version": "115.0"
+      "strict_min_version": "115.0",
+      "update_url": "https://github.com/trevin-lee/cobrowser/releases/latest/download/firefox-updates.json"
     }
   },
   "permissions": [

@@ -5,6 +5,8 @@ dist/
 *.log
 dist-test/
 *.xpi
+# web-ext's note of an in-flight AMO upload: per machine, never shipped.
+.amo-upload-uuid
 cobrowser-bridge-*.zip
 .env.amo
 web-ext-artifacts/
