@@ -27,7 +27,8 @@ const LEGACY_REPO_FILES = ['.mcp.json', path.join('.cursor', 'mcp.json')];
  *     folder's browser — enforced by the credential, not by trusting what the agent asks for.
  *   - Cursor: `~/.cursor/mcp.json` → a single `cobrowser` entry with the daemon's admin
  *     token. Cursor's global list has no per-project scoping, so this one is unscoped and
- *     names its target with a `workspace` argument instead.
+ *     names its target with a `workspace` argument instead. Only where Cursor has been run
+ *     (`~/.cursor` exists): a Mac without Cursor gets no Cursor folder.
  *
  * Literal port + token are written (never "${ENV}" placeholders — the CLI's env would not
  * have them); both files live outside version control by construction.
@@ -64,8 +65,9 @@ export async function writeClientConfigs(
     );
   }
 
-  // --- Cursor: one unscoped entry -------------------------------------------------------
-  updateJson(
+  // --- Cursor: one unscoped entry, where Cursor is used -----------------------------------
+  const cursor = fs.existsSync(path.dirname(CURSOR_MCP));
+  if (cursor) updateJson(
     CURSOR_MCP,
     (json) => {
       const servers = (json.mcpServers ??= {}) as Record<string, unknown>;
@@ -81,7 +83,7 @@ export async function writeClientConfigs(
       servers[entry] = {
         type: 'http',
         url,
-        headers: { Authorization: `Bearer ${daemonToken()}` },
+        headers: { Authorization: `Bearer ${daemonToken(undefined, dev)}` },
       };
       return json;
     },
@@ -91,10 +93,11 @@ export async function writeClientConfigs(
   // --- Clean up what older versions left in the repo ------------------------------------
   if (!dev) await removeRepoConfigs(log);
 
+  const forCursor = cursor ? ', and one shared entry for Cursor' : '';
   log(
     root
-      ? `Registered the cobrowser daemon at ${url}: a per-project entry scoped to "${root}" for Claude Code, and one shared entry for Cursor.`
-      : `Registered the cobrowser daemon at ${url} for Cursor (no workspace folder open, so no scoped Claude Code entry).`,
+      ? `Registered the cobrowser daemon at ${url}: a per-project entry scoped to "${root}" for Claude Code${forCursor}.`
+      : `Registered the cobrowser daemon at ${url}${cursor ? ' for Cursor' : ''} (no workspace folder open, so no scoped Claude Code entry).`,
   );
 }
 
