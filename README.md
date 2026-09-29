@@ -71,7 +71,7 @@ long-running agent never lands on another workspace's browser because focus move
 |---|---|
 | **Claude Code** | `~/.claude.json` → `projects[<folder>].mcpServers.cobrowser`, with that workspace's token |
 | **VS Code** agent | `vscode.lm.registerMcpServerDefinitionProvider` (native), pointed at the daemon, unscoped |
-| **Cursor** | `~/.cursor/mcp.json` → one unscoped `cobrowser` entry |
+| **Cursor** | `~/.cursor/mcp.json` → one unscoped `cobrowser` entry (only once Cursor has been run, so `~/.cursor` exists) |
 
 Nothing is written into your repo, and the URL never changes: the daemon outlives every window,
 exits ~2 minutes after the last one closes, and is restarted automatically when its version no

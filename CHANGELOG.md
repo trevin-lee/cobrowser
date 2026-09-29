@@ -2,6 +2,17 @@
 
 Release notes for earlier versions are on the [GitHub releases page](https://github.com/trevin-lee/cobrowser/releases).
 
+## 0.9.8
+
+### Changed
+
+- **macOS only on Open VSX, everywhere.** Each release removes any package for another platform from Open VSX, so 0.9.6's package for every platform is gone and no one is offered a build that cannot run.
+
+### Fixed
+
+- cobrowser created `~/.cursor/mcp.json` on Macs without Cursor; it now writes Cursor's entry only where Cursor has been run.
+- The development host gave Cursor the installed daemon's token instead of its own.
+
 ## 0.9.7
 
 ### Added

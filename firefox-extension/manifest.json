@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Cobrowser Bridge",
-  "version": "0.9.7",
+  "version": "0.9.8",
   "description": "Lets Cobrowser (in your editor) see and drive the tabs of ONE Firefox container.",
   "browser_specific_settings": {
     "gecko": {
