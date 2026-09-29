@@ -2,10 +2,11 @@
 
 Release notes for earlier versions are on the [GitHub releases page](https://github.com/trevin-lee/cobrowser/releases).
 
-## Unreleased
+## 0.9.6
 
 ### Changed
 
+- **On Open VSX.** Cursor, VSCodium and other editors that use Open VSX can install cobrowser from their Extensions view, and keep it up to date. VS Code still installs the `.vsix` from the release.
 - **The Firefox add-on is released with cobrowser.** Each release carries it signed by Mozilla, as `cobrowser-bridge-firefox-<version>.xpi`, built by the release workflow. It no longer needs Mozilla API keys on your machine.
 - **Firefox keeps the add-on up to date.** Once this version is installed, Firefox finds and installs each new release by itself.
 

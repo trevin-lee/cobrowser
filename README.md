@@ -6,18 +6,17 @@ An embedded, agent-controllable browser inside your editor — **co-driven** by 
 
 ## Install
 
-Cobrowser is not on any marketplace. Download `cobrowser-<version>.vsix` from the [latest release](https://github.com/trevin-lee/cobrowser/releases/latest) and install it:
+**Cursor, VSCodium and other editors that install from [Open VSX](https://open-vsx.org/extension/trevin-lee/cobrowser):** search for **Cobrowser** in the Extensions view and install it. The editor keeps it up to date.
+
+**VS Code** installs from Microsoft's marketplace, where cobrowser is not listed. Download `cobrowser-<version>.vsix` from the [latest release](https://github.com/trevin-lee/cobrowser/releases/latest) and install it:
 
 ```bash
-# Cursor
-cursor --install-extension cobrowser-<version>.vsix
-# VS Code
 code --install-extension cobrowser-<version>.vsix
 ```
 
-To update later, install the newer release the same way, then quit and reopen the editor.
+or with the **Extensions: Install from VSIX…** command. To update, install the newer release the same way.
 
-Or use the editor's **Extensions: Install from VSIX…** command. Then reload the window and run **Cobrowser: Open Browser Panel** from the Command Palette.
+After installing or updating, quit and reopen the editor, then run **Cobrowser: Open Browser Panel** from the Command Palette.
 
 No browser setup required — the companion app (a pinned Electron, ~120 MB) downloads on first run (see [Requirements](#requirements)).
 
@@ -202,7 +201,7 @@ Scripts: `npm run watch` (rebuild on change), `npm run typecheck`.
 
 ### Releasing
 
-`npm run release` bumps the version in `package.json` and both add-on manifests (they always match) and installs the build into your editors. Add the version's entry to `CHANGELOG.md`, commit, then tag and push: `git tag vX.Y.Z && git push origin main vX.Y.Z`. The Release workflow checks that the versions match the tag, and publishes the release with the CHANGELOG entry as its notes. It attaches the `.vsix`, the Chrome add-on's zip and the Firefox add-on, signed by Mozilla. Firefox signing needs the `AMO_JWT_ISSUER` and `AMO_JWT_SECRET` repository secrets ([firefox-extension/README.md](firefox-extension/README.md#signing)).
+`npm run release` bumps the version in `package.json` and both add-on manifests (they always match) and installs the build into your editors. Add the version's entry to `CHANGELOG.md`, commit, then tag and push: `git tag vX.Y.Z && git push origin main vX.Y.Z`. The Release workflow checks that the versions match the tag, and publishes the release with the CHANGELOG entry as its notes. It attaches the `.vsix`, the Chrome add-on's zip and the Firefox add-on, signed by Mozilla, and publishes the `.vsix` to Open VSX. Firefox signing needs the `AMO_JWT_ISSUER` and `AMO_JWT_SECRET` repository secrets ([firefox-extension/README.md](firefox-extension/README.md#signing)), Open VSX an `OVSX_PAT` access token for the `trevin-lee` namespace. A job without its secret is skipped with a warning; run the workflow by hand with the tag to fill it in.
 
 ## Design decisions worth knowing
 

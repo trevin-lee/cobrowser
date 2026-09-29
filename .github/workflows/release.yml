@@ -5,6 +5,7 @@ name: Release
 #   - cobrowser-bridge-chrome-<version>.zip       the Chrome bridge (loaded unpacked)
 #   - cobrowser-bridge-firefox-<version>.xpi      the Firefox bridge, signed by Mozilla
 #   - firefox-updates.json                        where installed Firefox add-ons look for updates
+# and publishes the .vsix to Open VSX (where Cursor and VSCodium install extensions from).
 #
 # Cutting one: bump package.json and both add-on manifests to the same version (npm run
 # release does it), add its CHANGELOG entry, then `git tag vX.Y.Z && git push origin main vX.Y.Z`.
@@ -12,7 +13,9 @@ name: Release
 # Firefox signing needs two repository secrets, from
 # https://addons.mozilla.org/developers/addon/api/key/ (the account that owns the add-on):
 #   AMO_JWT_ISSUER, AMO_JWT_SECRET
-# Without them the release is still made, and the run warns that Firefox was skipped. Run this
+# Open VSX publishing needs an access token from https://open-vsx.org (profile → Settings →
+# Access Tokens) of an account in the publisher's namespace: OVSX_PAT.
+# Without these the release is still made, and the run warns about what it skipped. Run this
 # workflow by hand with a tag to fill in a release afterwards.
 on:
   push:
@@ -128,3 +131,41 @@ jobs:
             console.log(JSON.stringify({ addons: { [id]: { updates: [update] } } }, null, 2));
           ' "$TAG" "$GITHUB_REPOSITORY" "$xpi" > firefox-updates.json
           gh release upload "$TAG" "$xpi" firefox-updates.json --clobber
+
+  openvsx:
+    name: Publish to Open VSX
+    needs: release
+    runs-on: ubuntu-latest
+    env:
+      OVSX_PAT: ${{ secrets.OVSX_PAT }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Open VSX token
+        id: creds
+        run: |
+          if [ -n "$OVSX_PAT" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning title=Not published to Open VSX::Set the OVSX_PAT repository secret, then run this workflow by hand with tag $TAG."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-node@v4
+        if: steps.creds.outputs.ok == 'true'
+        with:
+          node-version: 22
+
+      # The .vsix attached to the release, not a rebuild: what Open VSX serves is exactly what
+      # the release carries. A version already there is left alone (Open VSX refuses repeats).
+      - name: Publish the release's .vsix
+        if: steps.creds.outputs.ok == 'true'
+        run: |
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p '*.vsix' -D "$RUNNER_TEMP/vsix"
+          vsix="$(ls "$RUNNER_TEMP"/vsix/*.vsix)"
+          read -r ns name version < <(unzip -p "$vsix" extension/package.json | node -e 'const p = JSON.parse(require("fs").readFileSync(0, "utf8")); console.log(p.publisher, p.name, p.version)')
+          if curl -sf -o /dev/null "https://open-vsx.org/api/$ns/$name/$version"; then
+            echo "$ns.$name $version is already on Open VSX"
+            exit 0
+          fi
+          npx --yes ovsx@1 verify-pat "$ns" -p "$OVSX_PAT"
+          npx --yes ovsx@1 publish "$vsix" -p "$OVSX_PAT"
