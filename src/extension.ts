@@ -10,7 +10,7 @@ import { BrowserPanel } from './webview/BrowserPanel';
 import { SessionTreeProvider } from './webview/SessionTreeProvider';
 import { writeClientConfigs } from './clients/writeClientConfigs';
 import { snippetFor, type OtherClient } from './clients/agentConfigs';
-import { daemonToken, deregister, ensureDaemon, register } from './daemon/client';
+import { daemonToken, deregister, ensureDaemon, register, registrationState } from './daemon/client';
 import { DEFAULT_DAEMON_PORT, DEV_DAEMON_PORT, bridgeEndpointUrl } from './daemon/protocol';
 import { AppConnection, readAppState, type AppState } from './app/AppClient';
 import { ensureApp, electronExecutable } from './app/ensureApp';
@@ -404,13 +404,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       didChange,
       lm.registerMcpServerDefinitionProvider('cobrowser.mcp', {
         onDidChangeMcpServerDefinitions: didChange.event,
-        // The DAEMON's endpoint, not this window's: VS Code's agent gets the same shared,
-        // workspace-routed surface every other client sees.
+        // The DAEMON's endpoint, not this window's. This definition belongs to this window, so
+        // it carries this workspace's own token, as Claude Code's entry does: VS Code's agent
+        // here drives this folder's browser and uses this folder's logins, and no other's. A
+        // window without a folder has no workspace, so its agent is unscoped.
         provideMcpServerDefinitions: () => [
           new McpHttpDef(
             'Cobrowser',
             vscode.Uri.parse(`http://127.0.0.1:${daemonPort}/mcp`),
-            { Authorization: `Bearer ${daemonToken(undefined, dev)}` },
+            { Authorization: `Bearer ${vscode.workspace.workspaceFolders?.length ? token : daemonToken(undefined, dev)}` },
             context.extension.packageJSON.version,
           ),
         ],
@@ -443,6 +445,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       // Hand the port + id to deactivate(), which must unregister before the window goes.
       registeredWith = { port: daemonPort, id, dev };
       context.subscriptions.push({ dispose: () => void deregister(daemonPort, id, dev) });
+      // The daemon forgets every window when it restarts (an update, a crash). Notice and
+      // register again, starting it if it is gone, so agents keep reaching this workspace.
+      let checking = false;
+      const keepRegistered = setInterval(() => {
+        if (checking) return;
+        checking = true;
+        void (async () => {
+          const state = await registrationState(daemonPort, id, dev);
+          if (state === 'ok') return;
+          log(state === 'down' ? 'The cobrowser daemon stopped; starting it again.' : 'The cobrowser daemon restarted; registering this workspace again.');
+          if (state === 'down' && !(await ensureDaemon({ port: daemonPort, version: extensionVersion(context), daemonScript, log, dev }))) return;
+          await registerWithDaemon();
+        })().finally(() => (checking = false));
+      }, 15000);
+      context.subscriptions.push({ dispose: () => clearInterval(keepRegistered) });
     } else {
       log('No workspace folder open — this window has no browser to offer the daemon.');
     }
@@ -503,7 +520,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         description: c.name === current ? 'currently bound' : undefined,
         detail: `container ${c.userContextId} in profile ${c.profile}`,
       }));
-      items.push({ label: '$(circle-slash) Unbind', detail: 'Hide the bridge_* tools in this workspace' });
+      items.push({ label: '$(circle-slash) Unbind', detail: "Stop this workspace's agent reaching your own browser" });
       const picked = await vscode.window.showQuickPick(items, {
         title: replacing ? `Bind this workspace to one Firefox container (replaces the Chrome tab group "${replacing}")` : 'Bind this workspace to one Firefox container',
         placeHolder: containers.length
@@ -540,7 +557,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       void vscode.window.showInformationMessage(
         next.trim()
           ? `Cobrowser: bound to Chrome tab group "${next.trim()}"${replacing ? ` instead of the Firefox container "${replacing}"` : ''}. If the extension is not connected yet, run "Cobrowser: Copy Bridge URL" and paste it into its popup.`
-          : 'Cobrowser: Chrome tab group unbound for this workspace.',
+          : `Cobrowser: this workspace is no longer bound to ${replacing ? `the Firefox container "${replacing}"` : 'a Chrome tab group'}; its agent cannot reach your own browser.`,
       );
     }),
     vscode.commands.registerCommand('cobrowser.enablePasskeys', async () => {
@@ -782,7 +799,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     void getSession();
   }
 
-  log(`Cobrowser activated. MCP endpoint: http://127.0.0.1:${mcp.port}/mcp`);
+  log(`Cobrowser activated. Agents connect to the daemon at http://127.0.0.1:${daemonPort}/mcp; this window serves it at an internal port (${mcp.port}).`);
 }
 
 export async function deactivate(): Promise<void> {

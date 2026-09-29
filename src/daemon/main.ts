@@ -88,7 +88,31 @@ const zen = new ZenHub(
 // ---------------------------------------------------------------------------------------
 
 
-/** The tool surface exactly as a window publishes it. */
+/**
+ * The last tool list a window published, saved beside the token. A client reads the list once,
+ * when it connects: one that connects before its window registers (the daemon just restarted,
+ * or the folder is not open yet) still gets every tool from here, and a call made once the
+ * window is up simply works, with no reconnect.
+ */
+const TOOLS_FILE = path.join(path.dirname(TOKEN_FILE), path.basename(TOKEN_FILE).replace(/token$/, 'tools.json'));
+function savedTools(): Tool[] {
+  try {
+    return (JSON.parse(fs.readFileSync(TOOLS_FILE, 'utf8')) as { tools?: Tool[] }).tools ?? [];
+  } catch {
+    return [];
+  }
+}
+function saveTools(tools: Tool[]): void {
+  const next = JSON.stringify({ version: VERSION, tools });
+  try {
+    if (fs.existsSync(TOOLS_FILE) && fs.readFileSync(TOOLS_FILE, 'utf8') === next) return;
+    fs.writeFileSync(TOOLS_FILE, next, { mode: 0o600 });
+  } catch {
+    /* best effort: without it, an early client sees fewer tools until it reconnects */
+  }
+}
+
+/** The tool surface exactly as a window publishes it (or last published it). */
 let toolsInFlight: Promise<Tool[]> | undefined;
 async function rawTools(): Promise<Tool[]> {
   if (toolCache) return toolCache;
@@ -104,12 +128,13 @@ async function fetchRawTools(): Promise<Tool[]> {
     try {
       const result = (await callUpstream(reg, 'tools/list', {}, { version: VERSION })) as { tools?: Tool[] };
       toolCache = result.tools ?? [];
+      saveTools(toolCache);
       return toolCache;
     } catch (e) {
       log(`tools/list failed against ${reg.name}: ${String(e)}`);
     }
   }
-  return [];
+  return savedTools(); // not cached: the next window to register publishes the live list
 }
 
 /**
@@ -154,8 +179,9 @@ function authenticate(req: http.IncomingMessage): Caller | undefined {
  */
 function buildOfflineServer(name: string): Server {
   const server = new Server({ name: 'cobrowser', version: VERSION }, { capabilities: { tools: {} } });
-  const explain = `The editor window for the "${name}" workspace is not running, so its browser cannot be reached. Open that folder in your editor (or reload its window) and try again.`;
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [listWorkspacesTool(true)] }));
+  const explain = `The editor window for the "${name}" workspace is not running, so its browser cannot be reached. Open that folder in your editor (or reload its window); once the window is up, call the tool again. There is no need to reconnect.`;
+  // Every tool, not just list_workspaces: the client keeps this list for the whole session.
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [listWorkspacesTool(true), ...(await rawTools()), ...ZEN_TOOLS] }));
   server.setRequestHandler(CallToolRequestSchema, async () => ({
     content: [{ type: 'text' as const, text: explain }],
     isError: true,

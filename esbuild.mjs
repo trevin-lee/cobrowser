@@ -24,6 +24,15 @@ const targets = [
     external: ['vscode'],
   },
   {
+    // Uninstall hook (package.json vscode:uninstall): plain Node, no editor API.
+    ...common,
+    entryPoints: ['src/uninstall.ts'],
+    outfile: 'dist/uninstall.js',
+    platform: 'node',
+    format: 'cjs',
+    target: 'node20',
+  },
+  {
     // Daemon: a standalone Node process (spawned detached), so it must be its own bundle
     // rather than part of the extension host's.
     ...common,

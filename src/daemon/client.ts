@@ -241,6 +241,14 @@ export async function register(port: number, reg: Registration, log: Log, dev = 
   log(ok ? `Registered "${reg.name}" with the cobrowser daemon.` : 'Could not register with the cobrowser daemon.');
 }
 
+/** Whether the daemon still has this window's workspace: it forgets every window when it
+ *  restarts (an update, a crash), and a window must then register again. */
+export async function registrationState(port: number, id: string, dev = false): Promise<'ok' | 'missing' | 'down'> {
+  const h = await health(port, daemonToken(undefined, dev));
+  if (!h) return 'down';
+  return h.workspaces.some((w) => w.id === id) ? 'ok' : 'missing';
+}
+
 export async function deregister(port: number, id: string, dev = false): Promise<void> {
   await post(port, daemonToken(undefined, dev), '/deregister', { id });
 }

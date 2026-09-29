@@ -59,7 +59,7 @@ export const ZEN_TOOLS: Tool[] = [
   {
     name: 'bridge_list_containers',
     description:
-      'List the scopes available in the connected browser — Firefox containers, or Chrome tab groups plus "profile" (names only; this does NOT grant access to their tabs). Use it to tell the human what they could bind this workspace to.',
+      'List the scopes available in the connected browser — Firefox containers, or Chrome tab groups plus "profile" (names only; this does NOT grant access to their tabs). It works once the workspace is bound and the add-on is connected: use it to tell the human what else they could bind this workspace to.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
