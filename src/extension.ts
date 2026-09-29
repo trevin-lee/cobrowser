@@ -239,6 +239,39 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
   };
 
+  // Start the app (or find it running). It outlives this window.
+  const startApp = () =>
+    vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: 'Cobrowser: starting browser' },
+      (progress) =>
+        ensureApp({
+          appMain: path.join(context.extensionUri.fsPath, 'dist', 'app', 'main.js'),
+          cacheDir: path.join(context.globalStorageUri.fsPath, 'electron'),
+          devElectron: path.join(context.extensionUri.fsPath, 'app', 'node_modules', 'electron', 'dist', 'Electron.app', 'Contents', 'MacOS', 'Electron'),
+          version: extensionVersion(context),
+          iconPath: vscode.Uri.joinPath(context.extensionUri, 'media', 'trayTemplate.png').fsPath,
+          appIcon: vscode.Uri.joinPath(context.extensionUri, 'media', 'cobrowser.icns').fsPath,
+          onProgress: (d, t) => progress.report({ message: t ? `downloading Electron ${Math.round(d / 1e6)} / ${Math.round(t / 1e6)} MB` : `downloading Electron ${Math.round(d / 1e6)} MB` }),
+          log,
+          onSigningNotice: (level, message) => {
+            log(message);
+            void (level === 'warning' ? vscode.window.showWarningMessage(`Cobrowser: ${message}`) : vscode.window.showInformationMessage(`Cobrowser: ${message}`));
+          },
+        }),
+    );
+
+  // The vault commands talk to the app as this workspace without opening its browser: the
+  // session's connection when there is one, or a short-lived one that opens no tabs.
+  const withApp = async <T>(fn: (conn: AppConnection) => Promise<T>): Promise<T> => {
+    if (session && BrowserPanel.app) return fn(BrowserPanel.app);
+    const { conn } = await AppConnection.connect(await startApp(), workspaceId);
+    try {
+      return await fn(conn);
+    } finally {
+      conn.close();
+    }
+  };
+
   // Connect to the app only when first needed (a tool call or a panel opening). The app
   // itself is started on demand and outlives this window.
   const getSession = async (): Promise<BrowserSession> => {
@@ -251,24 +284,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           .map((t) => (typeof t === 'string' ? { url: t } : t)); // pre-0.1.25 saves were bare URLs
         BrowserPanel.planColumns(savedTabs.map((t) => t.col));
 
-        const state = await vscode.window.withProgress(
-          { location: vscode.ProgressLocation.Notification, title: 'Cobrowser: starting browser' },
-          (progress) =>
-            ensureApp({
-              appMain: path.join(context.extensionUri.fsPath, 'dist', 'app', 'main.js'),
-              cacheDir: path.join(context.globalStorageUri.fsPath, 'electron'),
-              devElectron: path.join(context.extensionUri.fsPath, 'app', 'node_modules', 'electron', 'dist', 'Electron.app', 'Contents', 'MacOS', 'Electron'),
-              version: extensionVersion(context),
-              iconPath: vscode.Uri.joinPath(context.extensionUri, 'media', 'trayTemplate.png').fsPath,
-              appIcon: vscode.Uri.joinPath(context.extensionUri, 'media', 'cobrowser.icns').fsPath,
-              onProgress: (d, t) => progress.report({ message: t ? `downloading Electron ${Math.round(d / 1e6)} / ${Math.round(t / 1e6)} MB` : `downloading Electron ${Math.round(d / 1e6)} MB` }),
-              log,
-              onSigningNotice: (level, message) => {
-                log(message);
-                void (level === 'warning' ? vscode.window.showWarningMessage(`Cobrowser: ${message}`) : vscode.window.showInformationMessage(`Cobrowser: ${message}`));
-              },
-            }),
-        );
+        const state = await startApp();
         const { conn, tabs } = await AppConnection.connect(state, workspaceId);
         BrowserPanel.app = conn;
         conn.onClose = () => log('App connection closed.');
@@ -509,17 +525,33 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (username === undefined) return;
       const password = await vscode.window.showInputBox({ prompt: `Password for ${username || site}`, password: true });
       if (!password) return;
-      await getSession();
-      await BrowserPanel.app!.vaultAdd(site, username, password);
-      void vscode.window.showInformationMessage(`Cobrowser: saved a login for ${site}, usable in this workspace. Change its scope from the menu-bar Logins window.`);
+      try {
+        const { replaced } = await withApp((c) => c.vaultAdd(site, username, password));
+        void vscode.window.showInformationMessage(
+          replaced
+            ? `Cobrowser: replaced the saved password for ${username || 'the login'} on ${site}; it is now usable in this workspace too.`
+            : `Cobrowser: saved a login for ${site}, usable in this workspace. Change where it can be used from the menu-bar Logins window.`,
+        );
+      } catch (err) {
+        void vscode.window.showErrorMessage(`Cobrowser: could not save the login — ${String((err as Error).message ?? err)}`);
+      }
     }),
     vscode.commands.registerCommand('cobrowser.importLoginsCsv', async () => {
       const picked = await vscode.window.showOpenDialog({ canSelectMany: false, filters: { CSV: ['csv'] }, title: 'Import logins (Apple Passwords / Bitwarden / Chrome CSV export)' });
       if (!picked?.[0]) return;
       const csv = Buffer.from(await vscode.workspace.fs.readFile(picked[0])).toString('utf8');
-      await getSession();
-      const n = await BrowserPanel.app!.vaultImport(csv);
-      const del = await vscode.window.showInformationMessage(`Cobrowser: imported ${n} login(s), usable in this workspace. The CSV is plaintext — delete it?`, 'Delete the CSV', 'Keep');
+      let r: { count: number; added: number; replaced: number };
+      try {
+        r = await withApp((c) => c.vaultImportDetailed(csv));
+      } catch (err) {
+        void vscode.window.showErrorMessage(`Cobrowser: could not import logins — ${String((err as Error).message ?? err)}`);
+        return;
+      }
+      const del = await vscode.window.showInformationMessage(
+        `Cobrowser: imported ${r.count} login${r.count === 1 ? '' : 's'} (${r.added} new, ${r.replaced} replaced), usable in this workspace. The CSV holds the passwords in plain text — delete it?`,
+        'Delete the CSV',
+        'Keep',
+      );
       if (del === 'Delete the CSV') await vscode.workspace.fs.delete(picked[0]);
     }),
     vscode.commands.registerCommand('cobrowser.disablePasskeys', async () => {
@@ -543,9 +575,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
     }),
     vscode.commands.registerCommand('cobrowser.exportLoginsCsv', async () => {
-      await getSession();
       try {
-        const r = await BrowserPanel.app!.vaultExport();
+        const r = await withApp((c) => c.vaultExport());
         if (r.error) throw new Error(r.error);
         if (r.ok) void vscode.window.showInformationMessage(`Cobrowser: exported ${r.count} login(s) to ${r.file}. The file holds the passwords in plain text — delete it once it is imported elsewhere.`);
       } catch (err) {
@@ -553,8 +584,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
     }),
     vscode.commands.registerCommand('cobrowser.lockVault', async () => {
-      await BrowserPanel.app?.vaultLock();
-      void vscode.window.showInformationMessage('Cobrowser: vault locked.');
+      // The vault is only ever unlocked in the running app's memory: no app, nothing to lock.
+      const st = readAppState();
+      if (!st) {
+        void vscode.window.showInformationMessage('Cobrowser: the vault is locked (the browser app is not running).');
+        return;
+      }
+      try {
+        if (session && BrowserPanel.app) await BrowserPanel.app.vaultLock();
+        else {
+          const { conn } = await AppConnection.connect(st, workspaceId);
+          try { await conn.vaultLock(); } finally { conn.close(); }
+        }
+        void vscode.window.showInformationMessage('Cobrowser: vault locked. Using a login asks for Touch ID again.');
+      } catch (err) {
+        void vscode.window.showErrorMessage(`Cobrowser: could not lock the vault — ${String((err as Error).message ?? err)}`);
+      }
     }),
     vscode.commands.registerCommand('cobrowser.restartBrowser', async () => {
       await disposeSession(context);
