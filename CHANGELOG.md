@@ -2,6 +2,21 @@
 
 Release notes for earlier versions are on the [GitHub releases page](https://github.com/trevin-lee/cobrowser/releases).
 
+## 0.9.10
+
+### Fixed
+
+- **The address bar** loads `localhost:3000`, IP addresses and `name:port` over http (development servers do not speak HTTPS, so these failed), searches when you type words, and a page that cannot load shows why instead of a blank tab.
+- **An agent keeps its tools whatever order things start in.** One that connected before its folder's window was running, or while the daemon restarted after an update, saw only `list_workspaces` until it reconnected; it now gets every tool, and calls work once the window is up. Windows register again on their own when the daemon restarts.
+- **Uninstalling takes cobrowser out of Claude Code (every project) and Cursor**, instead of leaving a failing server in each.
+- **"Allow once" when a site has several logins.** Picking one allowed it in the workspace from then on; it is now once, unless you tick "Allow in this workspace from now on".
+- **Exporting and importing logins back restores their workspaces exactly**; the workspaces chosen for the import apply to rows that did not come from cobrowser.
+
+### Changed
+
+- **VS Code's agent is scoped to its window's workspace**, like Claude Code: it drives that folder's browser and uses that folder's logins only.
+- The README says plainly that unscoped clients (Cursor, and anything added with Connect Another Agent) reach every workspace, where the tokens are kept, and what a window without a folder, or a multi-root workspace, gets.
+
 ## 0.9.9
 
 ### Added

@@ -60,18 +60,24 @@ daemon routes each call to the window that owns the workspace.
   any other agent ─┘   registry + proxy       └─ window B → browser + profile B
 ```
 
-A Claude Code session is **bound to its workspace** by that workspace's own token: its tools act
-on that folder's browser only and take no `workspace` argument, enforced by the credential rather
-than by trusting what the agent asks for. VS Code's agent and Cursor use one unscoped entry, so
-their tools take a required `workspace` argument — the folder name, or the full path when names
-collide — and `list_workspaces` shows what is open. Either way, routing is explicit, so a
-long-running agent never lands on another workspace's browser because focus moved.
+A Claude Code session, and VS Code's agent, are **bound to their workspace** by that workspace's
+own token: their tools act on that folder's browser only and take no `workspace` argument,
+enforced by the credential rather than by trusting what the agent asks for. Cursor, and any
+client added with Connect Another Agent, use one unscoped entry, so their tools take a required
+`workspace` argument (the folder name, or the full path when names collide) and
+`list_workspaces` shows what is open. Either way, routing is explicit, so a long-running agent
+never lands on another workspace's browser because focus moved.
+
+An agent keeps its tools whatever order things start in. One that connects before its folder's
+window is running (or while the daemon restarts after an update) still gets every tool, and a
+call made once the window is up works without reconnecting; windows register again on their own
+when the daemon restarts.
 
 cobrowser registers itself with each client through that client's own interface, the way MCP servers that come with an editor extension are meant to be:
 
 | Client | How cobrowser registers |
 |---|---|
-| **VS Code** agent | VS Code's extension API (`registerMcpServerDefinitionProvider`), unscoped |
+| **VS Code** agent | VS Code's extension API (`registerMcpServerDefinitionProvider`), with the window's workspace token |
 | **Cursor** | Cursor's extension API (`vscode.cursor.mcp.registerServer`), unscoped, when cobrowser runs in Cursor; a Cursor without that API gets the entry in `~/.cursor/mcp.json` |
 | **Claude Code** | Claude Code's CLI, `claude mcp add --scope local` in the workspace folder, with that workspace's token; without the CLI, the same entry is written to `~/.claude.json` |
 | **Anything else** (Claude Desktop, Codex, Windsurf, …) | **Cobrowser: Connect Another Agent** shows the entry for the client you pick (Claude Desktop reaches the daemon through `mcp-remote`, since it only starts local programs), to add to its config |
@@ -86,7 +92,7 @@ removed on first run.
 
 ## Where you watch it
 
-Every tab is an editor tab in a dedicated pane, streamed from the app at up to 60 fps. The **Cobrowser** icon in the Activity Bar lists this workspace's tabs (a filled dot marks the one the agent is working in); clicking one shows it. There is no OS window to show — the page is rendered offscreen — so prompts that need one (an extension's toolbar popup) cannot appear. Passkeys fail fast to a password by default (`cobrowser.autoFallbackPasskeys`) until you enable them.
+Every tab is an editor tab in a dedicated pane, streamed from the app at up to 60 fps. The address bar takes an address or words to search; `localhost`, IP addresses and `name:port` load over http, as development servers expect, and a page that cannot load says why. The **Cobrowser** icon in the Activity Bar lists this workspace's tabs (a filled dot marks the one the agent is working in); clicking one shows it. There is no OS window to show — the page is rendered offscreen — so prompts that need one (an extension's toolbar popup) cannot appear. Passkeys fail fast to a password by default (`cobrowser.autoFallbackPasskeys`) until you enable them.
 
 ### How it identifies itself
 
@@ -98,7 +104,7 @@ The app keeps a local vault (encrypted through the OS keychain, unlocked with To
 
 Every vault check is Touch ID, or your Mac's password when Touch ID is out of reach (a closed lid, a desktop without Apple's Touch ID keyboard), from the same macOS prompt Safari uses before it shows a password. Unlocking asks once per app session; every change, and every time a password is shown or exported, asks again. **Export CSV…**, or **Cobrowser: Export Logins to CSV**, writes every login to a CSV other password managers import. Each login's note records the workspaces it may be used in, so importing the file back into cobrowser restores them. The file is plain text, so delete it once it is imported. **Cobrowser: Lock Vault** locks the vault until a login is next needed.
 
-When an agent needs a login its workspace is not scoped for, it calls `request_credential` with the site and a one-line reason. You get a native dialog naming the workspace and the login: **Allow in this workspace** adds the workspace to the login's scope, **Allow once** permits a single fill, **Deny** does nothing. The agent only learns the outcome, and a denial is indistinguishable from there being no such login, so a workspace still cannot enumerate what others hold.
+When an agent needs a login its workspace is not scoped for, it calls `request_credential` with the site and a one-line reason. You get a native dialog naming the workspace and the login: **Allow in this workspace** adds the workspace to the login's scope, **Allow once** permits a single fill, **Deny** does nothing. With several logins for the site, you pick one, and it is allowed once unless you tick **Allow in this workspace from now on**. The agent only learns the outcome, and a denial is indistinguishable from there being no such login, so a workspace's agent still cannot enumerate what others hold. That boundary holds for agents scoped to a workspace (Claude Code, VS Code's agent). An unscoped client (Cursor, or one added with Connect Another Agent) names a workspace in each call, so it reaches every workspace's browser and logins: connect those only if you would trust them with all of it.
 
 ### Popups, dialogs, uploads and downloads
 
@@ -225,6 +231,7 @@ Scripts: `npm run watch` (rebuild on change), `npm run typecheck`.
 ## Limits
 
 - **macOS only.** The pinned Electron is downloaded for macOS (arm64 and x64).
+- **A browser per folder.** A window without a folder gets a panel, but no agent can reach its browser and it cannot be bound to your own browser. In a multi-root workspace, the first folder is the one agents reach.
 - **The agent's tools stop at embedded frames.** A video player or widget embedded from another site is listed in `take_snapshot` as `[frame]`, and the agent hands it to you: your own clicks and typing reach inside it, the agent's do not.
 - **No accessibility tree.** `take_snapshot` tags interactive DOM elements with `uid`s rather than walking the accessibility tree.
 - **`evaluate_script` runs arbitrary JavaScript in the page.** It is the escape hatch, and it is not subject to the click and fill rule below.
@@ -234,16 +241,15 @@ Scripts: `npm run watch` (rebuild on change), `npm run typecheck`.
 
 ## Security notes
 
-Each workspace's browser profile holds live session cookies — treat it as credentials. Profiles live in the app's data folder (`~/Library/Application Support/cobrowser`), outside every repo. The vault is encrypted with a key in your login keychain and unlocks with Touch ID or your Mac's password; every change, and showing or exporting passwords, asks again every time, and a stored password is never sent back out to the editor or the agent. The daemon binds `127.0.0.1` only and is gated by tokens stored with owner-only permissions under `~/.cobrowser`: a daemon-wide one for unscoped clients and one per workspace for scoped sessions. It also rejects any request whose `Host` header is not a loopback address. No remote debugging port is ever opened, so no other process can attach to the browser. Seed each profile only with the accounts your automation needs; don't put high-value logins (primary email, bank) in an agent-driven browser.
+Each workspace's browser profile holds live session cookies — treat it as credentials. Profiles live in the app's data folder (`~/Library/Application Support/cobrowser`), outside every repo. The vault is encrypted with a key in your login keychain and unlocks with Touch ID or your Mac's password; every change, and showing or exporting passwords, asks again every time, and a stored password is never sent back out to the editor or the agent. The daemon binds `127.0.0.1` only and is gated by tokens stored with owner-only permissions under `~/.cobrowser`: a daemon-wide one for unscoped clients (and the bridge extensions) and one per workspace for scoped sessions. Copies also sit in each agent's own config (`~/.claude.json`, and whatever you connect by hand), with that app's file permissions. It also rejects any request whose `Host` header is not a loopback address. No remote debugging port is ever opened, so no other process can attach to the browser. Seed each profile only with the accounts your automation needs; don't put high-value logins (primary email, bank) in an agent-driven browser.
 
 ## Uninstall
 
-Quit the app (menu-bar icon → Quit), then uninstall the extension from the Extensions view, or with `code --uninstall-extension trevin-lee.cobrowser` (`cursor`, `codium`). What it leaves behind, all of which is safe to delete:
+Quit the app (menu-bar icon → Quit), then uninstall the extension from the Extensions view, or with `code --uninstall-extension trevin-lee.cobrowser` (`cursor`, `codium`). Once the editor restarts, cobrowser takes its entries out of Claude Code (every project) and Cursor. Entries you added with Connect Another Agent are yours to remove from those apps. What it leaves behind, all of which is safe to delete:
 
 - `~/Library/Application Support/cobrowser`: every workspace's browser profile (cookies, sign-ins), the vault (`vault.bin`), site permissions and the app's log.
 - `~/.cobrowser`: the daemon's and app's tokens and state, and the Chrome bridge folder.
 - `~/Library/Application Support/Code/User/globalStorage/trevin-lee.cobrowser` (Cursor and VSCodium: the same path under `Cursor` or `VSCodium`): the downloaded browser.
-- The `cobrowser` entries in `~/.claude.json` and `~/.cursor/mcp.json`.
 - `~/Library/Application Support/Mozilla/ManagedStorage/cobrowser-bridge@trevin.dev.json`, if you used the Firefox bridge; remove the extensions from Chrome and Firefox themselves.
 - In Keychain Access: the **cobrowser Safe Storage** item (the vault's key), and any passkeys you created in cobrowser.
 - If you enabled passkeys: the provisioning profile Xcode keeps for your cobrowser identifier in `~/Library/Developer/Xcode/UserData/Provisioning Profiles`, and the identifier itself (and this Mac, if nothing else uses it) under Certificates, Identifiers & Profiles at developer.apple.com.

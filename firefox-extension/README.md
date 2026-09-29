@@ -95,7 +95,8 @@ The agent will not, unless you tell it to:
 - click a button that pays or places an order (`allowPayment`);
 - type a password, one-time code, card number or security code (`allowCredentials`).
 
-`bridge_close_tab` closes only tabs the agent opened with `bridge_new_tab`; `bridge_list_tabs`
+`bridge_close_tab` closes tabs the agent opened with `bridge_new_tab`, and one of yours only
+when you asked (the agent passes `allowHumanTab`); `bridge_list_tabs`
 marks them `openedBy: "agent"`.
 
 ## You can see what it touches
