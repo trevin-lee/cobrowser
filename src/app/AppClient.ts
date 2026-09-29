@@ -87,14 +87,17 @@ export interface RequestEntry {
   pageUrl: string;
 }
 
-/** Overridable with COBROWSER_STATE_DIR — the app honours the same variable — so a test can
- *  run a second instance and never reach the user's real app. */
-export const STATE_FILE = path.join(process.env.COBROWSER_STATE_DIR || path.join(os.homedir(), '.cobrowser'), 'app.json');
+/** Where the running app says how to reach it. Overridable with COBROWSER_STATE_DIR (the app
+ *  honours the same variable), so a test or the development host runs its own app and never
+ *  reaches the user's. Read on every call: the development host sets it after this loads. */
+export function stateFile(): string {
+  return path.join(process.env.COBROWSER_STATE_DIR || path.join(os.homedir(), '.cobrowser'), 'app.json');
+}
 
 /** The running app's connection details, or undefined if it isn't running. */
 export function readAppState(): AppState | undefined {
   try {
-    const s = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')) as AppState;
+    const s = JSON.parse(fs.readFileSync(stateFile(), 'utf8')) as AppState;
     process.kill(s.pid, 0); // throws when the pid is gone → the file is stale
     return s;
   } catch {
@@ -136,13 +139,15 @@ export class AppConnection {
     ws.on('error', () => undefined); // surfaced through 'close'
   }
 
-  static async connect(state: AppState, workspace: string): Promise<{ conn: AppConnection; tabs: AppTabInfo[] }> {
+  /** `forgotten`: the human forgot this workspace's browser since it last connected, so the
+   *  editor should drop the tabs it saved for it rather than reopen them. */
+  static async connect(state: AppState, workspace: string): Promise<{ conn: AppConnection; tabs: AppTabInfo[]; forgotten: boolean }> {
     const ws = new WebSocket(`ws://127.0.0.1:${state.wsPort}/?token=${state.token}`);
     await new Promise<void>((resolve, reject) => {
       ws.once('open', () => resolve());
       ws.once('error', reject);
     });
-    const hello = await new Promise<{ version: string; tabs: AppTabInfo[] }>((resolve, reject) => {
+    const hello = await new Promise<{ version: string; tabs: AppTabInfo[]; forgotten?: boolean }>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('app did not answer hello')), 10000);
       ws.once('message', (data) => {
         clearTimeout(timer);
@@ -150,7 +155,7 @@ export class AppConnection {
       });
       ws.send(JSON.stringify({ type: 'hello', workspace }));
     });
-    return { conn: new AppConnection(ws, hello), tabs: hello.tabs };
+    return { conn: new AppConnection(ws, hello), tabs: hello.tabs, forgotten: hello.forgotten === true };
   }
 
   private send(m: Record<string, unknown>): void {
@@ -253,6 +258,10 @@ export class AppConnection {
   }
   async vaultLock(): Promise<void> {
     await this.request({ type: 'vault.lock' });
+  }
+  /** Bring up the app's Logins window, where logins are viewed, edited and scoped. */
+  async vaultOpenWindow(): Promise<void> {
+    await this.request({ type: 'vault.open' });
   }
   /** Ask the human (native dialog) to let this workspace use a login it is not scoped for. */
   async vaultRequest(site: string, username: string | undefined, reason: string | undefined): Promise<{ granted: 'workspace' | 'once' | 'already' | 'denied'; host?: string; username?: string; error?: string }> {

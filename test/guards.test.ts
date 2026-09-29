@@ -87,3 +87,13 @@ test('throttle and cap constants are present and sane', () => {
   assert.ok(max > min, 'jitter needs a range');
   assert.ok(cap > 0 && cap <= 500, 'a per-session cap must exist and be a real ceiling');
 });
+
+import { humanTabRefusal } from '../src/browser/guards';
+
+test('both add-ons refuse to close a human\'s tab with the shared words, and take the same override', () => {
+  const words = humanTabRefusal(1).needsUserAction;
+  for (const { dir, src: code } of EXTENSIONS) {
+    assert.ok(code.includes(`needsUserAction: '${words}'`), `${dir} says something else`);
+    assert.ok(code.includes("params.allowHumanTab !== true"), `${dir} has no allowHumanTab override`);
+  }
+});

@@ -337,8 +337,8 @@ async function dispatch(conn, method, params) {
     case 'closeTab': {
       await assertInScope(conn, params.tabId);
       await restoreSession();
-      if (!agentTabs.has(params.tabId)) {
-        return { refused: 'not-yours', needsUserAction: 'the human opened this tab; leave it, or ask them to close it', why: 'The agent closes only the tabs it opened.' };
+      if (!agentTabs.has(params.tabId) && params.allowHumanTab !== true) {
+        return { refused: 'human-tab', tab: params.tabId, needsUserAction: 'the human opened this tab: leave it, or re-issue with allowHumanTab: true only if they asked you to close it', why: 'The agent closes the tabs it opened, not the human\'s.' };
       }
       await api.tabs.remove(params.tabId);
       return { closed: params.tabId };

@@ -28,6 +28,8 @@ suite('controls', async (r) => {
     const done = (await s.evaluateScript('() => document.getElementById("feed").textContent')) as string;
     r.check('settle waits until the page stops changing, not just for a moment', settled.settled === true && done.endsWith('Done') && waited >= 900, { waited, done });
     const quick = Date.now();
+    const any = await s.waitFor(['no such text', 'Done'], 5000);
+    r.check('wait_for waits for any of its texts and says which appeared', any.found === 'Done', any);
     const both = await s.waitFor(['Done'], 5000, undefined, { settle: true });
     r.check('text and settle together return promptly on a page already still', both.settled === true && Date.now() - quick < 1500, { ms: Date.now() - quick });
     await sleep(50);

@@ -69,8 +69,8 @@ export const ZEN_TOOLS: Tool[] = [
   },
   {
     name: 'bridge_close_tab',
-    description: "Close a tab you opened with bridge_new_tab (openedBy: 'agent' in bridge_list_tabs). Tabs the human opened are refused: leave those, or ask the human.",
-    inputSchema: { type: 'object', properties: { tabId }, required: ['tabId'] },
+    description: "Close a tab you opened with bridge_new_tab (openedBy: 'agent' in bridge_list_tabs). Tabs the human opened are refused unless you pass allowHumanTab: true, which you do only when they asked you to close that tab.",
+    inputSchema: { type: 'object', properties: { tabId, allowHumanTab: bool }, required: ['tabId'] },
   },
   {
     name: 'bridge_activate_tab',
@@ -211,7 +211,7 @@ async function runZenTool(
       return asJson(note ? { ...listed, addonUpdate: note } : listed);
     }
     case 'bridge_close_tab':
-      return asJson(await hub.call(workspace, 'closeTab', { tabId }));
+      return asJson(await hub.call(workspace, 'closeTab', { tabId, allowHumanTab: args.allowHumanTab === true }));
     case 'bridge_list_containers':
       return asJson(await hub.call(workspace, 'listContainers'));
     case 'bridge_new_tab':

@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import { spawn, execFileSync } from 'node:child_process';
-import { readAppState, STATE_FILE, type AppState } from './AppClient';
+import { readAppState, stateFile, type AppState } from './AppClient';
 import { APP_BUNDLE_ID, readSignedMarker, signElectronForPasskeys, signingExpiry, signingState, unsignForPasskeys } from './signApp';
 import { brandApp, brandedExe, isBranded } from './brandApp';
 
@@ -119,7 +119,7 @@ export async function ensureApp(opts: EnsureAppOptions): Promise<AppState> {
   // window spawned in the same moment. Either is fine when it is this version; an older
   // winner (another window still on an old extension) is told to go, once.
   const state = await waitFor(() => readAppState(), 20000);
-  if (!state) throw new Error(`cobrowser app did not start (no ${STATE_FILE} within 20s)`);
+  if (!state) throw new Error(`cobrowser app did not start (no ${stateFile()} within 20s)`);
   if (state.version !== opts.version && !opts.retried) {
     opts.log(`another window started cobrowser app ${state.version}; replacing it with ${opts.version}.`);
     try { process.kill(state.pid, 'SIGTERM'); } catch { /* gone */ }

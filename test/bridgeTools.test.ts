@@ -97,3 +97,18 @@ test('the hub records the add-on\'s version from its ready message and compares 
   assert.equal(hub.status('/w').version, '1.2.3');
   cur.close(); hub.close(); await new Promise<void>((r) => server.close(() => r()));
 });
+
+test('closing one of the human\'s tabs needs the override, passed through only when given', async () => {
+  const { hub, calls } = fakeHub(() => ({ closed: 3 }));
+  await callZenTool(hub, '/ws', 'bridge_close_tab', { tabId: 3 });
+  await callZenTool(hub, '/ws', 'bridge_close_tab', { tabId: 3, allowHumanTab: true });
+  assert.deepEqual(calls.map((c) => c.params.allowHumanTab), [false, true]);
+});
+
+test('in a workspace that is not bound, a bridge call says how the human binds one', async () => {
+  const server = http.createServer((_q, r) => r.writeHead(404).end());
+  const hub = new ZenHub(() => 't', () => undefined, () => undefined, '1.2.3');
+  hub.attach(server);
+  await assert.rejects(hub.call('/w', 'listTabs'), /not bound.*Bind Chrome Tab Group.*Bind Firefox Container/s);
+  hub.close();
+});

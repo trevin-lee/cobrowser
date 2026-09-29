@@ -3,6 +3,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { BrowserSession } from '../browser/BrowserSession';
 import { BrowserPanel } from '../webview/BrowserPanel';
+import { humanTabRefusal } from '../browser/guards';
 
 type GetSession = () => Promise<BrowserSession>;
 
@@ -80,15 +81,18 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'close_page',
     {
       description:
-        "Close a tab by pageId. Use it routinely: when a task ends, close every tab you opened for it (list_pages marks yours with openedBy: 'agent') so the human's editor is left as you found it. Do not close 'human' tabs unless asked. Refuses to close the last remaining tab.",
-      inputSchema: { pageId: z.string() },
+        "Close a tab by pageId. Use it routinely: when a task ends, close every tab you opened for it (list_pages marks yours with openedBy: 'agent') so the human's editor is left as you found it. Tabs the human opened are refused unless you pass allowHumanTab: true, which you do only when they asked you to close that tab. Refuses to close the last remaining tab.",
+      inputSchema: { pageId: z.string(), allowHumanTab: z.boolean().optional() },
     },
-    async ({ pageId: id }) => {
+    async ({ pageId: id, allowHumanTab }) => {
       const s = await getSession();
+      const pages = await s.run(() => s.listPages());
+      const page = pages.find((p) => p.pageId === id);
+      if (!page) throw new Error(`No open page with id ${id} — list_pages shows the open tabs.`);
+      if (page.openedBy === 'human' && allowHumanTab !== true) return asText(JSON.stringify(humanTabRefusal(id), null, 2));
       // Refuse to close the last tab: for a human, closing the final editor tab
       // intentionally quits the browser, but an agent doing so mid-task would
       // yank the browser out from under itself. Keep at least one tab alive.
-      const pages = await s.run(() => s.listPages());
       if (pages.length <= 1) {
         return asText('refused: cannot close the last remaining tab (open another first)');
       }
@@ -242,7 +246,7 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'wait_for',
     {
       description:
-        'Wait until all given strings appear in the page text, and/or (settle: true) until the page stops changing — no DOM change for quietMs, default 500. Use settle after a click or navigation in a single-page app, so you read the page once it has finished updating rather than a half-rendered one.',
+        'Wait until any of the given strings appears in the page text (the result says which), and/or (settle: true) until the page stops changing — no DOM change for quietMs, default 500. Use settle after a click or navigation in a single-page app, so you read the page once it has finished updating rather than a half-rendered one.',
       inputSchema: { text: z.array(z.string()).optional(), settle: z.boolean().optional(), quietMs: z.number().optional(), timeout: z.number().optional(), pageId },
     },
     async ({ text, settle, quietMs, timeout, pageId: id }) => {
@@ -252,7 +256,7 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
       // No outer run(): waitFor queues each poll itself and frees the queue
       // between polls, so a long wait doesn't freeze human input / other actions.
       const r = await s.waitFor(want, timeout, id, { settle, quietMs });
-      return asText([want.length ? `found: ${want.join(', ')}` : '', r.settled ? 'the page has stopped changing' : ''].filter(Boolean).join('; '));
+      return asText([r.found ? `found: ${r.found}` : '', r.settled ? 'the page has stopped changing' : ''].filter(Boolean).join('; '));
     },
   );
 

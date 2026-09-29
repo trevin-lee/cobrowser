@@ -2,12 +2,9 @@ import * as vscode from 'vscode';
 import type { BrowserSession, PageInfo } from '../browser/BrowserSession';
 
 /**
- * The Activity Bar sidebar: a tree of browser profile(s) and their open tabs.
- *
- * The spike runs a single persistent profile, so today the root is one profile
- * node; the structure leaves room for more later. Each profile's children are
- * its live pages (from `listPages()`), so this is a read-through view of the
- * session — clicking a tab reveals that page's editor panel.
+ * The Activity Bar sidebar: this workspace's browser and its open tabs, read through from the
+ * session. Clicking a tab shows its editor tab, as clicking the editor tab itself would. With
+ * no browser running the tree is empty, so VS Code shows the view's welcome text instead.
  */
 export type TreeNode = ProfileNode | TabNode;
 interface ProfileNode {
@@ -46,9 +43,10 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<TreeNode> {
     }
 
     const p = node.page;
-    // Display-only: no click command. The editor tabs are the real tab bar; making these
-    // clickable duplicated that (buggily) and pulled focus around.
     const item = new vscode.TreeItem(p.title || hostOf(p.url) || 'New tab');
+    // Only brings the page's editor tab forward; the panel's own focus handling does the rest,
+    // exactly as when its editor tab is clicked.
+    item.command = { command: 'cobrowser.showTab', title: 'Show Tab', arguments: [p.pageId] };
     item.description = hostOf(p.url);
     // The row clips a long title; the tooltip carries all of it.
     item.tooltip = [p.title, p.url, p.selected ? 'The agent is working in this tab.' : ''].filter(Boolean).join('\n');
@@ -60,7 +58,7 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<TreeNode> {
 
   async getChildren(node?: TreeNode): Promise<TreeNode[]> {
     if (!node) {
-      return [{ kind: 'profile', label: this.profile.label, tooltip: this.profile.path }];
+      return this.getSession() ? [{ kind: 'profile', label: this.profile.label, tooltip: this.profile.path }] : [];
     }
     if (node.kind === 'profile') {
       const s = this.getSession();

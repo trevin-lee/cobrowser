@@ -199,7 +199,7 @@ function askPermission(workspaceId, origin, permission, details) {
 
 // ---------------------------------------------------------------------------------------
 // Vault: logins the agent can USE without ever SEEING. Encrypted at rest through the OS
-// keychain (safeStorage), unlocked per app session behind Touch ID, filled straight into
+// keychain (safeStorage), unlocked per app session behind Touch ID or the Mac's password, filled straight into
 // the page over this process's debugger. Nothing here ever returns a password to a client.
 // ---------------------------------------------------------------------------------------
 const VAULT_FILE = path.join(DATA_DIR, 'vault.bin');
@@ -223,37 +223,65 @@ const SKIP_BIOMETRICS = process.env.COBROWSER_TEST_NO_BIOMETRICS === '1';
 const TEST_DIALOG = SKIP_BIOMETRICS ? process.env.COBROWSER_TEST_DIALOG : undefined;
 const TEST_CERT = SKIP_BIOMETRICS ? process.env.COBROWSER_TEST_CERT : undefined;
 const TEST_LOGIN = SKIP_BIOMETRICS ? process.env.COBROWSER_TEST_LOGIN : undefined;
-async function promptBiometrics(reason) {
-  if (SKIP_BIOMETRICS) { log('vault: TEST MODE — biometrics skipped for: ' + reason); return; }
-  await Promise.race([
-    systemPreferences.promptTouchID(reason),
-    new Promise((_r, rej) => setTimeout(() => rej(new Error('Touch ID prompt timed out')), 45000)),
-  ]);
+// The helper that asks macOS for Touch ID or the Mac's password (app/auth, built beside this
+// file). Electron's own prompt is Touch ID only, which strands a Mac whose sensor is out of
+// reach (a closed lid, a desktop without Apple's Touch ID keyboard).
+const AUTH_HELPER = path.join(__dirname, 'cobrowser-auth');
+const CONFIRM_TIMEOUT_MS = 60000;
+
+/** Ask through the helper. Resolves true when confirmed, false when the helper cannot be used
+ *  here (missing, not runnable, or macOS has no way to ask); rejects when the person declines. */
+function askHelper(reason) {
+  if (process.platform !== 'darwin' || !fs.existsSync(AUTH_HELPER)) return Promise.resolve(false);
+  try { fs.chmodSync(AUTH_HELPER, 0o755); } catch { /* read-only install: try as it is */ }
+  return new Promise((resolve, reject) => {
+    let err = '';
+    let child;
+    try { child = require('child_process').spawn(AUTH_HELPER, [reason], { stdio: ['ignore', 'ignore', 'pipe'] }); } catch (e) { log('vault: auth helper did not start: ' + e.message); return resolve(false); }
+    const timer = setTimeout(() => { child.kill('SIGTERM'); reject(new Error('no answer to the confirmation')); }, CONFIRM_TIMEOUT_MS);
+    child.stderr.on('data', (d) => { err += d; });
+    child.on('error', (e) => { clearTimeout(timer); log('vault: auth helper failed: ' + e.message); resolve(false); });
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      if (code === 0) return resolve(true);
+      if (code === 1) return reject(new Error('cancelled'));
+      log(`vault: auth helper cannot ask (exit ${code}): ${err.trim()}`);
+      resolve(false);
+    });
+  });
 }
 
 /**
- * A person must be there: Touch ID when the Mac can show it, and otherwise (lid closed, no
- * sensor) a dialog someone has to click — the vault never opens, or changes, with nobody
- * present. Rejects when they cancel. Test instances skip it, logged.
+ * A person must be there, every time it counts: Touch ID, or the Mac's password when Touch ID
+ * is out of reach (macOS offers both, as Safari does before it shows a password). Rejects when
+ * they decline. Without the helper (a checkout without Swift), Electron's Touch ID prompt, and
+ * failing that a dialog to click. Test instances skip it, logged.
  */
-async function confirmPresence(reason) {
-  if (SKIP_BIOMETRICS) { log('vault: TEST MODE — presence check skipped for: ' + reason); return; }
-  if (process.platform === 'darwin' && systemPreferences.canPromptTouchID()) return promptBiometrics(reason);
+async function confirmPerson(reason) {
+  if (SKIP_BIOMETRICS) { log('vault: TEST MODE — confirmation skipped for: ' + reason); return; }
+  if (await askHelper(reason)) return;
+  if (process.platform === 'darwin' && systemPreferences.canPromptTouchID()) {
+    await Promise.race([
+      systemPreferences.promptTouchID(reason),
+      new Promise((_r, rej) => setTimeout(() => rej(new Error('no answer to the confirmation')), CONFIRM_TIMEOUT_MS)),
+    ]);
+    return;
+  }
   focusApp();
-  const { response } = await dialog.showMessageBox({ type: 'question', message: `cobrowser wants to ${reason}`, detail: 'Touch ID is not available (the lid is closed, or this Mac has no sensor), so confirm here instead.', buttons: ['Allow', 'Cancel'], defaultId: 1, cancelId: 1 });
+  const { response } = await dialog.showMessageBox({ type: 'question', message: `cobrowser wants to ${reason}`, buttons: ['Allow', 'Cancel'], defaultId: 1, cancelId: 1 });
   if (response !== 0) throw new Error('cancelled');
 }
 
-/** Before any change to the vault: one fresh confirmation, which also unlocks it if needed.
- *  Changes never ride on an earlier unlock. */
-async function authorizeChange(reason) {
+/** A fresh confirmation for this one act (a change, showing or exporting passwords), which
+ *  also unlocks the vault if it was locked. It never rides on an earlier unlock. */
+async function confirmFresh(reason) {
   if (!vault) return void (await unlockVault(reason));
-  await confirmPresence(reason);
+  await confirmPerson(reason);
 }
 
 async function unlockVault(reason) {
   if (vault) return vault;
-  await confirmPresence(reason || 'unlock the cobrowser vault'); // rejects on cancel/failure
+  await confirmPerson(reason || 'unlock the cobrowser vault'); // rejects on cancel/failure
   if (!safeStorage.isEncryptionAvailable()) throw new Error('OS keychain encryption is unavailable');
   vault = fs.existsSync(VAULT_FILE)
     ? JSON.parse(safeStorage.decryptString(fs.readFileSync(VAULT_FILE)))
@@ -353,14 +381,12 @@ Choosing one allows it in this workspace from now on; the agent never sees the p
 
 /**
  * Export the vault to a CSV file the human chooses. Every password leaves the keychain's
- * protection here, so it takes a fresh Touch ID every time (as showing one password does) and
+ * protection here, so it takes a fresh confirmation every time (as showing one password does) and
  * says plainly that the file is plaintext. The passwords are written by the app itself; they
  * never cross to the editor.
  */
 async function exportVault(parent) {
-  if (!SKIP_BIOMETRICS && (process.platform !== 'darwin' || !systemPreferences.canPromptTouchID())) throw new Error('Touch ID is needed to export passwords (open the lid, or use a Mac with Touch ID)');
-  await unlockVault('export the cobrowser vault');
-  await promptBiometrics(`export ${vault.entries.length} login${vault.entries.length === 1 ? '' : 's'} with their passwords to a file`);
+  await confirmFresh('export every login in the vault, with its password, to a file');
   let file = SKIP_BIOMETRICS ? process.env.COBROWSER_TEST_EXPORT_PATH : undefined;
   if (!file) {
     focusApp();
@@ -538,8 +564,9 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser logins
 <script>
   const $ = (id) => document.getElementById(id);
   let known = [], rows = [], unlocked = false, unlocking = false, lastError = '', sel = null, mode = 'view';
-  const draft = { host: '', user: '', pass: '', scope: [], from: null };
-  const resetDraft = () => Object.assign(draft, { host: '', user: '', pass: '', scope: [], from: null });
+  const draft = { host: '', user: '', pass: '', scope: [], from: null, matched: null };
+  const resetDraft = () => Object.assign(draft, { host: '', user: '', pass: '', scope: [], from: null, matched: null });
+  let repaintScope = () => {};
   // A typed site, reduced to what a login's label shows, to spot a login that already exists.
   // The same reading as the vault's own (site.js parseSite), so the window's "replaces" is the vault's.
   const siteKey = (h) => { const v = String(h || '').trim(); if (!v) return ''; try { const u = new URL(v.includes('://') ? v : 'https://' + v); return u.hostname.toLowerCase() + (u.port ? ':' + u.port : ''); } catch { return v.toLowerCase(); } };
@@ -594,13 +621,16 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser logins
       const sc = getScope(); const all = sc === 'all';
       sw.setAttribute('aria-checked', String(all));
       const q = fi.value.trim().toLowerCase();
-      const items = known.filter((w) => !q || w.toLowerCase().includes(q)).sort((a, b) => { const A = !all && sc.includes(a), B = !all && sc.includes(b); return A === B ? base(a).localeCompare(base(b)) : A ? -1 : 1; });
+      // A login can still list a workspace that was forgotten, renamed or deleted: show it, so
+      // it can be taken off.
+      const gone = all ? [] : sc.filter((w) => !known.includes(w));
+      const items = [...known, ...gone].filter((w) => !q || w.toLowerCase().includes(q)).sort((a, b) => { const A = !all && sc.includes(a), B = !all && sc.includes(b); return A === B ? base(a).localeCompare(base(b)) : A ? -1 : 1; });
       wl.innerHTML = '';
-      if (!known.length) wl.append(el('div', 'empty', 'Workspaces appear here once they have opened cobrowser.'));
+      if (!items.length && !q) wl.append(el('div', 'empty', 'Workspaces appear here once they have opened cobrowser.'));
       for (const w of items) {
         const on = all || sc.includes(w);
         const r = el('div', 'row ws' + (all ? ' inherit' : ''));
-        const name = el('div', 'name'); name.append(base(w), el('small', null, dir(w))); name.title = w;
+        const name = el('div', 'name'); name.append(base(w), el('small', null, gone.includes(w) ? dir(w) + ' · no longer known to cobrowser' : dir(w))); name.title = w;
         r.append(disc(on ? 'on' : '', w), name);
         r.onclick = () => { if (all) return; setScope(on ? sc.filter((x) => x !== w) : [...sc, w]); paint(); };
         wl.append(r);
@@ -608,6 +638,7 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser logins
     };
     sw.onclick = () => { setScope(getScope() === 'all' ? [] : 'all'); paint(); };
     fi.oninput = paint; paint();
+    box.repaint = paint;
     return box;
   }
 
@@ -619,8 +650,8 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser logins
     if (!unlocked) {
       const lc = el('div', 'lockcard');
       lc.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>';
-      const b = el('button', 'primary', unlocking ? 'Waiting for Touch ID…' : 'Unlock'); b.disabled = unlocking; b.onclick = refresh;
-      lc.append(el('div', null, 'Locked. Unlock to see logins. Every change asks for Touch ID again.'), b);
+      const b = el('button', 'primary', unlocking ? 'Waiting for you to confirm…' : 'Unlock'); b.disabled = unlocking; b.onclick = refresh;
+      lc.append(el('div', null, 'Locked. Unlock with Touch ID or your Mac password. Every change, and showing or exporting a password, asks again.'), b);
       if (lastError && !unlocking) lc.append(el('p', 'hint', lastError));
       wrap.append(lc); return;
     }
@@ -637,7 +668,9 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser logins
         }
         wrap.append(section('Login', f));
       }
-      wrap.append(section('Where the agent may use it', scopeEditor(() => draft.scope, (v) => { draft.scope = v; sync(); }), true));
+      const editor = scopeEditor(() => draft.scope, (v) => { draft.scope = v; sync(); });
+      repaintScope = editor.repaint;
+      wrap.append(section('Where the agent may use it', editor, true));
       const a = el('div', 'actions'); const st = el('div'); st.id = 'status'; a.append(st, el('span', 'spacer'));
       const cancel = el('button', 'quiet', 'Cancel'); cancel.onclick = () => { resetDraft(); mode = 'view'; render(); };
       const ok = el('button', 'primary', importing ? 'Choose CSV…' : editing ? 'Save changes' : 'Save login'); ok.id = 'save'; ok.onclick = importing ? doImport : editing ? saveEdit : save;
@@ -651,7 +684,7 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser logins
     id.append(h2, el('div', 'user mono', sel.username || '(no username)')); t.append(id);
     const acts = el('div', 'acts');
     const ed = el('button', 'quiet', 'Edit'); ed.onclick = () => { Object.assign(draft, { host: sel.host, user: sel.username, pass: '', scope: sel.scope, from: { host: sel.host, username: sel.username } }); mode = 'edit'; render(); };
-    // Removing asks for Touch ID (or a click, without it), which is the confirmation.
+    // Removing asks for Touch ID or the Mac's password, which is the confirmation.
     const rm = el('button', 'quiet danger', 'Remove'); rm.onclick = async () => { try { await vault.remove(sel.host, sel.username); sel = null; await refresh(); } catch (e) { say(failed(e)); } };
     acts.append(ed, rm); t.append(acts); wrap.append(t);
 
@@ -675,11 +708,18 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser logins
     const b = $('save'); if (!b) return;
     const scoped = draft.scope === 'all' || draft.scope.length > 0;
     b.disabled = mode === 'add' || mode === 'edit' ? !canSave() : !scoped;
-    // Adding a login that already exists replaces its password: say so before, not after.
-    const replacing = mode === 'add' && !!existingFor();
+    // Adding a login that already exists replaces it: say so before, not after, and start from
+    // its workspaces, so saving changes only what is changed here.
+    const existing = mode === 'add' ? existingFor() : undefined;
+    const replacing = !!existing;
+    const matchKey = existing ? existing.host + ' | ' + existing.username : null;
+    if (matchKey !== draft.matched) {
+      draft.matched = matchKey;
+      if (existing) { draft.scope = existing.scope === 'all' ? 'all' : [...existing.scope]; repaintScope(); }
+    }
     if (mode === 'add') b.textContent = replacing ? 'Replace login' : 'Save login';
     // Say why Save is off, once the rest is filled in — the missing piece is otherwise invisible.
-    const st = $('status'); if (st && (mode !== 'add' || (draft.host.trim() && draft.pass))) st.textContent = !scoped ? 'Choose a workspace, or Everywhere.' : replacing ? 'A login for this site and username exists; saving replaces its password and workspaces.' : '';
+    const st = $('status'); if (st && (mode !== 'add' || (draft.host.trim() && draft.pass))) st.textContent = !scoped ? 'Choose a workspace, or Everywhere.' : replacing ? 'This site and username are already saved: saving replaces the password, and the workspaces shown are the ones it has now.' : '';
   };
   async function save() {
     try { const u = draft.user.trim(); const k = siteKey(draft.host); await vault.add(draft.host.trim(), u, draft.pass, draft.scope); resetDraft(); mode = 'view'; await refresh(); sel = rows.find((r) => siteKey(r.host) === k && r.username === u) || null; render(); }
@@ -738,23 +778,20 @@ ipcMain.handle('vault:workspaces', () => knownWorkspaces());
 ipcMain.handle('vault:add', async (_e, { host, username, password, scope }) => {
   if (!host || !password) throw new Error('site and password are required');
   const exists = !!vault && !!findEntry(host, username || '');
-  await authorizeChange(exists ? `replace the saved password for ${username || 'the login'} on ${host}` : `add a login for ${host}`);
+  await confirmFresh(exists ? `replace the saved password for ${username || 'the login'} on ${host}` : `add a login for ${host}`);
   // The form's scope is the one the human chose for this login, so it replaces the old one.
   const r = upsertLogin(host, username || '', password, scope, { mergeScope: false }); saveVault();
   return { replaced: r.replaced };
 });
 ipcMain.handle('vault:update', async (_e, { from, site, username, password, scope }) => {
-  await authorizeChange(`change the login for ${from.username || 'the login'} on ${from.host}`);
+  await confirmFresh(`change the login for ${from.username || 'the login'} on ${from.host}`);
   updateLogin(from, { site, username, password: password || undefined, scope }); saveVault();
 });
-ipcMain.handle('vault:setScope', async (_e, { host, username, scope }) => { await authorizeChange(`change which workspaces may use ${username || 'the login'} on ${host}`); setScope(host, username, scope); saveVault(); });
-ipcMain.handle('vault:remove', async (_e, { host, username }) => { await authorizeChange(`remove the login for ${username || 'the login'} on ${host}`); removeLogin(host, username); saveVault(); });
+ipcMain.handle('vault:setScope', async (_e, { host, username, scope }) => { await confirmFresh(`change which workspaces may use ${username || 'the login'} on ${host}`); setScope(host, username, scope); saveVault(); });
+ipcMain.handle('vault:remove', async (_e, { host, username }) => { await confirmFresh(`remove the login for ${username || 'the login'} on ${host}`); removeLogin(host, username); saveVault(); });
 ipcMain.handle('vault:reveal', async (_e, { host, username }) => {
-  // Showing a password is the one thing that must not ride on the session unlock: a fresh
-  // biometric check every time, and no fallback when Touch ID cannot be presented.
-  if (!SKIP_BIOMETRICS && (process.platform !== 'darwin' || !systemPreferences.canPromptTouchID())) throw new Error('Touch ID is needed to show a password (open the lid, or use a Mac with Touch ID)');
-  await unlockVault('show a password');
-  await promptBiometrics(`show the password for ${username || host} on ${host}`);
+  // Showing a password never rides on the session unlock: a fresh confirmation every time.
+  await confirmFresh(`show the password for ${username || host} on ${host}`);
   const e = findEntry(host, username);
   if (!e) throw new Error('no such login');
   log(`vault: revealed password for ${e.username} on ${siteLabel(e)}`);
@@ -763,7 +800,7 @@ ipcMain.handle('vault:reveal', async (_e, { host, username }) => {
 ipcMain.handle('vault:importCsv', async (_e, { scope } = {}) => {
   const r = await dialog.showOpenDialog(vaultWin, { properties: ['openFile'], filters: [{ name: 'CSV', extensions: ['csv'] }], title: 'Import logins (Apple Passwords / Bitwarden / Chrome export)' });
   if (r.canceled || !r.filePaths[0]) return null;
-  await authorizeChange('import logins from a CSV file');
+  await confirmFresh('import logins from a CSV file');
   const res = importCsv(fs.readFileSync(r.filePaths[0], 'utf8'), scope); saveVault();
   const del = await dialog.showMessageBox(vaultWin, { message: `Imported ${res.count} login${res.count === 1 ? '' : 's'} (${res.added} new, ${res.replaced} replaced).`, detail: 'The CSV holds the passwords in plain text. Delete it now?', buttons: ['Delete the CSV', 'Keep'], defaultId: 0 });
   if (del.response === 0) fs.rmSync(r.filePaths[0], { force: true });
@@ -1545,7 +1582,17 @@ async function forgetWorkspace(id) {
   for (const k of [...certDecisions.keys()]) if (k.startsWith(id + '|')) certDecisions.delete(k);
   const list = knownWorkspaces().filter((x) => x !== id);
   fs.writeFileSync(WORKSPACES_FILE, JSON.stringify(list, null, 2));
+  // Its editor still has the tab list it saved; the next time that folder connects it is told
+  // to start fresh instead of reopening them (see hello).
+  writeForgotten([...new Set([...readForgotten(), id])]);
   log(`forgot workspace ${id}`);
+}
+const FORGOTTEN_FILE = path.join(DATA_DIR, 'forgotten.json');
+function readForgotten() {
+  try { return JSON.parse(fs.readFileSync(FORGOTTEN_FILE, 'utf8')); } catch { return []; }
+}
+function writeForgotten(list) {
+  try { fs.writeFileSync(FORGOTTEN_FILE, JSON.stringify(list, null, 2)); } catch { /* best effort */ }
 }
 
 class Workspace {
@@ -1636,9 +1683,13 @@ async function handle(ws, state, m) {
     state.workspace = workspaceFor(m.workspace);
     state.workspace.sockets.add(ws);
     rememberWorkspace(m.workspace);
+    // Forgotten since it last connected: its editor drops the tabs it saved (said once).
+    const pending = readForgotten();
+    const forgotten = pending.includes(m.workspace);
+    if (forgotten) writeForgotten(pending.filter((x) => x !== m.workspace));
     const tabs = [];
     for (const t of state.workspace.tabs.values()) { await t.ready; tabs.push(t.info()); }
-    ws.send(JSON.stringify({ type: 'hello', version: VERSION, tabs }));
+    ws.send(JSON.stringify({ type: 'hello', version: VERSION, tabs, ...(forgotten ? { forgotten: true } : {}) }));
     return;
   }
   if (m.type === 'importCookies') {
@@ -1663,19 +1714,20 @@ async function handle(ws, state, m) {
         // Added over the socket, a login defaults to the calling workspace's scope.
         case 'vault.add': {
           const exists = !!vault && !!findEntry(m.host, m.username || '');
-          await authorizeChange(exists ? `replace the saved password for ${m.username || 'the login'} on ${m.host}` : `add a login for ${m.host}`);
+          await confirmFresh(exists ? `replace the saved password for ${m.username || 'the login'} on ${m.host}` : `add a login for ${m.host}`);
           // From a command: widen the login's scope to this workspace, never narrow it.
           const r = upsertLogin(m.host, m.username || '', m.password, m.scope ?? [state.workspace?.id].filter(Boolean), { mergeScope: true }); saveVault();
           return reply({ ok: true, replaced: r.replaced });
         }
         case 'vault.export': { const r = await exportVault(); return reply(r ? { ok: true, ...r } : { ok: false, canceled: true }); }
-        case 'vault.import': { await authorizeChange('import logins from a CSV file'); const r = importCsv(String(m.csv || ''), m.scope ?? [state.workspace?.id].filter(Boolean)); saveVault(); return reply({ ok: true, count: r.count, added: r.added, replaced: r.replaced }); }
+        case 'vault.import': { await confirmFresh('import logins from a CSV file'); const r = importCsv(String(m.csv || ''), m.scope ?? [state.workspace?.id].filter(Boolean)); saveVault(); return reply({ ok: true, count: r.count, added: r.added, replaced: r.replaced }); }
         case 'vault.list': {
           const v = await unlockVault('list the logins in the cobrowser vault');
           const wsId = state.workspace?.id;
           return reply({ logins: v.entries.filter((e) => wsId && allowed(e, wsId)).map((e) => ({ host: siteLabel(e), username: e.username })) });
         }
         case 'vault.lock': { lockVault(); return reply({ ok: true }); }
+        case 'vault.open': { focusApp(); openVaultWindow(); return reply({ ok: true }); }
         case 'vault.request': {
           if (!state.workspace) return reply({ granted: 'denied', error: 'no workspace' });
           return reply(await requestCredential(state.workspace.id, m));
@@ -1832,7 +1884,7 @@ function makeTray() {
     log('tray: no icon at', ICON || '(unset)');
   }
   const tray = new Tray(icon);
-  tray.setToolTip('cobrowser');
+  tray.setToolTip(process.env.COBROWSER_DEV === '1' ? 'cobrowser (development)' : 'cobrowser');
   if (icon.isEmpty()) tray.setTitle('cb');
   const refresh = () => {
     const items = [{ label: `cobrowser ${VERSION}`, enabled: false }, { type: 'separator' }];

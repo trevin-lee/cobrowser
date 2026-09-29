@@ -40,10 +40,14 @@ suite('profile', async (r) => {
     await L.conn.forgetWorkspace(B);
     const known = (await L.conn.knownWorkspaces()).map((w) => w.id);
     r.check('a forgotten workspace leaves the list', !known.includes(B) && known.includes(A), known);
-    const { conn: b2, tabs } = await AppConnection.connect(readAppState()!, B);
+    const { conn: b2, tabs, forgotten } = await AppConnection.connect(readAppState()!, B);
     const tB2 = await b2.openTab(srv.base + '/', 800, 600); await sleep(600);
     r.check('opening it again starts a fresh browser: no tabs, signed out, no permissions', tabs.length === 0 && (await cookie(b2, tB2.tabId)) === '' && (await notif(b2, tB2.tabId)) === 'denied' && (await b2.sitePermissions()).length === 0, { tabs: tabs.length });
-    b2.close();
+    b2.close(); await sleep(200);
+    const { conn: b3, forgotten: again } = await AppConnection.connect(readAppState()!, B);
+    const { conn: a2, forgotten: other } = await AppConnection.connect(readAppState()!, A);
+    r.check('its editor is told once that it was forgotten, so it drops the tabs it saved', forgotten === true && again === false && other === false, { forgotten, again, other });
+    b3.close(); a2.close();
   } finally {
     srv.close(); await L.stop();
   }

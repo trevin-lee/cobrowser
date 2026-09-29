@@ -7,6 +7,7 @@
  *  - It does not type a password, one-time code, card number or security code. Saved logins
  *    go in through the vault (fill_credentials), which never shows the agent the secret;
  *    anything else the human types, unless they gave it to the agent (allowCredentials).
+ *  - It closes the tabs it opened, not the human's, unless they asked it to (allowHumanTab).
  *
  * The browser extensions run in pages and carry copies of these patterns; a test pins the
  * copies to these, so the two tool families cannot drift apart.
@@ -28,6 +29,15 @@ export function paymentRefusal(label: string): { refused: 'payment'; label: stri
     label,
     needsUserAction: `the human should click "${label}" themselves; re-issue with allowPayment: true only if they asked you to complete this payment`,
     why: 'This submits a payment or places an order. The human owns that click.',
+  };
+}
+
+export function humanTabRefusal(tab: string | number): { refused: 'human-tab'; tab: string | number; needsUserAction: string; why: string } {
+  return {
+    refused: 'human-tab',
+    tab,
+    needsUserAction: 'the human opened this tab: leave it, or re-issue with allowHumanTab: true only if they asked you to close it',
+    why: 'The agent closes the tabs it opened, not the human\'s.',
   };
 }
 

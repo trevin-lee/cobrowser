@@ -792,7 +792,7 @@ export class BrowserSession {
    *
    * Call this WITHOUT wrapping it in run() (it queues its own reads).
    */
-  async waitFor(texts: string[], timeout = 15000, pageId?: string, opts: { settle?: boolean; quietMs?: number } = {}): Promise<{ settled?: boolean }> {
+  async waitFor(texts: string[], timeout = 15000, pageId?: string, opts: { settle?: boolean; quietMs?: number } = {}): Promise<{ found?: string; settled?: boolean }> {
     const p = this.pageFor(pageId); // resolved once: the wait stays on this tab
     const deadline = Date.now() + timeout;
     // settle: also wait until the page has stopped changing (no DOM change for quietMs), so a
@@ -801,14 +801,17 @@ export class BrowserSession {
     if (quietMs) await this.run(() => p.evaluate(WATCH_START).catch(() => undefined), p.id);
     for (;;) {
       const body = texts.length ? await this.run(() => p.evaluate<string>(() => document.body?.innerText ?? '').catch(() => ''), p.id) : '';
-      if (texts.every((t) => body.includes(t))) {
-        if (!quietMs) return {};
+      // Any of the texts, as in the own-browser bridge: wait for "Saved" or "Error" in one call.
+      const found = texts.length ? texts.find((t) => body.includes(t)) : '';
+      if (found !== undefined) {
+        const hit = found ? { found } : {};
+        if (!quietMs) return hit;
         const quiet = await this.run(() => p.evaluate<number>(WATCH_READ).catch(() => -1), p.id);
-        if (quiet >= quietMs) return { settled: true };
+        if (quiet >= quietMs) return { ...hit, settled: true };
         if (quiet < 0) await this.run(() => p.evaluate(WATCH_START).catch(() => undefined), p.id); // it navigated
       }
       if (Date.now() > deadline) {
-        throw new Error(texts.every((t) => body.includes(t)) && quietMs ? `Timed out after ${timeout}ms waiting for the page to stop changing` : `Timed out after ${timeout}ms waiting for: ${texts.join(', ')}`);
+        throw new Error(found !== undefined && quietMs ? `Timed out after ${timeout}ms waiting for the page to stop changing` : `Timed out after ${timeout}ms waiting for any of: ${texts.join(', ')}`);
       }
       await delay(quietMs ? 150 : 300); // queue is free here — input/other actions can interleave
     }

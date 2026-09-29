@@ -96,12 +96,20 @@ test('export writes every login in a form other managers and this vault read bac
   store.upsertLogin(v, '192.168.1.1', 'admin', 'r', 'all');
   store.upsertLogin(v, 'nas:5000', 'admin', 's', 'all');
   const csv = store.exportCsv(v);
-  assert.match(csv, /^name,url,username,password\n/);
+  assert.match(csv, /^name,url,username,password,note\n/);
   assert.match(csv, /,https:\/\/costco\.com,/);
   assert.match(csv, /,http:\/\/192\.168\.1\.1,/, 'a device on the network is plain http');
   assert.match(csv, /,http:\/\/nas:5000,/);
   const back = empty();
-  assert.deepEqual(store.importCsv(back, csv, 'all'), { count: 3, added: 3, replaced: 0 });
-  const pairs = (x: Vault) => x.entries.map((e) => [e.host, e.port, e.username, e.password]).sort();
-  assert.deepEqual(pairs(back), pairs(v));
+  assert.deepEqual(store.importCsv(back, csv, []), { count: 3, added: 3, replaced: 0 });
+  const pairs = (x: Vault) => x.entries.map((e) => [e.host, e.port, e.username, e.password, JSON.stringify(e.scope)]).sort();
+  assert.deepEqual(pairs(back), pairs(v), 'the same logins, each with the workspaces it had');
+});
+
+test('an import adds its chosen workspaces to the ones the file noted; a note from elsewhere is ignored', () => {
+  const v = empty();
+  const csv = 'name,url,username,password,note\na,https://a.com,me,1,"cobrowser-workspaces: [""/x""]"\nb,https://b.com,me,2,remember the dog\n';
+  store.importCsv(v, csv, ['/y']);
+  assert.deepEqual(store.findEntry(v, 'a.com', 'me')?.scope, ['/x', '/y']);
+  assert.deepEqual(store.findEntry(v, 'b.com', 'me')?.scope, ['/y']);
 });

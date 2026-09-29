@@ -76,6 +76,10 @@ const targets = [
   },
 ];
 
+// The vault's Touch-ID-or-password helper (Swift, macOS): built beside the app bundle.
+const { buildAuthHelper } = await import('./scripts/build-auth-helper.mjs');
+buildAuthHelper();
+
 if (watch) {
   const ctxs = await Promise.all(targets.map((t) => esbuild.context(t)));
   await Promise.all(ctxs.map((c) => c.watch()));

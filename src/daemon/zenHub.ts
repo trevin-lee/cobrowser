@@ -119,6 +119,15 @@ export class ZenHub {
   /** Call a method in the add-on on behalf of a workspace. */
   call<T>(workspace: string, method: string, params: Record<string, unknown> = {}): Promise<T> {
     const b = this.bindingFor(workspace);
+    if (!b && method !== 'listContainers') {
+      return Promise.reject(
+        new Error(
+          'This workspace is not bound to the human\'s own browser, so the bridge_* tools have nothing to drive. ' +
+            'The human binds it with "Cobrowser: Bind Chrome Tab Group to This Workspace" or "Cobrowser: Bind Firefox Container to This Workspace". ' +
+            'Until then, use the panel tools (new_page and the rest).',
+        ),
+      );
+    }
     const c = this.bound(workspace);
     if (!c || c.ws.readyState !== WebSocket.OPEN) {
       const which = b?.browser === 'chrome' ? 'Chrome' : 'Firefox';

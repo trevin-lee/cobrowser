@@ -11,7 +11,7 @@ import { SessionTreeProvider } from './webview/SessionTreeProvider';
 import { writeClientConfigs } from './clients/writeClientConfigs';
 import { daemonToken, deregister, ensureDaemon, register } from './daemon/client';
 import { DEFAULT_DAEMON_PORT, DEV_DAEMON_PORT, bridgeEndpointUrl } from './daemon/protocol';
-import { AppConnection, readAppState } from './app/AppClient';
+import { AppConnection, readAppState, type AppState } from './app/AppClient';
 import { ensureApp, electronExecutable } from './app/ensureApp';
 import { APP_BUNDLE_ID, listSigningIdentities, readSignedMarker, signElectronForPasskeys, unsignForPasskeys } from './app/signApp';
 import { registerEndpoint, unregisterEndpoint } from './firefox/managedManifest';
@@ -84,33 +84,30 @@ let extensionContext: vscode.ExtensionContext | undefined;
 /** Set once this window has registered with the daemon, so deactivate() can withdraw it. */
 let registeredWith: { port: number; id: string; dev: boolean } | undefined;
 
-/** The container this workspace may drive: the command-set binding first (a binding stored
- *  under its pre-rename key is carried over once), then the setting. The binding keeps it
- *  per-workspace without writing a file into the repo. */
-function firefoxContainerFor(
-  context: vscode.ExtensionContext,
-  cfg: vscode.WorkspaceConfiguration,
-): string {
+/** The scope this workspace's bridge is bound to (a Firefox container or a Chrome tab group),
+ *  set by the Bind commands and kept per workspace without writing a file into the repo. A
+ *  binding from before (stored under the pre-rename key, or the retired
+ *  cobrowser.firefoxContainer setting) is carried over once. */
+function firefoxContainerFor(context: vscode.ExtensionContext): string {
   const bound = context.workspaceState.get<string>(FIREFOX_CONTAINER_KEY)?.trim();
   if (bound) return bound;
-  // Carry a pre-rename binding forward once, so it survives this upgrade rather than
-  // requiring the user to re-run the bind command for no visible reason.
-  const legacy = context.workspaceState.get<string>(LEGACY_CONTAINER_KEY)?.trim();
+  const legacy =
+    context.workspaceState.get<string>(LEGACY_CONTAINER_KEY)?.trim() ||
+    vscode.workspace.getConfiguration('cobrowser').get<string>('firefoxContainer', '').trim();
   if (legacy) {
     void context.workspaceState.update(FIREFOX_CONTAINER_KEY, legacy);
+    void context.workspaceState.update(BRIDGE_BROWSER_KEY, 'firefox');
     void context.workspaceState.update(LEGACY_CONTAINER_KEY, undefined);
     return legacy;
   }
-  return (
-    cfg.get<string>('firefoxContainer', '').trim()
-  );
+  return '';
 }
 
 /** Whether to install the virtual WebAuthn authenticator, which makes passkey ceremonies
  *  fail fast so sites fall back to a password. An offscreen page has no window to host the
- *  OS prompt, so a real ceremony would just hang. Explicit setting wins. */
-function passkeyFallbackFor(cfg: vscode.WorkspaceConfiguration): boolean {
-  return cfg.get<boolean>('autoFallbackPasskeys') ?? true;
+ *  OS prompt, so a real ceremony would just hang. Read when the browser connects. */
+function passkeyFallback(): boolean {
+  return vscode.workspace.getConfiguration('cobrowser').get<boolean>('autoFallbackPasskeys') ?? true;
 }
 
 /** The running build's version, so the daemon and the app can be restarted when stale. */
@@ -153,7 +150,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // mid-task — the whole reason iterating on this was disruptive.
   const dev = context.extensionMode === vscode.ExtensionMode.Development;
   const daemonPort = dev ? DEV_DAEMON_PORT : cfg.get<number>('port', 0) || DEFAULT_DAEMON_PORT;
-  if (dev) log(`Development host: using the dev daemon on port ${daemonPort}, isolated from your installed cobrowser.`);
+  if (dev) {
+    // Its own browser app too: own state (so each build never restarts the other's app) and
+    // own browser profiles and vault. The app it starts inherits these.
+    process.env.COBROWSER_STATE_DIR = path.join(os.homedir(), '.cobrowser', 'dev');
+    process.env.COBROWSER_DATA_DIR = path.join(os.homedir(), 'Library', 'Application Support', 'cobrowser-dev');
+    process.env.COBROWSER_DEV = '1';
+    log(`Development host: using the dev daemon on port ${daemonPort} and its own browser app (${process.env.COBROWSER_DATA_DIR}), isolated from your installed cobrowser.`);
+  }
   const preferredPort = 0;
   // Hand bindPort our previous host's pid so it can reclaim the port from our OWN stale
   // predecessor only — never from another live window. Then record ours for next time.
@@ -296,11 +300,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }),
     );
 
+  // Every connection to the app goes through here. When this workspace's browser was
+  // forgotten (from another window), whichever connection hears it first drops the tabs
+  // saved for it, so they are not reopened signed out.
+  const connectAs = async (state: AppState) => {
+    const r = await AppConnection.connect(state, workspaceId);
+    if (r.forgotten) {
+      await context.workspaceState.update(TABS_KEY, []);
+      log("This workspace's browser was forgotten: starting fresh, without its saved tabs.");
+    }
+    return r;
+  };
+
   // The vault commands talk to the app as this workspace without opening its browser: the
   // session's connection when there is one, or a short-lived one that opens no tabs.
   const withApp = async <T>(fn: (conn: AppConnection) => Promise<T>): Promise<T> => {
     if (session && BrowserPanel.app) return fn(BrowserPanel.app);
-    const { conn } = await AppConnection.connect(await startApp(), workspaceId);
+    const { conn } = await connectAs(await startApp());
     try {
       return await fn(conn);
     } finally {
@@ -316,17 +332,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       sessionPromise = (async () => {
         // Snapshot OUR saved tab list first: wire() fires pagesChanged, which overwrites
         // TABS_KEY before restore could read it.
-        const savedTabs = (context.workspaceState.get<Array<string | SavedTab>>(TABS_KEY) ?? [])
+        let savedTabs = (context.workspaceState.get<Array<string | SavedTab>>(TABS_KEY) ?? [])
           .map((t) => (typeof t === 'string' ? { url: t } : t)); // pre-0.1.25 saves were bare URLs
         BrowserPanel.planColumns(savedTabs.map((t) => t.col));
 
         const state = await startApp();
-        const { conn, tabs } = await AppConnection.connect(state, workspaceId);
+        const { conn, tabs, forgotten } = await connectAs(state);
+        if (forgotten) savedTabs = [];
         BrowserPanel.app = conn;
         conn.onClose = () => log('App connection closed.');
         // A signed app has a real Touch ID authenticator; the fail-fast virtual one would
         // replace it with a forced password fallback.
-        const s = await BrowserSession.connectApp(conn, state.webauthn ? false : passkeyFallbackFor(cfg));
+        const s = await BrowserSession.connectApp(conn, state.webauthn ? false : passkeyFallback());
         log(`Connected to the cobrowser app ${state.version} (${tabs.length} tab(s) already open for this workspace).`);
         const wired = await wire(s);
         if (tabs.length) BrowserPanel.disposeUnclaimedRestored(); // pages adopted their shells in wire()
@@ -366,17 +383,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   let registerWithDaemon: () => Promise<void> = async () => undefined;
   const bridgeBrowser = (): 'firefox' | 'chrome' => (context.workspaceState.get<string>(BRIDGE_BROWSER_KEY) === 'chrome' ? 'chrome' : 'firefox');
   const syncBridge = (): void => {
-    const container = firefoxContainerFor(context, cfg);
+    const container = firefoxContainerFor(context);
     // Only Firefox reads the managed manifest; Chrome is configured by pasting the same URL.
     if (container && bridgeBrowser() === 'firefox') registerEndpoint(workspaceId, bridgeUrl(), log);
     else unregisterEndpoint(workspaceId, log);
     void registerWithDaemon();
   };
-  context.subscriptions.push(
-    vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration('cobrowser.firefoxContainer')) syncBridge();
-    }),
-  );
 
   // B2: VS Code's MCP provider API does not exist in Cursor — feature-detect so
   // activate() doesn't throw there; the file-based writers below cover Cursor/Claude Code.
@@ -397,7 +409,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           new McpHttpDef(
             'Cobrowser',
             vscode.Uri.parse(`http://127.0.0.1:${daemonPort}/mcp`),
-            { Authorization: `Bearer ${daemonToken()}` },
+            { Authorization: `Bearer ${daemonToken(undefined, dev)}` },
             context.extension.packageJSON.version,
           ),
         ],
@@ -421,12 +433,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       registerWithDaemon = () =>
         register(
           daemonPort,
-          { id, name: path.basename(id), url: `http://127.0.0.1:${mcpPort}/mcp`, token, pid: process.pid, container: firefoxContainerFor(context, cfg) || undefined, browser: bridgeBrowser() },
+          { id, name: path.basename(id), url: `http://127.0.0.1:${mcpPort}/mcp`, token, pid: process.pid, container: firefoxContainerFor(context) || undefined, browser: bridgeBrowser() },
           log,
           dev,
         );
       await registerWithDaemon();
-      if (firefoxContainerFor(context, cfg) && bridgeBrowser() === 'firefox') registerEndpoint(workspaceId, bridgeUrl(), log);
+      if (firefoxContainerFor(context) && bridgeBrowser() === 'firefox') registerEndpoint(workspaceId, bridgeUrl(), log);
       // Hand the port + id to deactivate(), which must unregister before the window goes.
       registeredWith = { port: daemonPort, id, dev };
       context.subscriptions.push({ dispose: () => void deregister(daemonPort, id, dev) });
@@ -590,7 +602,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         void vscode.window.showInformationMessage(
           replaced
             ? `Cobrowser: replaced the saved password for ${username || 'the login'} on ${site}; it is now usable in this workspace too.`
-            : `Cobrowser: saved a login for ${site}, usable in this workspace. Change where it can be used from the menu-bar Logins window.`,
+            : `Cobrowser: saved a login for ${site}, usable in this workspace. Change where it can be used with "Cobrowser: Manage Logins".`,
         );
       } catch (err) {
         void vscode.window.showErrorMessage(`Cobrowser: could not save the login — ${String((err as Error).message ?? err)}`);
@@ -643,6 +655,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         void vscode.window.showErrorMessage(`Cobrowser: could not export logins — ${String((err as Error).message ?? err)}`);
       }
     }),
+    // The sidebar's tab rows: show that page's editor tab.
+    vscode.commands.registerCommand('cobrowser.showTab', (pageId: string) => BrowserPanel.reveal(pageId)),
+    vscode.commands.registerCommand('cobrowser.manageLogins', async () => {
+      try {
+        await withApp((c) => c.vaultOpenWindow());
+      } catch (err) {
+        void vscode.window.showErrorMessage(`Cobrowser: could not open the Logins window — ${String((err as Error).message ?? err)}`);
+      }
+    }),
     vscode.commands.registerCommand('cobrowser.lockVault', async () => {
       // The vault is only ever unlocked in the running app's memory: no app, nothing to lock.
       const st = readAppState();
@@ -653,7 +674,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       try {
         if (session && BrowserPanel.app) await BrowserPanel.app.vaultLock();
         else {
-          const { conn } = await AppConnection.connect(st, workspaceId);
+          const { conn } = await connectAs(st);
           try { await conn.vaultLock(); } finally { conn.close(); }
         }
         void vscode.window.showInformationMessage('Cobrowser: vault locked. Using a login asks for Touch ID again.');

@@ -50,13 +50,14 @@ suite('credentials', async (r) => {
       const csv = fsm.readFileSync(exportPath, 'utf8');
       const mode = (fsm.statSync(exportPath).mode & 0o777).toString(8);
       const rows = (t: string) => t.trim().split(/\n(?=[^\n]*,https?:\/\/)/).slice(1).sort();
-      r.check('[export] every login in the vault is written as name,url,username,password, readable only by you', ex.ok === true && ex.count === rows(csv).length && ex.count >= 2 && csv.startsWith('name,url,username,password\n') && csv.includes('"p,a""ss\nword"') && mode === '600', { ex, csv, mode });
+      r.check('[export] every login in the vault is written as name,url,username,password, readable only by you', ex.ok === true && ex.count === rows(csv).length && ex.count >= 2 && csv.startsWith('name,url,username,password,note\n') && csv.includes('"p,a""ss\nword"') && mode === '600', { ex, csv, mode });
       r.check('[export] a device on the network exports as http, a domain as https', csv.includes(',http://192.168.1.1:8080,admin,') && csv.includes(',https://bank.test,ada,'), csv);
-      const imp = await L.conn.vaultImportDetailed(csv, 'all');
+      // Back in with no extra workspaces: each login gets the ones its note recorded.
+      const imp = await L.conn.vaultImportDetailed(csv, []);
       r.check('[import] importing logins already in the vault reports them as replaced, not added', imp.count === ex.count && imp.added === 0 && imp.replaced === ex.count, imp);
       const again = await L.conn.vaultExport();
       const csv2 = fsm.readFileSync(exportPath, 'utf8');
-      r.check('[export] importing the file back changes nothing: same logins, no duplicates', again.count === ex.count && JSON.stringify(rows(csv2)) === JSON.stringify(rows(csv)), { first: rows(csv), second: rows(csv2) });
+      r.check('[export] importing the file back changes nothing: same logins, same workspaces, no duplicates', again.count === ex.count && JSON.stringify(rows(csv2)) === JSON.stringify(rows(csv)), { first: rows(csv), second: rows(csv2) });
     } finally {
       await L.stop();
     }

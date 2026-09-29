@@ -23,7 +23,7 @@
     "automation",
     "cursor",
     "webview",
-    "puppeteer"
+    "macos"
   ],
   "engines": {
     "vscode": "^1.101.0"
@@ -59,6 +59,14 @@
       {
         "command": "cobrowser.bindFirefoxContainer",
         "title": "Cobrowser: Bind Firefox Container to This Workspace"
+      },
+      {
+        "command": "cobrowser.showTab",
+        "title": "Cobrowser: Show Tab"
+      },
+      {
+        "command": "cobrowser.manageLogins",
+        "title": "Cobrowser: Manage Logins"
       },
       {
         "command": "cobrowser.addLogin",
@@ -122,6 +130,13 @@
       }
     ],
     "menus": {
+      "commandPalette": [
+        { "command": "cobrowser.back", "when": "activeWebviewPanelId == 'cobrowser'" },
+        { "command": "cobrowser.forward", "when": "activeWebviewPanelId == 'cobrowser'" },
+        { "command": "cobrowser.reloadTab", "when": "activeWebviewPanelId == 'cobrowser'" },
+        { "command": "cobrowser.closeTab", "when": "activeWebviewPanelId == 'cobrowser'" },
+        { "command": "cobrowser.showTab", "when": "false" }
+      ],
       "editor/title": [
         {
           "command": "cobrowser.newTab",
@@ -153,6 +168,12 @@
         }
       ]
     },
+    "viewsWelcome": [
+      {
+        "view": "cobrowser.sessions",
+        "contents": "No browser is running for this workspace. It starts when you open a tab, or when an agent uses a cobrowser tool.\n[Open Browser Panel](command:cobrowser.open)"
+      }
+    ],
     "mcpServerDefinitionProviders": [
       {
         "id": "cobrowser.mcp",
@@ -165,17 +186,12 @@
         "cobrowser.port": {
           "type": "number",
           "default": 0,
-          "description": "Localhost port for the shared cobrowser daemon — the single MCP endpoint every editor window and every agent client uses. 0 (default) means 39273. All windows must agree on this value; each window's own internal server takes an ephemeral port and is never contacted directly."
+          "description": "Localhost port for the shared cobrowser daemon — the single MCP endpoint every editor window and every agent client uses. 0 (default) means 39273. All windows must agree on this value; each window's own internal server takes an ephemeral port and is never contacted directly. Takes effect after reloading every window."
         },
         "cobrowser.autoFallbackPasskeys": {
           "type": "boolean",
           "default": true,
-          "description": "Install a virtual WebAuthn authenticator so passkey prompts fail fast to a password fallback. Ignored once the browser is signed for passkeys (Cobrowser: Enable Passkeys), which gives it the real Touch ID authenticator."
-        },
-        "cobrowser.firefoxContainer": {
-          "type": "string",
-          "default": "",
-          "description": "Fallback binding for the Firefox bridge. PREFER the command \"Cobrowser: Bind Firefox Container to This Workspace\", which stores the choice per workspace without writing a .vscode/settings.json into your repo. Works with Firefox and its forks (Zen, LibreWolf, Floorp) — anything with containers and managed storage."
+          "description": "Install a virtual WebAuthn authenticator so passkey prompts fail fast to a password fallback. Ignored once the browser is signed for passkeys (Cobrowser: Enable Passkeys), which gives it the real Touch ID authenticator. Takes effect the next time the browser connects (Cobrowser: Restart Browser, or reload the window)."
         },
         "cobrowser.renderScale": {
           "type": "number",

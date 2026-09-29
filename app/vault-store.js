@@ -108,32 +108,51 @@ function parseCsv(text) {
   return rows.filter((r) => r.some((c) => c.trim()));
 }
 
-/** Import a CSV export. New logins get `scope`; existing ones get their password replaced
- *  and their scope widened to include it, never narrowed. */
+/** Which workspaces a login may be used in, carried in the CSV's note column so an export
+ *  imported back into cobrowser restores them. Other managers keep it as the login's note. */
+const WORKSPACES_NOTE = 'cobrowser-workspaces:';
+function workspacesNote(scope) {
+  return `${WORKSPACES_NOTE} ${JSON.stringify(scope === 'all' ? 'all' : normalizeScope(scope))}`;
+}
+function workspacesFromNote(note) {
+  const at = String(note || '').indexOf(WORKSPACES_NOTE);
+  if (at < 0) return undefined;
+  try {
+    const v = JSON.parse(String(note).slice(at + WORKSPACES_NOTE.length).trim().split('\n')[0]);
+    return v === 'all' ? 'all' : Array.isArray(v) ? normalizeScope(v) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Import a CSV export. New logins get `scope`, plus the workspaces a cobrowser export noted
+ *  for them; existing ones get their password replaced and their workspaces widened to include
+ *  those, never narrowed. */
 function importCsv(vault, text, scope) {
   const rows = parseCsv(text);
   const result = { count: 0, added: 0, replaced: 0 };
   if (rows.length < 2) return result;
   const header = rows[0].map((h) => h.trim().toLowerCase());
   const col = (...names) => header.findIndex((h) => names.includes(h));
-  const iu = col('url', 'login_uri', 'website'), in_ = col('username', 'login_username', 'user'), ip = col('password', 'login_password');
+  const iu = col('url', 'login_uri', 'website'), in_ = col('username', 'login_username', 'user'), ip = col('password', 'login_password'), inote = col('note', 'notes');
   if (iu < 0 || in_ < 0 || ip < 0) throw new Error(`CSV needs url/username/password columns; found: ${header.join(', ')}`);
   for (const r of rows.slice(1)) {
     const url = r[iu], user = r[in_], pass = r[ip];
     if (!url || !pass) continue;
-    const { replaced } = upsertLogin(vault, url, user || '', pass, scope, { mergeScope: true });
+    const noted = inote >= 0 ? workspacesFromNote(r[inote]) : undefined;
+    const { replaced } = upsertLogin(vault, url, user || '', pass, noted === undefined ? scope : mergeScope(noted, normalizeScope(scope)), { mergeScope: true });
     result.count++;
     if (replaced) result.replaced++; else result.added++;
   }
   return result;
 }
 
-/** Every login as a CSV in Chrome's export format (name,url,username,password), which Apple
- *  Passwords, Bitwarden, 1Password, Chrome and this vault's own import all read. Scopes are a
- *  cobrowser idea with no column to go in; they are not exported. */
+/** Every login as a CSV in Chrome's export format (name,url,username,password,note), which
+ *  Apple Passwords, Bitwarden, 1Password, Chrome and this vault's own import all read. The
+ *  note says which workspaces may use the login (see workspacesNote). */
 function exportCsv(vault) {
   const q = (v) => (/[",\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
-  const rows = [['name', 'url', 'username', 'password']];
+  const rows = [['name', 'url', 'username', 'password', 'note']];
   for (const e of vault.entries) {
     const label = siteLabel(e);
     // The vault keeps host and port, not the scheme, and other managers match on it: a device
@@ -141,7 +160,7 @@ function exportCsv(vault) {
     // http, anything with a domain https.
     const local = isIp(e.host) || !String(e.host).includes('.');
     const url = /^https?:\/\//.test(label) ? label : `${local ? 'http' : 'https'}://${label}`;
-    rows.push([label, url, e.username || '', e.password || '']);
+    rows.push([label, url, e.username || '', e.password || '', workspacesNote(e.scope)]);
   }
   return rows.map((r) => r.map((c) => q(String(c))).join(',')).join('\n') + '\n';
 }

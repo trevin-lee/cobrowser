@@ -173,12 +173,12 @@ function buildServer(scope: Registration | undefined): Server {
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     const raw = await rawTools();
-    // bridge_* tools only appear for a workspace that is bound to a container, so an agent
-    // never sees tools it cannot use. An unscoped caller sees them and names a workspace.
-    const zenTools = scope ? (scope.container ? ZEN_TOOLS : []) : ZEN_TOOLS;
+    // bridge_* tools are always listed: a client reads the list once, when it connects, so
+    // tools that appeared only after binding would never reach an agent already running. A
+    // call in an unbound workspace explains how the human binds one.
     return scope
-      ? { tools: [listWorkspacesTool(true), ...raw, ...zenTools] }
-      : { tools: [listWorkspacesTool(false), ...withWorkspaceArg([...raw, ...zenTools])] };
+      ? { tools: [listWorkspacesTool(true), ...raw, ...ZEN_TOOLS] }
+      : { tools: [listWorkspacesTool(false), ...withWorkspaceArg([...raw, ...ZEN_TOOLS])] };
   });
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
