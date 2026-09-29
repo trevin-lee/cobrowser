@@ -55,9 +55,9 @@ workspace — and that workspace's own browser profile in the app — with the d
 daemon routes each call to the window that owns the workspace.
 
 ```
-  ~/.cursor/mcp.json ─┐                     ┌─ window A → browser + profile A
-  ~/.claude.json     ─┴─► cobrowserd :39273 ┤
-   (ONE entry)            registry + proxy  └─ window B → browser + profile B
+  VS Code, Cursor ─┐                          ┌─ window A → browser + profile A
+  Claude Code      ┼─► cobrowserd :39273 ─────┤
+  any other agent ─┘   registry + proxy       └─ window B → browser + profile B
 ```
 
 A Claude Code session is **bound to its workspace** by that workspace's own token: its tools act
@@ -67,11 +67,16 @@ their tools take a required `workspace` argument — the folder name, or the ful
 collide — and `list_workspaces` shows what is open. Either way, routing is explicit, so a
 long-running agent never lands on another workspace's browser because focus moved.
 
-| Client | Mechanism |
+cobrowser registers itself with each client through that client's own interface, the way MCP servers that come with an editor extension are meant to be:
+
+| Client | How cobrowser registers |
 |---|---|
-| **Claude Code** | `~/.claude.json` → `projects[<folder>].mcpServers.cobrowser`, with that workspace's token |
-| **VS Code** agent | `vscode.lm.registerMcpServerDefinitionProvider` (native), pointed at the daemon, unscoped |
-| **Cursor** | `~/.cursor/mcp.json` → one unscoped `cobrowser` entry (only once Cursor has been run, so `~/.cursor` exists) |
+| **VS Code** agent | VS Code's extension API (`registerMcpServerDefinitionProvider`), unscoped |
+| **Cursor** | Cursor's extension API (`vscode.cursor.mcp.registerServer`), unscoped, when cobrowser runs in Cursor; a Cursor without that API gets the entry in `~/.cursor/mcp.json` |
+| **Claude Code** | Claude Code's CLI, `claude mcp add --scope local` in the workspace folder, with that workspace's token; without the CLI, the same entry is written to `~/.claude.json` |
+| **Anything else** (Claude Desktop, Codex, Windsurf, …) | **Cobrowser: Connect Another Agent** shows the entry for the client you pick (Claude Desktop reaches the daemon through `mcp-remote`, since it only starts local programs), to add to its config |
+
+cobrowser is not a standalone MCP server (its tools need the editor extension and the browser app), so it is not published as a package or in the MCP Registry: the editor extension is how it is installed.
 
 Nothing is written into your repo, and the URL never changes: the daemon outlives every window,
 exits ~2 minutes after the last one closes, and is restarted automatically when its version no

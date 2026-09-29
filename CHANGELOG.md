@@ -2,6 +2,20 @@
 
 Release notes for earlier versions are on the [GitHub releases page](https://github.com/trevin-lee/cobrowser/releases).
 
+## 0.9.9
+
+### Added
+
+- **Cobrowser: Connect Another Agent** shows the entry for Claude Desktop, Codex, Windsurf or any other MCP client, to add to its config: the URL and cobrowser's token, and for Claude Desktop the `mcp-remote` bridge it needs.
+
+### Changed
+
+- **cobrowser registers with each agent through that agent's own interface** instead of editing its config files: Claude Code through its CLI (`claude mcp add`, per project), Cursor through its extension API. The files remain the fallback where those are missing.
+
+### Fixed
+
+- A workspace opened through a symlink got a Claude Code entry under a path Claude Code never looks up; entries are keyed by the folder's real path now.
+
 ## 0.9.8
 
 ### Changed
