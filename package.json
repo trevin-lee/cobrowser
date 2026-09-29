@@ -53,6 +53,10 @@
         "title": "Cobrowser: Restart Browser"
       },
       {
+        "command": "cobrowser.connectAgent",
+        "title": "Cobrowser: Connect Another Agent"
+      },
+      {
         "command": "cobrowser.copyFirefoxBridgeUrl",
         "title": "Cobrowser: Copy Bridge URL"
       },

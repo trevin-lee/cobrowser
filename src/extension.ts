@@ -9,6 +9,7 @@ import { startMcpHttpServer, type McpHttp } from './mcp/server';
 import { BrowserPanel } from './webview/BrowserPanel';
 import { SessionTreeProvider } from './webview/SessionTreeProvider';
 import { writeClientConfigs } from './clients/writeClientConfigs';
+import { snippetFor, type OtherClient } from './clients/agentConfigs';
 import { daemonToken, deregister, ensureDaemon, register } from './daemon/client';
 import { DEFAULT_DAEMON_PORT, DEV_DAEMON_PORT, bridgeEndpointUrl } from './daemon/protocol';
 import { AppConnection, readAppState, type AppState } from './app/AppClient';
@@ -654,6 +655,31 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       } catch (err) {
         void vscode.window.showErrorMessage(`Cobrowser: could not export logins — ${String((err as Error).message ?? err)}`);
       }
+    }),
+    // MCP clients cobrowser cannot register through an interface of theirs: show the entry
+    // for the human to add. It is the daemon's, unscoped, so its tools name a workspace.
+    vscode.commands.registerCommand('cobrowser.connectAgent', async () => {
+      const ep = { name: dev ? 'cobrowser-dev' : 'cobrowser', url: `http://127.0.0.1:${daemonPort}/mcp`, token: daemonToken(undefined, dev) };
+      const clients: OtherClient[] = ['claude-desktop', 'codex', 'windsurf', 'other'];
+      const pick = await vscode.window.showQuickPick(
+        clients.map((c) => {
+          const s = snippetFor(c, ep, os.homedir());
+          return { label: s.label, detail: `Goes in ${s.where}`, snippet: s };
+        }),
+        { title: 'Connect another agent to cobrowser', placeHolder: 'VS Code, Cursor and Claude Code are connected for you. Pick another client.' },
+      );
+      if (!pick) return;
+      const s = pick.snippet;
+      const language = (await vscode.languages.getLanguages()).includes(s.language) ? s.language : 'plaintext';
+      await vscode.window.showTextDocument(await vscode.workspace.openTextDocument({ language, content: s.text }), { preview: true });
+      const open = s.file && fs.existsSync(s.file) ? `Open ${path.basename(s.file)}` : undefined;
+      const act = await vscode.window.showInformationMessage(
+        `Cobrowser: add this to ${s.where}. It carries cobrowser's token, so keep it out of repositories. The agent there reaches every open workspace, naming one per call.`,
+        'Copy',
+        ...(open ? [open] : []),
+      );
+      if (act === 'Copy') await vscode.env.clipboard.writeText(s.text);
+      if (act === open && s.file) await vscode.window.showTextDocument(vscode.Uri.file(s.file));
     }),
     // The sidebar's tab rows: show that page's editor tab.
     vscode.commands.registerCommand('cobrowser.showTab', (pageId: string) => BrowserPanel.reveal(pageId)),
