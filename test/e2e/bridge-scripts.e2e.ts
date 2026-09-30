@@ -56,8 +56,17 @@ suite('bridge-scripts', async (r) => {
       await sleep(1600);
       const still = await run<{ quietFor: number }>('PAGE_SCRIPTS.quiet()');
       r.check(`[${ext}] settle sees a page that is still changing, then one that has stopped`, busy.quietFor < 200 && still.quietFor >= 400, { busy, still });
-      const awaited = await run<unknown>('PAGE_SCRIPTS.evaluate("(async (n) => { await new Promise((r) => setTimeout(r, 50)); return n * 2; })(...[21])", "isolated")');
-      r.check(`[${ext}] an async function's result is awaited, not dropped`, awaited === 42, awaited);
+      if (ext === 'firefox-extension') {
+        const awaited = await run<unknown>('PAGE_SCRIPTS.evaluate("(async (n) => { await new Promise((r) => setTimeout(r, 50)); return n * 2; })(...[21])", "isolated")');
+        r.check(`[${ext}] an async function's result is awaited, not dropped`, awaited === 42, awaited);
+      } else {
+        r.check(`[${ext}] carries no code evaluation at all (Chrome runs none, and the store forbids it)`, (await run<string>('typeof PAGE_SCRIPTS.evaluate')) === 'undefined' && !/\beval\(|new Function/.test(src));
+      }
+      const q = await run<{ count: number; items: Record<string, unknown>[] }>('PAGE_SCRIPTS.query("input", ["type", "value", "attr:id"], 50)');
+      const pwItem = q.items.find((i) => i.type === 'password');
+      r.check(`[${ext}] query reads every match with the fields asked, and never a password`, q.count === q.items.length && q.count >= 3 && pwItem?.value === '(filled)' && pwItem['attr:id'] === 'pw' && !JSON.stringify(q).includes('hunter2'), q);
+      const bad = await run<{ __cobrowserError?: string }>('PAGE_SCRIPTS.query("a[", ["text"], 5)');
+      r.check(`[${ext}] a bad selector is a clear error`, /not a valid CSS selector/.test(bad.__cobrowserError ?? ''), bad);
       const any = await run<{ found: boolean; text?: string }>('PAGE_SCRIPTS.probe(["no such text", "Workers"], null)');
       const none2 = await run<{ found: boolean }>('PAGE_SCRIPTS.probe(["no such text"], null)');
       r.check(`[${ext}] waiting for any of several texts finds the one that is there`, any.found && any.text === 'Workers' && !none2.found, { any, none2 });

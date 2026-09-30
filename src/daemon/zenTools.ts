@@ -22,7 +22,7 @@ export const ZEN_TOOLS: Tool[] = [
   {
     name: 'bridge_evaluate_script',
     description:
-      "Run a JS function in a tab and get its JSON-serializable result back (an async function is awaited), like the panel's evaluate_script. THIS IS THE TOOL FOR BULK READS: to collect 50 order links, run `() => [...document.querySelectorAll('a[href*=\"/orders/\"]')].map(a => a.href)` in ONE call rather than snapshotting and clicking 50 times. Runs in the ISOLATED world by default (shares the DOM, not the page's JavaScript). Pass world:\"page\" only when you need the site's own globals or framework internals — that is logged. Treat it as READ-ONLY: it can technically touch the DOM, but use click/fill for changes so the human's guards apply. Every call is throttled.",
+      "Firefox only: run a JS function in a tab and get its JSON-serializable result back (an async function is awaited), like the panel's evaluate_script. Chrome runs no code sent to an extension, so there use bridge_query, which covers most bulk reads. For bulk reads prefer bridge_query in both browsers: to collect 50 order links, one query rather than snapshotting and clicking 50 times. Runs in the ISOLATED world by default (shares the DOM, not the page's JavaScript). Pass world:\"page\" only when you need the site's own globals or framework internals — that is logged. Treat it as READ-ONLY: it can technically touch the DOM, but use click/fill for changes so the human's guards apply. Every call is throttled.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -32,6 +32,21 @@ export const ZEN_TOOLS: Tool[] = [
         world: { type: 'string', enum: ['isolated', 'page'] },
       },
       required: ['tabId', 'function'],
+    },
+  },
+  {
+    name: 'bridge_query',
+    description:
+      "THE TOOL FOR BULK READS, in Chrome and Firefox: every element matching a CSS selector (open shadow roots too), with the fields you ask for. To collect 50 order links: {selector: 'a[href*=\"/orders/\"]', fields: ['text', 'href']}, one call rather than snapshotting and clicking 50 times. Fields: text, href, src, value, checked, tag, or any attribute name (or attr:name). Returns count (all matches) and up to limit items (default 200, at most 1000). A password field's value reads as (filled).",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tabId,
+        selector: { ...str, description: 'A CSS selector, e.g. "table.orders tr" or "a[href*=\'/orders/\']".' },
+        fields: { type: 'array', items: str, description: 'Defaults to ["text", "href"].' },
+        limit: num,
+      },
+      required: ['tabId', 'selector'],
     },
   },
   {
@@ -90,7 +105,7 @@ export const ZEN_TOOLS: Tool[] = [
   {
     name: 'bridge_snapshot',
     description:
-      "Interactive elements in a tab, each with a `uid` for click/fill. Includes `href` for links — so twenty identical \"View order detail\" links can be navigated directly instead of clicked one at a time through pagination that resets. Sees into open shadow roots (sites built from web components). Lists <select> options so you can choose by visible text. Filter it: an unfiltered order-history page is 200+ mostly-unlabeled icon buttons — pass labeledOnly, textContains, role, withinSelector or limit. For bulk extraction prefer bridge_evaluate_script.",
+      "Interactive elements in a tab, each with a `uid` for click/fill. Includes `href` for links — so twenty identical \"View order detail\" links can be navigated directly instead of clicked one at a time through pagination that resets. Sees into open shadow roots (sites built from web components). Lists <select> options so you can choose by visible text. Filter it: an unfiltered order-history page is 200+ mostly-unlabeled icon buttons — pass labeledOnly, textContains, role, withinSelector or limit. For bulk extraction prefer bridge_query.",
     inputSchema: {
       type: 'object',
       properties: { tabId, labeledOnly: bool, textContains: str, role: str, withinSelector: str, limit: num },
@@ -188,7 +203,12 @@ async function runZenTool(
 ): Promise<{ content: Content[]; isError?: boolean }> {
   const { tabId } = args as { tabId?: number };
   switch (name) {
+    case 'bridge_query':
+      return asJson(await hub.call(workspace, 'query', { tabId, selector: args.selector, fields: args.fields, limit: args.limit }));
     case 'bridge_evaluate_script': {
+      if (hub.addon?.(workspace)?.browser === 'chrome') {
+        throw new Error('bridge_evaluate_script is not available in Chrome: use bridge_query to read many elements at once (a CSS selector and the fields you want), or do the step in the cobrowser panel, whose evaluate_script runs anything.');
+      }
       let expression = args.expression;
       if (typeof args.function === 'string' && args.function.trim()) {
         const fnArgs = Array.isArray(args.args) ? args.args : [];

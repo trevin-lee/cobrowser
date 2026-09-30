@@ -351,6 +351,15 @@ async function dispatch(conn, method, params) {
       return { ok: true };
     }
 
+    case 'query': {
+      await assertInScope(conn, params.tabId);
+      await pace();
+      const result = await runInTab(params.tabId, PAGE_SCRIPTS.query, [String(params.selector || ''), params.fields || null, params.limit || null]);
+      if (result && result.__cobrowserError) throw new Error(result.__cobrowserError);
+      await markTabActivity(params.tabId, 'read this page');
+      return result;
+    }
+
     case 'readPage': {
       await assertInScope(conn, params.tabId);
       const page = await runInTab(params.tabId, PAGE_SCRIPTS.readPage, [MAX_TEXT]);
@@ -397,18 +406,10 @@ async function dispatch(conn, method, params) {
       return filled;
     }
 
-    case 'evaluate': {
-      await assertInScope(conn, params.tabId);
-      await pace();
-      const world = params.world === 'page' ? 'page' : 'isolated';
-      if (world === 'page') console.log('[cobrowser] evaluate in PAGE world on tab', params.tabId);
-      // Chrome injects straight into the page's realm with world:MAIN — no <script> tag, so
-      // a page CSP cannot block it the way it can the Firefox add-on's page-world path.
-      const value = await runInTab(params.tabId, PAGE_SCRIPTS.evaluate, [String(params.expression || ''), 'isolated'], world === 'page' ? 'MAIN' : 'ISOLATED');
-      await markTabActivity(params.tabId, 'ran a script');
-      if (value && value.__cobrowserError) throw new Error(value.__cobrowserError);
-      return value;
-    }
+    case 'evaluate':
+      // Chrome runs no code sent to an extension (Manifest V3 forbids it, and so does the
+      // Chrome Web Store), so there is nothing here to evaluate with.
+      throw new Error('bridge_evaluate_script is not available in Chrome: use bridge_query to read many elements at once (a CSS selector and the fields you want), or do the step in the cobrowser panel, whose evaluate_script runs anything.');
 
     case 'fetchUrl': {
       const tab = await assertInScope(conn, params.tabId);
@@ -558,93 +559,7 @@ const PAGE_SCRIPTS = {
    * world:"page" injects a <script> into the page's own realm, which is what reaching
    * framework internals (React fibres, app globals) requires.
    */
-  evaluate: (expression, world) => {
-    const pack = (v) => {
-      // Structured-clone what we can; fall back to a description rather than throwing.
-      try {
-        return JSON.parse(JSON.stringify(v ?? null));
-      } catch {
-        return String(v);
-      }
-    };
-    if (world !== 'page') {
-      try {
-        // Indirect eval: evaluates in the isolated realm, no access to page globals.
-        const value = (0, eval)(`(${expression})`);
-        // An async function's result: wait for it (the browser waits for a returned promise).
-        if (value && typeof value.then === 'function') {
-          return Promise.resolve(value).then(pack, (e) => ({ __cobrowserError: `evaluate rejected: ${e && e.message ? e.message : e}` }));
-        }
-        return pack(value);
-      } catch (e) {
-        return { __cobrowserError: `isolated-world evaluate failed: ${e && e.message ? e.message : e}` };
-      }
-    }
-    // Page world: hand the expression to a <script> the page itself runs, and read the
-    // result back off a dataset attribute (the only channel the two realms share).
-    try {
-      const id = '__cb_eval_' + Math.random().toString(36).slice(2);
-      const tag = document.createElement('script');
-      tag.textContent =
-        'try{var r=(' + expression + ');document.documentElement.setAttribute(' +
-        JSON.stringify(id) + ', JSON.stringify(r===undefined?null:r));}catch(e){' +
-        'document.documentElement.setAttribute(' + JSON.stringify(id + '_err') + ', String(e&&e.message||e));}';
-      (document.head || document.documentElement).appendChild(tag);
-      tag.remove();
-      const err = document.documentElement.getAttribute(id + '_err');
-      const raw = document.documentElement.getAttribute(id);
-      document.documentElement.removeAttribute(id);
-      document.documentElement.removeAttribute(id + '_err');
-      if (err) return { __cobrowserError: `page-world evaluate failed: ${err}` };
-      return raw === null ? null : JSON.parse(raw);
-    } catch (e) {
-      return { __cobrowserError: `page-world evaluate failed: ${e && e.message ? e.message : e}` };
-    }
-  },
 
-  /** Same-origin fetch issued from the page, so it carries that tab's cookies. */
-  fetchUrl: async (url, method, headers, body, tabUrl) => {
-    try {
-      const target = new URL(url, location.href);
-      const here = new URL(tabUrl || location.href);
-      if (target.origin !== here.origin) {
-        return {
-          __cobrowserError:
-            `refusing a cross-origin fetch: tab is ${here.origin}, requested ${target.origin}. ` +
-            'Navigate a tab to that origin first, so the request carries the right session.',
-        };
-      }
-      const res = await fetch(target.href, {
-        method: method || 'GET',
-        headers: headers || undefined,
-        body: body ?? undefined,
-        credentials: 'include',
-        redirect: 'follow',
-      });
-      const text = await res.text();
-      let json;
-      try {
-        json = JSON.parse(text);
-      } catch {
-        /* not JSON; text is returned instead */
-      }
-      const MAX = 400000;
-      return {
-        status: res.status,
-        url: res.url,
-        contentType: res.headers.get('content-type') || '',
-        json: json ?? undefined,
-        body: json ? undefined : text.slice(0, MAX),
-        truncated: !json && text.length > MAX,
-      };
-    } catch (e) {
-      return { __cobrowserError: `fetch failed: ${e && e.message ? e.message : e}` };
-    }
-  },
-
-  /** Cheap existence check, used by waitFor. */
-  // Watch the page for changes, so waitFor can tell when it has stopped changing (a single-page
-  // app that swaps content after the URL changes is only readable once it settles).
   watch: () => {
     const prev = window.__cobrowserWatch;
     if (prev) prev.obs.disconnect();
@@ -686,22 +601,60 @@ const PAGE_SCRIPTS = {
     return { changed: e.n > 0 || location.href !== e.url || editing || formState() !== e.form, mutations: e.n };
   },
 
+  // Bulk reads without code: every element matching a CSS selector (open shadow roots too),
+  // with the fields asked for. The Chrome add-on's way to read many things at once, since
+  // Chrome runs no code sent to an extension; the same in Firefox.
+  query: (selector, fields, limit) => {
+    const want = Array.isArray(fields) && fields.length ? fields.map(String) : ['text', 'href'];
+    const max = Math.max(1, Math.min(Number(limit) || 200, 1000));
+    const found = [];
+    const walk = (root) => {
+      let hits;
+      try { hits = root.querySelectorAll(selector); } catch (e) { throw new Error(`not a valid CSS selector: ${selector}`); }
+      for (const el of hits) found.push(el);
+      for (const el of root.querySelectorAll('*')) if (el.shadowRoot) walk(el.shadowRoot);
+    };
+    try { walk(document); } catch (e) { return { __cobrowserError: e.message }; }
+    const secret = (el) => el instanceof HTMLInputElement && (el.type === 'password' || /current-password|new-password|one-time-code|cc-number|cc-csc/.test(el.autocomplete || ''));
+    const clip = (s) => { const t = String(s == null ? '' : s).replace(/\s+/g, ' ').trim(); return t.length > 500 ? t.slice(0, 500) + '…' : t; };
+    const read = (el, f) => {
+      if (f === 'text') return clip(el.innerText !== undefined ? el.innerText : el.textContent);
+      if (f === 'href') return el.href !== undefined ? String(el.href) : el.getAttribute('href');
+      if (f === 'src') return el.src !== undefined ? String(el.src) : el.getAttribute('src');
+      if (f === 'value') return secret(el) ? (el.value ? '(filled)' : '') : 'value' in el ? clip(el.value) : null;
+      if (f === 'checked') return 'checked' in el ? !!el.checked : null;
+      if (f === 'tag') return el.tagName.toLowerCase();
+      if (f.startsWith('attr:')) { const a = f.slice(5); return a === 'value' && secret(el) ? '(filled)' : el.getAttribute(a); }
+      return el.getAttribute(f);
+    };
+    const items = found.slice(0, max).map((el) => Object.fromEntries(want.map((f) => [f, read(el, f)])));
+    return { url: location.href, count: found.length, returned: items.length, truncated: found.length > items.length, items };
+  },
+
   probe: (text, selector) => {
     if (selector) {
       const el = document.querySelector(selector);
       return { found: !!el, url: location.href };
     }
     // Any of several texts, like the panel's wait_for.
+    const marker = document.getElementById('__cobrowser_activity__');
+    if (marker) marker.style.display = 'none';
     const hay = (document.body ? document.body.innerText : '') || '';
+    if (marker) marker.style.display = '';
     const hit = [].concat(text).find((t) => typeof t === 'string' && hay.includes(t));
     return { found: hit !== undefined, text: hit, url: location.href };
   },
 
   readPage: (maxText) => {
+    // The activity marker (markActivity) is ours, not the page's: hidden while reading, and
+    // its ● taken off the title.
+    const marker = document.getElementById('__cobrowser_activity__');
+    if (marker) marker.style.display = 'none';
     const text = (document.body ? document.body.innerText : '') || '';
+    if (marker) marker.style.display = '';
     return {
       url: location.href,
-      title: document.title,
+      title: document.title.replace(/^\u25CF /, ''),
       truncated: text.length > maxText,
       text: text.slice(0, maxText),
     };
@@ -722,7 +675,7 @@ const PAGE_SCRIPTS = {
       }
     };
     const scope = o.withinSelector ? document.querySelector(o.withinSelector) : document;
-    if (!scope) return { url: location.href, title: document.title, elements: [], note: `withinSelector matched nothing: ${o.withinSelector}` };
+    if (!scope) return { url: location.href, title: document.title.replace(/^\u25CF /, ''), elements: [], note: `withinSelector matched nothing: ${o.withinSelector}` };
     const found = [];
     collect(scope, found, 0);
 
@@ -806,7 +759,7 @@ const PAGE_SCRIPTS = {
     }
     return {
       url: location.href,
-      title: document.title,
+      title: document.title.replace(/^\u25CF /, ''),
       elements: out,
       truncated: !!(o.limit && found.length > out.length),
       skippedUnlabeled: skippedUnlabeled || undefined,

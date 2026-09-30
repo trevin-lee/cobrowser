@@ -328,6 +328,15 @@ async function dispatch(conn, method, params) {
       return { ok: true };
     }
 
+    case 'query': {
+      await assertInScope(conn, params.tabId);
+      await pace();
+      const result = await runInTab(params.tabId, PAGE_SCRIPTS.query, [String(params.selector || ''), params.fields || null, params.limit || null]);
+      if (result && result.__cobrowserError) throw new Error(result.__cobrowserError);
+      await markTabActivity(params.tabId, 'read this page');
+      return result;
+    }
+
     case 'readPage': {
       await assertInScope(conn, params.tabId);
       const page = await runInTab(params.tabId, PAGE_SCRIPTS.readPage, [MAX_TEXT]);
@@ -719,22 +728,60 @@ const PAGE_SCRIPTS = {
     return { changed: e.n > 0 || location.href !== e.url || editing || formState() !== e.form, mutations: e.n };
   },
 
+  // Bulk reads without code: every element matching a CSS selector (open shadow roots too),
+  // with the fields asked for. The Chrome add-on's way to read many things at once, since
+  // Chrome runs no code sent to an extension; the same in Firefox.
+  query: (selector, fields, limit) => {
+    const want = Array.isArray(fields) && fields.length ? fields.map(String) : ['text', 'href'];
+    const max = Math.max(1, Math.min(Number(limit) || 200, 1000));
+    const found = [];
+    const walk = (root) => {
+      let hits;
+      try { hits = root.querySelectorAll(selector); } catch (e) { throw new Error(`not a valid CSS selector: ${selector}`); }
+      for (const el of hits) found.push(el);
+      for (const el of root.querySelectorAll('*')) if (el.shadowRoot) walk(el.shadowRoot);
+    };
+    try { walk(document); } catch (e) { return { __cobrowserError: e.message }; }
+    const secret = (el) => el instanceof HTMLInputElement && (el.type === 'password' || /current-password|new-password|one-time-code|cc-number|cc-csc/.test(el.autocomplete || ''));
+    const clip = (s) => { const t = String(s == null ? '' : s).replace(/\s+/g, ' ').trim(); return t.length > 500 ? t.slice(0, 500) + '…' : t; };
+    const read = (el, f) => {
+      if (f === 'text') return clip(el.innerText !== undefined ? el.innerText : el.textContent);
+      if (f === 'href') return el.href !== undefined ? String(el.href) : el.getAttribute('href');
+      if (f === 'src') return el.src !== undefined ? String(el.src) : el.getAttribute('src');
+      if (f === 'value') return secret(el) ? (el.value ? '(filled)' : '') : 'value' in el ? clip(el.value) : null;
+      if (f === 'checked') return 'checked' in el ? !!el.checked : null;
+      if (f === 'tag') return el.tagName.toLowerCase();
+      if (f.startsWith('attr:')) { const a = f.slice(5); return a === 'value' && secret(el) ? '(filled)' : el.getAttribute(a); }
+      return el.getAttribute(f);
+    };
+    const items = found.slice(0, max).map((el) => Object.fromEntries(want.map((f) => [f, read(el, f)])));
+    return { url: location.href, count: found.length, returned: items.length, truncated: found.length > items.length, items };
+  },
+
   probe: (text, selector) => {
     if (selector) {
       const el = document.querySelector(selector);
       return { found: !!el, url: location.href };
     }
     // Any of several texts, like the panel's wait_for.
+    const marker = document.getElementById('__cobrowser_activity__');
+    if (marker) marker.style.display = 'none';
     const hay = (document.body ? document.body.innerText : '') || '';
+    if (marker) marker.style.display = '';
     const hit = [].concat(text).find((t) => typeof t === 'string' && hay.includes(t));
     return { found: hit !== undefined, text: hit, url: location.href };
   },
 
   readPage: (maxText) => {
+    // The activity marker (markActivity) is ours, not the page's: hidden while reading, and
+    // its ● taken off the title.
+    const marker = document.getElementById('__cobrowser_activity__');
+    if (marker) marker.style.display = 'none';
     const text = (document.body ? document.body.innerText : '') || '';
+    if (marker) marker.style.display = '';
     return {
       url: location.href,
-      title: document.title,
+      title: document.title.replace(/^\u25CF /, ''),
       truncated: text.length > maxText,
       text: text.slice(0, maxText),
     };
@@ -755,7 +802,7 @@ const PAGE_SCRIPTS = {
       }
     };
     const scope = o.withinSelector ? document.querySelector(o.withinSelector) : document;
-    if (!scope) return { url: location.href, title: document.title, elements: [], note: `withinSelector matched nothing: ${o.withinSelector}` };
+    if (!scope) return { url: location.href, title: document.title.replace(/^\u25CF /, ''), elements: [], note: `withinSelector matched nothing: ${o.withinSelector}` };
     const found = [];
     collect(scope, found, 0);
 
@@ -839,7 +886,7 @@ const PAGE_SCRIPTS = {
     }
     return {
       url: location.href,
-      title: document.title,
+      title: document.title.replace(/^\u25CF /, ''),
       elements: out,
       truncated: !!(o.limit && found.length > out.length),
       skippedUnlabeled: skippedUnlabeled || undefined,

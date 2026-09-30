@@ -112,3 +112,15 @@ test('in a workspace that is not bound, a bridge call says how the human binds o
   await assert.rejects(hub.call('/w', 'listTabs'), /not bound.*Bind Chrome Tab Group.*Bind Firefox Container/s);
   hub.close();
 });
+
+test('bridge_query forwards the selector, fields and limit', async () => {
+  const { hub, calls } = fakeHub(() => ({ count: 1, items: [] }));
+  await callZenTool(hub, '/ws', 'bridge_query', { tabId: 2, selector: 'a', fields: ['text', 'href'], limit: 10 });
+  assert.deepEqual([calls[0].method, calls[0].params], ['query', { tabId: 2, selector: 'a', fields: ['text', 'href'], limit: 10 }]);
+});
+
+test('bridge_evaluate_script against Chrome says to use bridge_query, without calling the add-on', async () => {
+  const { hub, calls } = fakeHub(() => 1, { browser: 'chrome', version: '9.9.9', expected: '9.9.9', stale: false });
+  await assert.rejects(callZenTool(hub, '/ws', 'bridge_evaluate_script', { tabId: 1, function: '() => 1' }), /not available in Chrome: use bridge_query/);
+  assert.equal(calls.length, 0);
+});
