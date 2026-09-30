@@ -40,7 +40,9 @@ has a **Reset** button; only that page can reset it, not a script in a tab.
 ## Differences from the Firefox add-on
 
 - Screenshots bring the tab to the front first: Chrome can only capture a window's visible tab.
-- `world: "page"` evaluation injects straight into the page's realm (`MAIN` world), so a
-  page's CSP cannot block it the way it can the Firefox add-on's `<script>`-tag route.
+- No `bridge_evaluate_script`: Chrome runs no code sent to an extension (Manifest V3 forbids
+  it, and so does the Chrome Web Store). `bridge_query` covers bulk reads: a CSS selector and
+  the fields to return for every match. Anything that needs real code goes in the cobrowser
+  panel, whose `evaluate_script` runs anything.
 - The service worker is kept alive by a 20 s keepalive on each socket (Chrome 116+) and an
   alarm that reconnects within 30 s if it was torn down anyway.

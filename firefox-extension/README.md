@@ -65,7 +65,7 @@ group binding, and the other way round.
 
 `bridge_list_tabs`, `bridge_new_tab`, `bridge_close_tab`, `bridge_activate_tab`,
 `bridge_navigate`, `bridge_read_page`, `bridge_snapshot`, `bridge_click`, `bridge_fill`,
-`bridge_wait_for`, `bridge_evaluate_script`, `bridge_fetch`, `bridge_screenshot`,
+`bridge_wait_for`, `bridge_query`, `bridge_evaluate_script`, `bridge_fetch`, `bridge_screenshot`,
 `bridge_list_containers`.
 
 Input is **synthetic** (`isTrusted: false`): no extension can send real input. Links, buttons
@@ -77,9 +77,11 @@ saying so, and the agent moves that step to the cobrowser panel, where input is 
 `about:` pages and addons.mozilla.org cannot be scripted, so tabs there are listed but not
 readable.
 
-`bridge_evaluate_script` is for collecting many things at once: fifty order links in one call
-rather than fifty clicks. It runs in the **isolated world** (the DOM, not the page's
-JavaScript); `world: "page"` reaches the site's own globals and is logged. `bridge_fetch` makes
+`bridge_query` is for collecting many things at once: fifty order links in one call rather
+than fifty clicks (a CSS selector, and the fields to return for every match).
+`bridge_evaluate_script` runs a function when a query is not enough, Firefox only. It runs in
+the **isolated world** (the DOM, not the page's JavaScript); `world: "page"` reaches the site's
+own globals and is logged. `bridge_fetch` makes
 a **same-origin** request from a tab with that tab's cookies, for JSON APIs and downloads
 behind a login. Cross-origin is refused.
 

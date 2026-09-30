@@ -2,6 +2,18 @@
 
 Release notes for earlier versions are on the [GitHub releases page](https://github.com/trevin-lee/cobrowser/releases).
 
+## 0.9.11
+
+### Added
+
+- **`bridge_query`**, the way to read many things at once in your own browser: a CSS selector and the fields to return (text, link, value, any attribute) for every match, in Chrome and Firefox.
+
+### Fixed
+
+- **`bridge_evaluate_script` never worked in Chrome.** Chrome refuses to run code sent to an extension, so every call failed with a security-policy error. The Chrome add-on no longer carries any code evaluation (the Chrome Web Store requires that too); a call there says to use `bridge_query`. Firefox keeps `bridge_evaluate_script`.
+- Reading a page in your own browser right after another action returned the add-on's own activity label in the text and a "●" in the title.
+- A new test suite runs the Chrome add-on in a real Chrome for Testing, which is how both of these were found.
+
 ## 0.9.10
 
 ### Fixed
