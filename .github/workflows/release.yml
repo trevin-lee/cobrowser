@@ -218,3 +218,47 @@ jobs:
               esac
             done
           done
+
+  marketplace:
+    name: Publish to the VS Code Marketplace
+    needs: release
+    runs-on: ubuntu-latest
+    env:
+      VSCE_PAT: ${{ secrets.VSCE_PAT }}
+    steps:
+      - name: Marketplace token
+        id: creds
+        run: |
+          if [ -n "$VSCE_PAT" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning title=Not published to the VS Code Marketplace::Set the VSCE_PAT repository secret (an Azure DevOps token for the trevin-lee publisher), then run this workflow by hand with tag $TAG."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-node@v4
+        if: steps.creds.outputs.ok == 'true'
+        with:
+          node-version: 22
+
+      # The same macOS packages Open VSX gets, built with the release. A version already on
+      # the Marketplace for a platform is left alone. (Azure DevOps retires this kind of token
+      # on 2026-12-01; publishing moves to Microsoft Entra ID, vsce --azure-credential, first.)
+      - uses: actions/download-artifact@v4
+        if: steps.creds.outputs.ok == 'true'
+        with:
+          name: openvsx-packages
+          path: ${{ runner.temp }}/targets
+
+      - name: Publish the macOS packages
+        if: steps.creds.outputs.ok == 'true'
+        run: |
+          for vsix in "$RUNNER_TEMP"/targets/*.vsix; do
+            read -r id version < <(unzip -p "$vsix" extension/package.json | node -e 'const p = JSON.parse(require("fs").readFileSync(0, "utf8")); console.log(p.publisher + "." + p.name, p.version)')
+            target="$(unzip -p "$vsix" extension.vsixmanifest | sed -n 's/.*TargetPlatform="\([^"]*\)".*/\1/p' | head -1)"
+            if npx --yes @vscode/vsce show "$id" --json 2>/dev/null | node -e 'const d = JSON.parse(require("fs").readFileSync(0, "utf8") || "{}"); process.exit((d.versions || []).some((v) => v.version === process.argv[1] && (v.targetPlatform || "universal") === process.argv[2]) ? 0 : 1)' "$version" "$target"; then
+              echo "$id $version ($target) is already on the Marketplace"
+              continue
+            fi
+            npx --yes @vscode/vsce publish --packagePath "$vsix" -p "$VSCE_PAT"
+          done
