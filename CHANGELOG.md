@@ -2,6 +2,12 @@
 
 Release notes for earlier versions are on the [GitHub releases page](https://github.com/trevin-lee/cobrowser/releases).
 
+## Unreleased
+
+### Added
+
+- **On the Visual Studio Marketplace.** VS Code installs and updates cobrowser from its Extensions view, like Cursor and VSCodium do from Open VSX. 0.9.11 is the first version there.
+
 ## 0.9.11
 
 ### Added
