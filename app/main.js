@@ -1102,11 +1102,31 @@ class Tab {
     });
     // "Leave site? Changes you made may not be saved." Without a handler the navigation was
     // silently cancelled. The answer has to be given synchronously.
+    // "Leave this site?" Electron wants the answer synchronously, and a synchronous dialog
+    // freezes the whole app (every tab, every agent) until someone answers it. So for a
+    // navigation of ours (address bar, back/forward/reload, an agent's navigate) the page
+    // stays for now, the question is asked without blocking, and Leave redoes the navigation.
+    // One the page starts itself (a link clicked in it) cannot be redone, so it just leaves.
+    this.leaving = false;
+    this.navIntent = undefined;
     wc.on('will-prevent-unload', (event) => {
-      const leave = TEST_DIALOG !== undefined
-        ? TEST_DIALOG === 'accept'
-        : (focusApp(), dialog.showMessageBoxSync({ type: 'question', message: 'Leave this site?', detail: `${hostOf(wc.getURL())}: changes you made may not be saved.`, buttons: ['Leave', 'Stay'], defaultId: 1, cancelId: 1 }) === 0);
-      if (leave) event.preventDefault();
+      if (this.leaving) { this.leaving = false; event.preventDefault(); return; }
+      const redo = this.navIntent;
+      if (!redo) { log(`tab ${this.id}: left ${hostOf(wc.getURL())} despite its unsaved-changes prompt (a navigation the page started)`); event.preventDefault(); return; }
+      if (this.askingToLeave) return; // already asking; stay until answered
+      this.askingToLeave = true;
+      this.pendingDialogs++;
+      // Test instances answer as told, through the same stay-then-redo path.
+      const ask = TEST_DIALOG !== undefined
+        ? Promise.resolve({ response: TEST_DIALOG === 'accept' ? 0 : 1 })
+        : (focusApp(), dialog.showMessageBox({ type: 'question', message: 'Leave this site?', detail: `${hostOf(wc.getURL())}: changes you made may not be saved.`, buttons: ['Leave', 'Stay'], defaultId: 1, cancelId: 1 }));
+      ask
+        .then(({ response }) => {
+          // Redo once Chromium has finished cancelling the navigation the page held up.
+          if (response === 0) setTimeout(() => { if (!wc.isDestroyed()) { this.leaving = true; redo(); } }, 100);
+        })
+        .catch(() => undefined)
+        .finally(() => { this.askingToLeave = false; this.pendingDialogs--; });
     });
     wc.on('destroyed', () => workspace.onTabGone(this));
     this.win.on('closed', () => workspace.onTabGone(this));
@@ -1116,6 +1136,7 @@ class Tab {
   /** Paint at full rate while a panel shows the tab or something is acting on it, once a
    *  second otherwise. */
   setWatched() {
+    if (this.win.isDestroyed()) return; // a boost timer can outlive its tab
     const wc = this.win.webContents;
     if (wc.isDestroyed()) return;
     wc.setFrameRate(this.subscribers.size || this.boostTimer ? FRAME_RATE : HIDDEN_FRAME_RATE);
@@ -1197,10 +1218,12 @@ class Tab {
     const wc = this.win.webContents;
     return new Promise((resolve) => {
       let done = false;
+      let intent;
       const finish = (extra) => {
         if (done) return;
         done = true;
         clearTimeout(timer);
+        if (this.navIntent === intent) this.navIntent = undefined;
         wc.off('dom-ready', ok); wc.off('did-navigate-in-page', inPage); wc.off('did-fail-load', fail);
         resolve({ url: wc.isDestroyed() ? '' : wc.getURL(), title: wc.isDestroyed() ? '' : wc.getTitle(), ...extra });
       };
@@ -1210,7 +1233,7 @@ class Tab {
       const fail = (_e, code, desc, _u, isMain) => { if (isMain && code !== -3) finish({ error: `${desc || 'load failed'} (${code})` }); };
       wc.on('dom-ready', ok); wc.on('did-navigate-in-page', inPage); wc.on('did-fail-load', fail);
       const timer = setTimeout(() => finish({ timedOut: true }), timeout);
-      try {
+      const start = () => {
         if (kind === 'url') wc.loadURL(url).catch(() => undefined); // failures arrive as did-fail-load
         else if (kind === 'reload') wc.reload();
         else {
@@ -1219,6 +1242,12 @@ class Tab {
           if (!can) return finish({ noop: true });
           if (kind === 'back') h.goBack(); else h.goForward();
         }
+      };
+      // If the page asks "Leave this site?", this is what Leave redoes (will-prevent-unload).
+      intent = () => { try { start(); } catch (e) { finish({ error: e.message }); } };
+      this.navIntent = intent;
+      try {
+        start();
       } catch (e) { finish({ error: e.message }); }
     });
   }
