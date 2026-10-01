@@ -1,24 +1,22 @@
 name: Release
 
 # A pushed v* tag becomes a GitHub Release carrying everything cobrowser ships:
-#   - cobrowser-<version>.vsix                    the editor extension
+#   - cobrowser-<version>.vsix                    the editor extension, for installing by hand
+#   - cobrowser-darwin-{arm64,x64}-<version>.vsix the same, per Mac, as the stores get them
 #   - cobrowser-bridge-chrome-<version>.zip       the Chrome bridge (loaded unpacked)
 #   - cobrowser-bridge-firefox-<version>.xpi      the Firefox bridge, signed by Mozilla
 #   - firefox-updates.json                        where installed Firefox add-ons look for updates
-# and publishes it to Open VSX (where Cursor and VSCodium install extensions from) as two
-# macOS packages, Apple silicon and Intel, so no other platform is offered one it cannot run.
-# It runs on macOS: the vault's Touch-ID-or-password helper is built with Xcode's Swift.
+# then publish-extension.yml publishes the release's macOS packages to the Visual Studio
+# Marketplace and Open VSX. It runs on macOS: the vault's Touch-ID-or-password helper is built
+# with Xcode's Swift.
 #
 # Cutting one: bump package.json and both add-on manifests to the same version (npm run
 # release does it), add its CHANGELOG entry, then `git tag vX.Y.Z && git push origin main vX.Y.Z`.
 #
-# Firefox signing needs two repository secrets, from
-# https://addons.mozilla.org/developers/addon/api/key/ (the account that owns the add-on):
-#   AMO_JWT_ISSUER, AMO_JWT_SECRET
-# Open VSX publishing needs an access token from https://open-vsx.org (profile → Settings →
-# Access Tokens) of an account in the publisher's namespace: OVSX_PAT.
-# Without these the release is still made, and the run warns about what it skipped. Run this
-# workflow by hand with a tag to fill in a release afterwards.
+# Secrets: AMO_JWT_ISSUER and AMO_JWT_SECRET (https://addons.mozilla.org/developers/addon/api/key/,
+# the account that owns the add-on) sign the Firefox add-on; the stores' credentials are
+# described in publish-extension.yml. Without one, that part is skipped with a warning. Run
+# this workflow by hand with a tag to fill in a release afterwards.
 on:
   push:
     tags: ['v*']
@@ -40,11 +38,11 @@ jobs:
     env:
       COBROWSER_REQUIRE_AUTH_HELPER: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.TAG }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -74,21 +72,14 @@ jobs:
           npm run package:chrome
           unzip -l cobrowser-*.vsix | grep -q 'extension/dist/app/cobrowser-auth$' || { echo "::error::the .vsix has no cobrowser-auth"; exit 1; }
 
-      - name: Package the macOS builds for Open VSX
+      - name: Package the macOS builds the stores get
         run: |
-          mkdir -p "$RUNNER_TEMP/targets"
           for target in darwin-arm64 darwin-x64; do
-            npx vsce package --target "$target" -o "$RUNNER_TEMP/targets/"
+            npx vsce package --target "$target"
           done
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: openvsx-packages
-          path: ${{ runner.temp }}/targets/*.vsix
-          if-no-files-found: error
-
       - name: Create or update the GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.TAG }}
           body_path: ${{ runner.temp }}/release-notes.md
@@ -117,12 +108,12 @@ jobs:
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: steps.creds.outputs.ok == 'true'
         with:
           ref: ${{ env.TAG }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         if: steps.creds.outputs.ok == 'true'
         with:
           node-version: 22
@@ -150,115 +141,13 @@ jobs:
           ' "$TAG" "$GITHUB_REPOSITORY" "$xpi" > firefox-updates.json
           gh release upload "$TAG" "$xpi" firefox-updates.json --clobber
 
-  openvsx:
-    name: Publish to Open VSX
+  extension:
+    name: Publish to the stores
     needs: release
-    runs-on: ubuntu-latest
-    env:
-      OVSX_PAT: ${{ secrets.OVSX_PAT }}
-      GH_TOKEN: ${{ github.token }}
-    steps:
-      - name: Open VSX token
-        id: creds
-        run: |
-          if [ -n "$OVSX_PAT" ]; then
-            echo "ok=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning title=Not published to Open VSX::Set the OVSX_PAT repository secret, then run this workflow by hand with tag $TAG."
-            echo "ok=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - uses: actions/setup-node@v4
-        if: steps.creds.outputs.ok == 'true'
-        with:
-          node-version: 22
-
-      # Built in the release job from the same commit as the release's own .vsix. A version
-      # already there for a platform is left alone (Open VSX refuses repeats).
-      - uses: actions/download-artifact@v4
-        if: steps.creds.outputs.ok == 'true'
-        with:
-          name: openvsx-packages
-          path: ${{ runner.temp }}/targets
-
-      - name: Publish the macOS packages
-        if: steps.creds.outputs.ok == 'true'
-        run: |
-          for vsix in "$RUNNER_TEMP"/targets/*.vsix; do
-            read -r ns name version < <(unzip -p "$vsix" extension/package.json | node -e 'const p = JSON.parse(require("fs").readFileSync(0, "utf8")); console.log(p.publisher, p.name, p.version)')
-            target="$(unzip -p "$vsix" extension.vsixmanifest | sed -n 's/.*TargetPlatform="\([^"]*\)".*/\1/p' | head -1)"
-            if curl -sf -o /dev/null "https://open-vsx.org/api/$ns/$name/$target/$version"; then
-              echo "$ns.$name $version ($target) is already on Open VSX"
-              continue
-            fi
-            npx --yes ovsx@1 verify-pat "$ns" -p "$OVSX_PAT"
-            npx --yes ovsx@1 publish "$vsix" -p "$OVSX_PAT"
-          done
-
-      # cobrowser runs on macOS only. Any other platform's package on Open VSX (0.9.6 went out
-      # as one package for every platform) is removed, so no one is offered one that cannot run.
-      # A removal that fails only warns: the release itself is already out.
-      - name: Remove packages for other platforms
-        if: steps.creds.outputs.ok == 'true'
-        run: |
-          vsix="$(ls "$RUNNER_TEMP"/targets/*.vsix | head -1)"
-          read -r ns name < <(unzip -p "$vsix" extension/package.json | node -e 'const p = JSON.parse(require("fs").readFileSync(0, "utf8")); console.log(p.publisher, p.name)')
-          versions="$(curl -sf "https://open-vsx.org/api/$ns/$name/versions?size=100" | node -e 'console.log(Object.keys(JSON.parse(require("fs").readFileSync(0, "utf8")).versions).join(" "))')"
-          for v in $versions; do
-            for target in $(curl -sf "https://open-vsx.org/api/$ns/$name/$v" | node -e 'console.log(Object.keys(JSON.parse(require("fs").readFileSync(0, "utf8")).downloads || {}).join(" "))'); do
-              case "$target" in
-                darwin-*) ;;
-                *)
-                  echo "removing $ns.$name $v ($target)"
-                  # open-vsx.org cannot delete from the command line until it runs registry 1.2;
-                  # until then this warns, and the version is deleted from its page by hand.
-                  npx --yes ovsx@1 unpublish "$ns.$name" --versions "$v" --target "$target" --force -p "$OVSX_PAT" \
-                    || echo "::warning title=Open VSX still lists $v for $target::Delete it from https://open-vsx.org/extension/$ns/$name/$v (signed in as its publisher); open-vsx.org cannot delete from the command line yet."
-                  ;;
-              esac
-            done
-          done
-
-  marketplace:
-    name: Publish to the VS Code Marketplace
-    needs: release
-    runs-on: ubuntu-latest
-    env:
-      VSCE_PAT: ${{ secrets.VSCE_PAT }}
-    steps:
-      - name: Marketplace token
-        id: creds
-        run: |
-          if [ -n "$VSCE_PAT" ]; then
-            echo "ok=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning title=Not published to the VS Code Marketplace::Set the VSCE_PAT repository secret (an Azure DevOps token for the trevin-lee publisher), then run this workflow by hand with tag $TAG."
-            echo "ok=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - uses: actions/setup-node@v4
-        if: steps.creds.outputs.ok == 'true'
-        with:
-          node-version: 22
-
-      # The same macOS packages Open VSX gets, built with the release. A version already on
-      # the Marketplace for a platform is left alone. (Azure DevOps retires this kind of token
-      # on 2026-12-01; publishing moves to Microsoft Entra ID, vsce --azure-credential, first.)
-      - uses: actions/download-artifact@v4
-        if: steps.creds.outputs.ok == 'true'
-        with:
-          name: openvsx-packages
-          path: ${{ runner.temp }}/targets
-
-      - name: Publish the macOS packages
-        if: steps.creds.outputs.ok == 'true'
-        run: |
-          for vsix in "$RUNNER_TEMP"/targets/*.vsix; do
-            read -r id version < <(unzip -p "$vsix" extension/package.json | node -e 'const p = JSON.parse(require("fs").readFileSync(0, "utf8")); console.log(p.publisher + "." + p.name, p.version)')
-            target="$(unzip -p "$vsix" extension.vsixmanifest | sed -n 's/.*TargetPlatform="\([^"]*\)".*/\1/p' | head -1)"
-            if npx --yes @vscode/vsce show "$id" --json 2>/dev/null | node -e 'const d = JSON.parse(require("fs").readFileSync(0, "utf8") || "{}"); process.exit((d.versions || []).some((v) => v.version === process.argv[1] && (v.targetPlatform || "universal") === process.argv[2]) ? 0 : 1)' "$version" "$target"; then
-              echo "$id $version ($target) is already on the Marketplace"
-              continue
-            fi
-            npx --yes @vscode/vsce publish --packagePath "$vsix" -p "$VSCE_PAT"
-          done
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/publish-extension.yml
+    with:
+      tag: ${{ inputs.tag || github.ref_name }}
+    secrets: inherit

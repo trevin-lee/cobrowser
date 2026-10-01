@@ -1,0 +1,127 @@
+# Publishes a release's macOS packages (the cobrowser-darwin-*.vsix the Release workflow built
+# and attached) to the Visual Studio Marketplace, which VS Code installs from, and to Open VSX,
+# which Cursor, VSCodium and Windsurf install from. Called by release.yml for each new tag; run
+# it by hand to publish an existing release. Each store is skipped until it is set up, and a
+# version already there is left alone (--skip-duplicate).
+#
+# Marketplace: variables AZURE_CLIENT_ID, AZURE_TENANT_ID and AZURE_SUBSCRIPTION_ID of a
+# user-assigned managed identity with a federated credential for this repository's
+# `marketplace` environment, added as a Contributor member of the trevin-lee publisher (the
+# same identity ide-design publishes with). GitHub names the repository by its IDs in that
+# credential's subject: repo:trevin-lee@134039857/cobrowser@1311381799:environment:marketplace.
+# No token: the job signs in with GitHub's OIDC token (Marketplace PATs retire 2026-12-01).
+#
+# Open VSX: secret OVSX_PAT, an open-vsx.org access token for the trevin-lee namespace.
+
+name: Publish extension
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, e.g. v0.9.13"
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  marketplace:
+    runs-on: ubuntu-latest
+    environment: marketplace
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      - name: Skipped
+        if: env.CLIENT_ID == ''
+        run: echo "No AZURE_CLIENT_ID variable; the extension was not published to the Marketplace." >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: azure/login@v3
+        if: env.CLIENT_ID != ''
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Identity to add to the publisher
+        if: env.CLIENT_ID != ''
+        run: |
+          # The Marketplace knows the identity by this ID; add it once under the publisher's
+          # Members as Contributor (marketplace.visualstudio.com/manage).
+          id=$(az rest -u https://app.vssps.visualstudio.com/_apis/profile/profiles/me --resource 499b84ac-1321-427f-aa17-267ca6975798 --query id -o tsv)
+          echo "Publisher member ID of this workflow: \`$id\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Download the release's macOS packages
+        if: env.CLIENT_ID != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "cobrowser-darwin-*.vsix"
+
+      - uses: actions/setup-node@v7
+        if: env.CLIENT_ID != ''
+        with:
+          node-version: 22
+
+      - name: Publish to the Marketplace
+        if: env.CLIENT_ID != ''
+        run: |
+          npx --yes @vscode/vsce@4.0.0 publish --packagePath cobrowser-darwin-*.vsix --azure-credential --skip-duplicate
+          echo "https://marketplace.visualstudio.com/items?itemName=trevin-lee.cobrowser" >> "$GITHUB_STEP_SUMMARY"
+
+  open-vsx:
+    runs-on: ubuntu-latest
+    env:
+      OVSX_PAT: ${{ secrets.OVSX_PAT }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      - name: Download the release's macOS packages
+        if: env.OVSX_PAT != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "cobrowser-darwin-*.vsix"
+
+      - uses: actions/setup-node@v7
+        if: env.OVSX_PAT != ''
+        with:
+          node-version: 22
+
+      - name: Publish to Open VSX
+        if: env.OVSX_PAT != ''
+        run: |
+          for vsix in cobrowser-darwin-*.vsix; do
+            npx --yes ovsx@1.2.0 publish --packagePath "$vsix" --skip-duplicate
+          done
+          echo "https://open-vsx.org/extension/trevin-lee/cobrowser" >> "$GITHUB_STEP_SUMMARY"
+
+      # cobrowser runs on macOS only: any other platform's package (0.9.6 went out as one for
+      # every platform) is removed, so no one is offered one that cannot run. open-vsx.org cannot
+      # delete from the command line until it runs registry 1.2, so until then this warns.
+      - name: Remove packages for other platforms
+        if: env.OVSX_PAT != ''
+        run: |
+          versions="$(curl -sf "https://open-vsx.org/api/trevin-lee/cobrowser/versions?size=100" | node -e 'console.log(Object.keys(JSON.parse(require("fs").readFileSync(0, "utf8")).versions).join(" "))')"
+          for v in $versions; do
+            for target in $(curl -sf "https://open-vsx.org/api/trevin-lee/cobrowser/$v" | node -e 'console.log(Object.keys(JSON.parse(require("fs").readFileSync(0, "utf8")).downloads || {}).join(" "))'); do
+              case "$target" in
+                darwin-*) ;;
+                *)
+                  npx --yes ovsx@1.2.0 unpublish trevin-lee.cobrowser --versions "$v" --target "$target" --force \
+                    || echo "::warning title=Open VSX still lists $v for $target::Delete it from https://open-vsx.org/extension/trevin-lee/cobrowser/$v (signed in as its publisher)."
+                  ;;
+              esac
+            done
+          done
+
+      - name: Skipped
+        if: env.OVSX_PAT == ''
+        run: echo "No OVSX_PAT secret; the extension was not published to Open VSX." >> "$GITHUB_STEP_SUMMARY"
