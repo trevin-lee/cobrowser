@@ -2,6 +2,12 @@
 
 Release notes for earlier versions are on the [GitHub releases page](https://github.com/trevin-lee/cobrowser/releases).
 
+## 0.9.14
+
+### Changed
+
+- **A light icon on the store listings.** The Marketplace and Open VSX pages are white, and the dark icon read as a black square there; the listings now show the same mark on a light tile. The editor keeps the plain mark.
+
 ## 0.9.13
 
 ### Fixed
