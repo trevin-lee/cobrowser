@@ -2,11 +2,12 @@
 
 Release notes for earlier versions are on the [GitHub releases page](https://github.com/trevin-lee/cobrowser/releases).
 
-## Unreleased
+## 0.9.12
 
 ### Added
 
-- **On the Visual Studio Marketplace.** VS Code installs and updates cobrowser from its Extensions view, like Cursor and VSCodium do from Open VSX. 0.9.11 is the first version there.
+- **A login can fill on several websites.** "Also fills on" in the Logins window lists other sites the same account signs in on, such as live.com for a Microsoft login saved from microsoftonline.com, whose password step happens there. Each is matched as strictly as the login's own site; `list_credentials` shows them to the agent, and exports carry them.
+- **On the Visual Studio Marketplace.** VS Code installs and updates cobrowser from its Extensions view, like Cursor and VSCodium do from Open VSX. 0.9.11 was the first version there.
 
 ## 0.9.11
 
