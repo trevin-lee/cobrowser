@@ -2,6 +2,18 @@
 
 Release notes for earlier versions are on the [GitHub releases page](https://github.com/trevin-lee/cobrowser/releases).
 
+## 0.9.13
+
+### Fixed
+
+- **"Leave this site?" froze the whole app** until it was answered: every tab, and every agent call, including other workspaces'. It is now asked without blocking, and Leave carries on with the navigation.
+- **A slow tool call dropped its editor window from the daemon.** The daemon gave up after 30 seconds (a heavy page such as the Azure portal takes longer) and then treated the window as gone until it registered again. Tool calls now get as long as the slowest tool needs, and only a window that has really gone is dropped.
+- A closed tab's repaint timer could throw an error in the app.
+
+### Changed
+
+- Releases publish to the Visual Studio Marketplace without a stored token: GitHub Actions signs in to Microsoft through OIDC. Each release also carries the per-Mac packages the stores get.
+
 ## 0.9.12
 
 ### Added
