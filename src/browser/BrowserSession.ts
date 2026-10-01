@@ -859,7 +859,7 @@ export class BrowserSession {
   }
 
   /** Logins the vault holds for the agent to use: hosts and usernames only. */
-  listCredentials(): Promise<{ host: string; username: string }[]> {
+  listCredentials(): Promise<{ host: string; alsoOn?: string[]; username: string }[]> {
     return this.app.vaultList();
   }
 

@@ -36,6 +36,30 @@ suite('credentials', async (r) => {
         srv.close();
       }
     }
+    // One account, several sign-in sites: a login saved for 127.0.0.1:port that also fills on
+    // localhost:port (a different site to the vault), and nowhere else.
+    {
+      const two = await form();
+      const L2 = await launch({ workspace: path.join(process.env.COBROWSER_E2E_SCRATCH!, 'ws-S') });
+      try {
+        await L2.conn.vaultAdd(two.base, 'sam', 'two-sites-pw', 'all', [new URL(two.cross).host]);
+        const listed = (await L2.conn.vaultList()).find((e) => e.username === 'sam');
+        const fillOn = async (url: string) => {
+          const t = await L2.conn.openTab(url, 800, 600); await sleep(600);
+          await L2.conn.cdp(t.tabId, 'Runtime.evaluate', { expression: 'document.getElementById("u").setAttribute("data-cobrowser-uid","1"); document.getElementById("p").setAttribute("data-cobrowser-uid","2"); 1' });
+          return L2.conn.vaultFill(t.tabId, { usernameUid: '1', passwordUid: '2', username: 'sam' });
+        };
+        const onOther = await fillOn(two.cross + '/');
+        r.check('[sites] a login fills on the other website it was given, and the agent is told about it', onOther.filled.length === 2 && listed?.alsoOn?.[0] === new URL(two.cross).host, { onOther, listed });
+        const other = await form(); // localhost on another port: a site it was not given
+        const elsewhere = await fillOn(other.cross + '/');
+        other.close();
+        r.check('[sites] and on no site it was not given', elsewhere.filled.length === 0, elsewhere);
+      } finally {
+        await L2.stop();
+        two.close();
+      }
+    }
     // export: every login, as a CSV other managers (and this vault) read, round-tripping
     const exportPath = path.join(process.env.COBROWSER_E2E_SCRATCH!, 'export', 'logins.csv');
     require('node:fs').mkdirSync(path.dirname(exportPath), { recursive: true });

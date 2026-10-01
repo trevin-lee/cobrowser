@@ -4,11 +4,39 @@
  * Pure functions over the decrypted vault object ({ entries: [...] }); the app does the
  * unlocking, the asking and the saving around them.
  *
- * A login: { id, host, port, username, password, scope, updatedAt }, where scope is 'all' or
- * a list of workspace paths. A workspace can only list and fill logins in its scope.
+ * A login: { id, host, port, username, password, scope, also, updatedAt }, where scope is 'all'
+ * or a list of workspace paths (a workspace can only list and fill logins in its scope), and
+ * `also` lists other websites the same account signs in on ({ host, port }), such as a
+ * Microsoft account's password page on live.com for a login saved from microsoftonline.com.
  */
 const crypto = require('node:crypto');
-const { parseSite, siteLabel, isIp } = require('./site.js');
+const { parseSite, siteLabel, siteMatches, isIp } = require('./site.js');
+
+/** Typed websites ("live.com, login.live.com") as { host, port }, deduplicated, without the
+ *  login's own site. Each is matched by the same rule as the login's own site. */
+function normalizeSites(list, own) {
+  const items = (Array.isArray(list) ? list : String(list || '').split(/[\s,]+/)).map((s) => (typeof s === 'string' ? parseSite(s) : { host: String(s?.host || '').toLowerCase(), port: String(s?.port || '') }));
+  const seen = new Set(own ? [siteLabel(own)] : []);
+  const out = [];
+  for (const s of items) {
+    if (!s.host) continue;
+    const label = siteLabel(s);
+    if (seen.has(label)) continue;
+    seen.add(label);
+    out.push({ host: s.host, port: s.port || '' });
+  }
+  return out;
+}
+
+/** Every website a login fills on: its own, then the others it was given. */
+function sitesOf(e) {
+  return [{ host: e.host, port: e.port || '' }, ...(Array.isArray(e.also) ? e.also : [])];
+}
+
+/** Does a login belong on this page? On any of its websites, each matched the usual way. */
+function loginMatches(e, page) {
+  return sitesOf(e).some((s) => siteMatches(s, page));
+}
 
 function normalizeScope(scope) {
   if (scope === 'all') return 'all';
@@ -27,7 +55,7 @@ function mergeScope(a, b) {
 }
 
 function publicEntry(e) {
-  return { host: siteLabel(e), username: e.username, scope: e.scope };
+  return { host: siteLabel(e), also: (e.also || []).map(siteLabel), username: e.username, scope: e.scope };
 }
 
 function findEntry(vault, label, username) {
@@ -41,7 +69,7 @@ function findEntry(vault, label, username) {
  * only when the caller chose it for this login (the Logins window's form); otherwise
  * (a command, an import) it is widened to include the new scope, never narrowed.
  */
-function upsertLogin(vault, site, username, password, scope, { mergeScope: merge = true } = {}) {
+function upsertLogin(vault, site, username, password, scope, { mergeScope: merge = true, also } = {}) {
   const { host, port } = parseSite(site);
   if (!host) throw new Error('site is required');
   const existing = vault.entries.find((e) => e.host === host && (e.port || '') === port && e.username === username);
@@ -49,9 +77,13 @@ function upsertLogin(vault, site, username, password, scope, { mergeScope: merge
     existing.password = password;
     existing.updatedAt = Date.now();
     if (scope !== undefined) existing.scope = merge ? mergeScope(existing.scope, normalizeScope(scope)) : normalizeScope(scope);
+    // Other websites are only ever added here, like workspaces from a command or an import.
+    if (also !== undefined) existing.also = normalizeSites([...(existing.also || []), ...normalizeSites(also)], existing);
     return { entry: existing, replaced: true };
   }
   const entry = { id: crypto.randomBytes(6).toString('hex'), host, port, username, password, scope: normalizeScope(scope), updatedAt: Date.now() };
+  const others = normalizeSites(also, entry);
+  if (others.length) entry.also = others;
   vault.entries.push(entry);
   return { entry, replaced: false };
 }
@@ -73,6 +105,8 @@ function updateLogin(vault, from, fields) {
   entry.username = username;
   if (fields.password) entry.password = fields.password;
   if (fields.scope !== undefined) entry.scope = normalizeScope(fields.scope);
+  if (fields.also !== undefined) entry.also = normalizeSites(fields.also, entry);
+  if (entry.also && !entry.also.length) delete entry.also;
   entry.updatedAt = Date.now();
   return entry;
 }
@@ -114,6 +148,18 @@ const WORKSPACES_NOTE = 'cobrowser-workspaces:';
 function workspacesNote(scope) {
   return `${WORKSPACES_NOTE} ${JSON.stringify(scope === 'all' ? 'all' : normalizeScope(scope))}`;
 }
+const SITES_NOTE = 'cobrowser-sites:';
+function sitesFromNote(note) {
+  const text = String(note || '');
+  const at = text.indexOf(SITES_NOTE);
+  if (at < 0) return undefined;
+  try {
+    const v = JSON.parse(text.slice(at + SITES_NOTE.length).trim().split('\n')[0]);
+    return Array.isArray(v) ? v.map(String) : undefined;
+  } catch {
+    return undefined;
+  }
+}
 function workspacesFromNote(note) {
   const at = String(note || '').indexOf(WORKSPACES_NOTE);
   if (at < 0) return undefined;
@@ -141,7 +187,8 @@ function importCsv(vault, text, scope) {
     const url = r[iu], user = r[in_], pass = r[ip];
     if (!url || !pass) continue;
     const noted = inote >= 0 ? workspacesFromNote(r[inote]) : undefined;
-    const { replaced } = upsertLogin(vault, url, user || '', pass, noted === undefined ? scope : noted, { mergeScope: true });
+    const also = inote >= 0 ? sitesFromNote(r[inote]) : undefined;
+    const { replaced } = upsertLogin(vault, url, user || '', pass, noted === undefined ? scope : noted, { mergeScope: true, also });
     result.count++;
     if (replaced) result.replaced++; else result.added++;
   }
@@ -161,12 +208,14 @@ function exportCsv(vault) {
     // http, anything with a domain https.
     const local = isIp(e.host) || !String(e.host).includes('.');
     const url = /^https?:\/\//.test(label) ? label : `${local ? 'http' : 'https'}://${label}`;
-    rows.push([label, url, e.username || '', e.password || '', workspacesNote(e.scope)]);
+    const note = workspacesNote(e.scope) + (e.also && e.also.length ? `\n${SITES_NOTE} ${JSON.stringify(e.also.map(siteLabel))}` : '');
+    rows.push([label, url, e.username || '', e.password || '', note]);
   }
   return rows.map((r) => r.map((c) => q(String(c))).join(',')).join('\n') + '\n';
 }
 
 module.exports = {
   normalizeScope, allowed, mergeScope, publicEntry, findEntry, upsertLogin, updateLogin, setScope, removeLogin,
+  normalizeSites, sitesOf, loginMatches,
   parseCsv, importCsv, exportCsv,
 };

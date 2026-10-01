@@ -319,7 +319,7 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'list_credentials',
     {
       description:
-        "Logins THIS workspace may use, from the human's cobrowser vault — sites and usernames only, never passwords. Logins scoped to other workspaces are not listed and cannot be filled from here; if the site you need is missing, request_credential asks the human to grant one.",
+        "Logins THIS workspace may use, from the human's cobrowser vault — sites and usernames only, never passwords. alsoOn lists other websites the same login fills on (one account, several sign-in sites). Logins scoped to other workspaces are not listed and cannot be filled from here; if the site you need is missing, request_credential asks the human to grant one.",
       inputSchema: {},
     },
     async () => {

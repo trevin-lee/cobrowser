@@ -330,7 +330,7 @@ async function requestCredential(workspaceId, { site, username, reason }) {
   const page = parseSite(String(site || ''));
   if (!page.host) return { granted: 'denied', error: 'site is required' };
   const label = siteLabel(page);
-  let matches = v.entries.filter((e) => siteMatches(e, page));
+  let matches = v.entries.filter((e) => store.loginMatches(e, page));
   if (username) matches = matches.filter((e) => e.username === username);
   const already = matches.find((e) => allowed(e, workspaceId));
   if (already) return { granted: 'already', host: label, username: already.username };
@@ -423,7 +423,7 @@ async function fillCredentials(tab, { usernameUid, passwordUid, username }) {
   const page = parseSite(tab.win.webContents.getURL());
   const host = siteLabel(page);
   // Scope first: a login outside this workspace's scope does not exist as far as it knows.
-  let matches = v.entries.filter((e) => usable(e, tab.workspace.id) && siteMatches(e, page));
+  let matches = v.entries.filter((e) => usable(e, tab.workspace.id) && store.loginMatches(e, page));
   if (username) matches = matches.filter((e) => e.username === username);
   if (matches.length === 0) return { filled: [], error: `no saved login for ${host}` };
   if (matches.length > 1) return { filled: [], error: 'several logins match — pass username', candidates: matches.map((e) => e.username) };
@@ -568,8 +568,8 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser logins
 <script>
   const $ = (id) => document.getElementById(id);
   let known = [], rows = [], unlocked = false, unlocking = false, lastError = '', sel = null, mode = 'view';
-  const draft = { host: '', user: '', pass: '', scope: [], from: null, matched: null };
-  const resetDraft = () => Object.assign(draft, { host: '', user: '', pass: '', scope: [], from: null, matched: null });
+  const draft = { host: '', also: '', user: '', pass: '', scope: [], from: null, matched: null };
+  const resetDraft = () => Object.assign(draft, { host: '', also: '', user: '', pass: '', scope: [], from: null, matched: null });
   let repaintScope = () => {};
   // A typed site, reduced to what a login's label shows, to spot a login that already exists.
   // The same reading as the vault's own (site.js parseSite), so the window's "replaces" is the vault's.
@@ -665,9 +665,11 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser logins
       if (importing) wrap.append(el('p', 'hint', 'Logins exported from cobrowser keep the workspaces the file notes for them; the others get the ones you choose here. A login already in the vault gets the password from the file, keeps its workspaces and gains the new ones. You can change each one afterwards.'));
       else {
         const f = el('div', 'fields');
-        for (const [key, label, ph, type] of [['host', 'Site', 'costco.com, or 192.168.1.50:8080', 'text'], ['user', 'Username', 'you@example.com', 'text'], ['pass', 'Password', editing ? 'unchanged' : '', 'password']]) {
+        // "Also fills on": other websites the same account signs in on (a Microsoft login asks
+        // for its password on live.com), each matched as strictly as the login's own site.
+        for (const [key, label, ph, type] of [['host', 'Site', 'costco.com, or 192.168.1.50:8080', 'text'], ['also', 'Also fills on', 'optional: other sites for this account, e.g. live.com', 'text'], ['user', 'Username', 'you@example.com', 'text'], ['pass', 'Password', editing ? 'unchanged' : '', 'password']]) {
           const row = el('div', 'field'); const inp = el('input', key === 'pass' ? '' : 'mono'); inp.type = type; inp.placeholder = ph; inp.value = draft[key]; inp.autocomplete = 'off'; inp.spellcheck = false;
-          inp.oninput = () => { draft[key] = inp.value; sync(); }; inp.onkeydown = (e) => { if (e.key === 'Enter' && canSave()) save(); };
+          inp.oninput = () => { draft[key] = inp.value; sync(); }; inp.onkeydown = (e) => { if (e.key === 'Enter' && canSave()) (editing ? saveEdit : save)(); };
           row.append(el('label', null, label), inp); f.append(row);
         }
         wrap.append(section('Login', f));
@@ -685,9 +687,11 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser logins
     if (!sel) { wrap.append(el('div', 'empty', rows.length ? 'Pick a login to see where the agent may use it.' : 'Add a login and choose which workspaces may use it. The agent can sign in with it, but never sees the password.')); return; }
 
     const t = el('div', 'title'); const id = el('div', 'id'); const h2 = el('h2', 'mono'); const [pre, dom] = hostParts(sel.host); h2.append(el('em', null, pre), dom);
-    id.append(h2, el('div', 'user mono', sel.username || '(no username)')); t.append(id);
+    id.append(h2, el('div', 'user mono', sel.username || '(no username)'));
+    if (sel.also && sel.also.length) id.append(el('div', 'user mono', 'also fills on ' + sel.also.join(', ')));
+    t.append(id);
     const acts = el('div', 'acts');
-    const ed = el('button', 'quiet', 'Edit'); ed.onclick = () => { Object.assign(draft, { host: sel.host, user: sel.username, pass: '', scope: sel.scope, from: { host: sel.host, username: sel.username } }); mode = 'edit'; render(); };
+    const ed = el('button', 'quiet', 'Edit'); ed.onclick = () => { Object.assign(draft, { host: sel.host, also: (sel.also || []).join(', '), user: sel.username, pass: '', scope: sel.scope, from: { host: sel.host, username: sel.username } }); mode = 'edit'; render(); };
     // Removing asks for Touch ID or the Mac's password, which is the confirmation.
     const rm = el('button', 'quiet danger', 'Remove'); rm.onclick = async () => { try { await vault.remove(sel.host, sel.username); sel = null; await refresh(); } catch (e) { say(failed(e)); } };
     acts.append(ed, rm); t.append(acts); wrap.append(t);
@@ -726,11 +730,11 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser logins
     const st = $('status'); if (st && (mode !== 'add' || (draft.host.trim() && draft.pass))) st.textContent = !scoped ? 'Choose a workspace, or Everywhere.' : replacing ? 'This site and username are already saved: saving replaces the password, and the workspaces shown are the ones it has now.' : '';
   };
   async function save() {
-    try { const u = draft.user.trim(); const k = siteKey(draft.host); await vault.add(draft.host.trim(), u, draft.pass, draft.scope); resetDraft(); mode = 'view'; await refresh(); sel = rows.find((r) => siteKey(r.host) === k && r.username === u) || null; render(); }
+    try { const u = draft.user.trim(); const k = siteKey(draft.host); await vault.add(draft.host.trim(), u, draft.pass, draft.scope, draft.also); resetDraft(); mode = 'view'; await refresh(); sel = rows.find((r) => siteKey(r.host) === k && r.username === u) || null; render(); }
     catch (e) { say(failed(e)); }
   }
   async function saveEdit() {
-    try { const u = draft.user.trim(); const k = siteKey(draft.host); await vault.update(draft.from, { site: draft.host.trim(), username: u, password: draft.pass || undefined, scope: draft.scope }); resetDraft(); mode = 'view'; await refresh(); sel = rows.find((r) => siteKey(r.host) === k && r.username === u) || null; render(); }
+    try { const u = draft.user.trim(); const k = siteKey(draft.host); await vault.update(draft.from, { site: draft.host.trim(), also: draft.also, username: u, password: draft.pass || undefined, scope: draft.scope }); resetDraft(); mode = 'view'; await refresh(); sel = rows.find((r) => siteKey(r.host) === k && r.username === u) || null; render(); }
     catch (e) { say(failed(e)); }
   }
   async function doImport() {
@@ -779,17 +783,17 @@ function openVaultWindow() {
 
 ipcMain.handle('vault:list', async () => (await unlockVault('show the logins in the cobrowser vault')).entries.map(publicEntry));
 ipcMain.handle('vault:workspaces', () => knownWorkspaces());
-ipcMain.handle('vault:add', async (_e, { host, username, password, scope }) => {
+ipcMain.handle('vault:add', async (_e, { host, username, password, scope, also }) => {
   if (!host || !password) throw new Error('site and password are required');
   const exists = !!vault && !!findEntry(host, username || '');
   await confirmFresh(exists ? `replace the saved password for ${username || 'the login'} on ${host}` : `add a login for ${host}`);
   // The form's scope is the one the human chose for this login, so it replaces the old one.
-  const r = upsertLogin(host, username || '', password, scope, { mergeScope: false }); saveVault();
+  const r = upsertLogin(host, username || '', password, scope, { mergeScope: false, also }); saveVault();
   return { replaced: r.replaced };
 });
-ipcMain.handle('vault:update', async (_e, { from, site, username, password, scope }) => {
+ipcMain.handle('vault:update', async (_e, { from, site, username, password, scope, also }) => {
   await confirmFresh(`change the login for ${from.username || 'the login'} on ${from.host}`);
-  updateLogin(from, { site, username, password: password || undefined, scope }); saveVault();
+  updateLogin(from, { site, username, password: password || undefined, scope, also }); saveVault();
 });
 ipcMain.handle('vault:setScope', async (_e, { host, username, scope }) => { await confirmFresh(`change which workspaces may use ${username || 'the login'} on ${host}`); setScope(host, username, scope); saveVault(); });
 ipcMain.handle('vault:remove', async (_e, { host, username }) => { await confirmFresh(`remove the login for ${username || 'the login'} on ${host}`); removeLogin(host, username); saveVault(); });
@@ -1754,7 +1758,7 @@ async function handle(ws, state, m) {
           const exists = !!vault && !!findEntry(m.host, m.username || '');
           await confirmFresh(exists ? `replace the saved password for ${m.username || 'the login'} on ${m.host}` : `add a login for ${m.host}`);
           // From a command: widen the login's scope to this workspace, never narrow it.
-          const r = upsertLogin(m.host, m.username || '', m.password, m.scope ?? [state.workspace?.id].filter(Boolean), { mergeScope: true }); saveVault();
+          const r = upsertLogin(m.host, m.username || '', m.password, m.scope ?? [state.workspace?.id].filter(Boolean), { mergeScope: true, also: m.also }); saveVault();
           return reply({ ok: true, replaced: r.replaced });
         }
         case 'vault.export': { const r = await exportVault(); return reply(r ? { ok: true, ...r } : { ok: false, canceled: true }); }
@@ -1762,7 +1766,7 @@ async function handle(ws, state, m) {
         case 'vault.list': {
           const v = await unlockVault('list the logins in the cobrowser vault');
           const wsId = state.workspace?.id;
-          return reply({ logins: v.entries.filter((e) => wsId && allowed(e, wsId)).map((e) => ({ host: siteLabel(e), username: e.username })) });
+          return reply({ logins: v.entries.filter((e) => wsId && allowed(e, wsId)).map((e) => ({ host: siteLabel(e), ...(e.also && e.also.length ? { alsoOn: e.also.map(siteLabel) } : {}), username: e.username })) });
         }
         case 'vault.lock': { lockVault(); return reply({ ok: true }); }
         case 'vault.open': { focusApp(); openVaultWindow(); return reply({ ok: true }); }

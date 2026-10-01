@@ -2,15 +2,19 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 type Scope = 'all' | string[];
-type Entry = { id: string; host: string; port: string; username: string; password: string; scope: Scope; updatedAt: number };
+type Entry = { id: string; host: string; port: string; username: string; password: string; scope: Scope; also?: { host: string; port: string }[]; updatedAt: number };
+type Page = { host: string; port: string };
+const page = (url: string): Page => { const u = new URL(url); return { host: u.hostname, port: u.port }; };
 type Vault = { entries: Entry[] };
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const store = require('../app/vault-store.js') as {
   mergeScope: (a: Scope, b: Scope) => Scope;
   allowed: (e: Entry, workspaceId: string) => boolean;
   findEntry: (v: Vault, label: string, username: string) => Entry | undefined;
-  upsertLogin: (v: Vault, site: string, username: string, password: string, scope?: Scope, opts?: { mergeScope?: boolean }) => { entry: Entry; replaced: boolean };
-  updateLogin: (v: Vault, from: { host: string; username: string }, fields: { site?: string; username?: string; password?: string; scope?: Scope }) => Entry;
+  upsertLogin: (v: Vault, site: string, username: string, password: string, scope?: Scope, opts?: { mergeScope?: boolean; also?: string | string[] }) => { entry: Entry; replaced: boolean };
+  loginMatches: (e: Entry, page: Page) => boolean;
+  publicEntry: (e: Entry) => { host: string; also: string[]; username: string; scope: Scope };
+  updateLogin: (v: Vault, from: { host: string; username: string }, fields: { site?: string; username?: string; password?: string; scope?: Scope; also?: string | string[] }) => Entry;
   removeLogin: (v: Vault, host: string, username: string) => number;
   importCsv: (v: Vault, text: string, scope: Scope) => { count: number; added: number; replaced: number };
   exportCsv: (v: Vault) => string;
@@ -68,6 +72,30 @@ test('editing refuses to turn one login into a duplicate of another, and to edit
   assert.throws(() => store.updateLogin(v, { host: 'nowhere.com', username: 'a' }, { password: 'x' }), /no longer in the vault/);
 });
 
+test('a login fills on each of its websites, each matched as strictly as its own site', () => {
+  const v = empty();
+  store.upsertLogin(v, 'login.microsoftonline.com', 'me@x.com', 'pw', 'all', { also: 'live.com, login.live.com' });
+  const e = v.entries[0];
+  assert.deepEqual(e.also, [{ host: 'live.com', port: '' }, { host: 'login.live.com', port: '' }]);
+  const on = (url: string) => store.loginMatches(e, page(url));
+  assert.equal(on('https://login.microsoftonline.com/common'), true);
+  assert.equal(on('https://login.live.com/oauth20'), true);
+  assert.equal(on('https://evil-live.com/'), false);
+  assert.equal(on('https://example.com/'), false);
+  store.upsertLogin(v, '192.168.1.1', 'admin', 'pw', 'all', { also: ['192.168.1.2'] });
+  assert.equal(store.loginMatches(v.entries[1], page('http://192.168.1.2/')), true);
+  assert.equal(store.loginMatches(v.entries[1], page('http://192.168.1.3/')), false);
+});
+
+test("editing sets a login's other websites; adding again only adds to them; the login's own site is never listed twice", () => {
+  const v = empty();
+  store.upsertLogin(v, 'microsoftonline.com', 'me', 'pw', 'all', { also: ['live.com'] });
+  store.upsertLogin(v, 'microsoftonline.com', 'me', 'pw2', 'all', { also: ['office.com', 'microsoftonline.com'] });
+  assert.deepEqual(store.publicEntry(v.entries[0]).also, ['live.com', 'office.com']);
+  store.updateLogin(v, { host: 'microsoftonline.com', username: 'me' }, { also: '' });
+  assert.equal(v.entries[0].also, undefined);
+});
+
 test('removing takes exactly the one login', () => {
   const v = empty();
   store.upsertLogin(v, 'costco.com', 'a', '1', 'all');
@@ -94,7 +122,7 @@ test('export writes every login in a form other managers and this vault read bac
   const v = empty();
   store.upsertLogin(v, 'costco.com', 'me', 'p,w"q', ['/a']);
   store.upsertLogin(v, '192.168.1.1', 'admin', 'r', 'all');
-  store.upsertLogin(v, 'nas:5000', 'admin', 's', 'all');
+  store.upsertLogin(v, 'nas:5000', 'admin', 's', 'all', { also: ['nas.local:5000'] });
   const csv = store.exportCsv(v);
   assert.match(csv, /^name,url,username,password,note\n/);
   assert.match(csv, /,https:\/\/costco\.com,/);
@@ -102,7 +130,7 @@ test('export writes every login in a form other managers and this vault read bac
   assert.match(csv, /,http:\/\/nas:5000,/);
   const back = empty();
   assert.deepEqual(store.importCsv(back, csv, []), { count: 3, added: 3, replaced: 0 });
-  const pairs = (x: Vault) => x.entries.map((e) => [e.host, e.port, e.username, e.password, JSON.stringify(e.scope)]).sort();
+  const pairs = (x: Vault) => x.entries.map((e) => [e.host, e.port, e.username, e.password, JSON.stringify(e.scope), JSON.stringify((e as { also?: unknown }).also ?? null)]).sort();
   assert.deepEqual(pairs(back), pairs(v), 'the same logins, each with the workspaces it had');
 });
 

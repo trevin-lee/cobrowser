@@ -233,8 +233,9 @@ export class AppConnection {
   //     outbound except INTO the app (add/import), and never come back.
   /** `scope` defaults to this connection's workspace inside the app. */
   /** Resolves whether it replaced an existing login's password (same site and username). */
-  async vaultAdd(host: string, username: string, password: string, scope?: 'all' | string[]): Promise<{ replaced: boolean }> {
-    const r = await this.request({ type: 'vault.add', host, username, password, ...(scope ? { scope } : {}) }, 120000);
+  /** `also`: other websites the same account signs in on (added, never removed, here). */
+  async vaultAdd(host: string, username: string, password: string, scope?: 'all' | string[], also?: string[]): Promise<{ replaced: boolean }> {
+    const r = await this.request({ type: 'vault.add', host, username, password, ...(scope ? { scope } : {}), ...(also ? { also } : {}) }, 120000);
     if (r.error) throw new Error(String(r.error));
     return { replaced: r.replaced === true };
   }
@@ -246,10 +247,10 @@ export class AppConnection {
     if (r.error) throw new Error(String(r.error));
     return { count: Number(r.count) || 0, added: Number(r.added) || 0, replaced: Number(r.replaced) || 0 };
   }
-  async vaultList(): Promise<{ host: string; username: string }[]> {
+  async vaultList(): Promise<{ host: string; alsoOn?: string[]; username: string }[]> {
     const r = await this.request({ type: 'vault.list' }, 120000);
     if (r.error) throw new Error(String(r.error));
-    return r.logins as { host: string; username: string }[];
+    return r.logins as { host: string; alsoOn?: string[]; username: string }[];
   }
   /** Ask the app to export every login to a CSV the human picks (Touch ID each time). The
    *  passwords are written by the app; nothing but the count and the path comes back. */
