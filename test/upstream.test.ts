@@ -51,8 +51,8 @@ test('a wedged window fails with a deadline instead of hanging forever', async (
   await s.stop();
 });
 
-test('a timeout is classified as unreachable, so the registration gets dropped', () => {
-  assert.ok(isUnreachable(new Error('"w" did not respond within 30s')));
+test('only a refused connection drops a window; a slow call or a tool error does not', () => {
+  assert.ok(!isUnreachable(new Error('"w" did not respond within 330s')), 'a slow call is not a gone window');
   assert.ok(isUnreachable(new Error('connect ECONNREFUSED 127.0.0.1:5000')));
   assert.ok(!isUnreachable(new Error('page crashed')), 'a real tool error must not evict the window');
 });

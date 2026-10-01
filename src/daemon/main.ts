@@ -22,7 +22,7 @@ import { isLoopbackHost, isLoopbackUrl } from '../util/localhost';
 import { IDLE_EXIT_MS, type HealthResponse, type Registration } from './protocol';
 import { Registry, isSelf } from './registry';
 import { listWorkspacesTool, withWorkspaceArg, type Tool } from './toolSchema';
-import { callUpstream, isUnreachable } from './upstream';
+import { callUpstream, isUnreachable, TOOL_CALL_TIMEOUT_MS } from './upstream';
 import { ZenHub } from './zenHub';
 import { ZEN_TOOLS, callZenTool, isZenTool } from './zenTools';
 
@@ -271,7 +271,7 @@ function buildServer(scope: Registration | undefined): Server {
     }
 
     try {
-      const result = await callUpstream(target, 'tools/call', { name, arguments: args }, { version: VERSION });
+      const result = await callUpstream(target, 'tools/call', { name, arguments: args }, { version: VERSION, timeoutMs: TOOL_CALL_TIMEOUT_MS });
       return result as { content: { type: 'text'; text: string }[] };
     } catch (e) {
       // A refused connection means the window is gone but its host pid lingers; drop it so

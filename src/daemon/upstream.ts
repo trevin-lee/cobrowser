@@ -1,8 +1,13 @@
 import type { Registration } from './protocol';
 
 /** A wedged window is worse than an absent one: its host is alive, so prune() keeps the
- *  registration, and without a deadline every call to it would hang the agent forever. */
+ *  registration, and without a deadline every call to it would hang the agent forever. Quick
+ *  requests (tools/list) get this; a tool call gets TOOL_CALL_TIMEOUT_MS. */
 export const UPSTREAM_TIMEOUT_MS = 30_000;
+/** A tool call can legitimately take minutes: a slow page with a long navigate timeout, a
+ *  wait_for, a vault confirmation, request_credential waiting for the human to answer. The
+ *  deadline must outlast every tool's own, or the daemon gives up on calls still working. */
+export const TOOL_CALL_TIMEOUT_MS = 330_000;
 
 export type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
 
@@ -97,6 +102,8 @@ export async function callUpstream(
 }
 
 /** Is this failure the window being gone, rather than the call failing? */
+/** The window is gone: nothing is listening where it registered. A call that is merely slow
+ *  ("did not respond within …") is not that, and must not drop a window that is working. */
 export function isUnreachable(e: unknown): boolean {
-  return /ECONNREFUSED|fetch failed|did not respond/i.test(String(e));
+  return /ECONNREFUSED|fetch failed/i.test(String(e));
 }
