@@ -65,6 +65,8 @@ export interface PageInfo {
   humanViewing: boolean;
   /** Who opened the tab: the agent (new_page, or a link it clicked) or the human. */
   openedBy: 'agent' | 'human';
+  /** Which agent's task it is for, when an agent named one (new_page owner). */
+  owner?: string;
 }
 
 /** Viewport-relative box of an element the agent just acted on, in CSS px. */
@@ -156,6 +158,8 @@ export class BrowserSession {
 
   /** Pages the agent opened with new_page — the ones it is expected to tidy up. */
   private agentPages = new WeakSet<AppPage>();
+  /** Which agent's task each tab is for, when agents work in parallel (new_page owner). */
+  private owners = new WeakMap<AppPage, string>();
   /** Pages that already got their passkey setup (idempotent per page). */
   private prepped = new WeakSet<AppPage>();
   /** The highest uid minted per page, so uids never repeat within a tab across documents. */
@@ -198,9 +202,12 @@ export class BrowserSession {
         const page = session.adopt(t);
         const opener = t.opener ? session.byTab.get(t.opener) : undefined;
         const agentFollows = !session.agentActive || (!!opener && opener === session.agentActive && Date.now() - session.agentActivityAt < 3000);
-        if (agentFollows && opener) {
+        // A popup from a named agent's tab is that agent's too, whichever tab is "current".
+        const owner = opener ? session.owners.get(opener) : undefined;
+        if (owner) session.owners.set(page, owner);
+        if ((agentFollows && opener) || owner) {
           session.agentPages.add(page);
-          session.app.markTab(page.tabId, 'agent');
+          session.app.markTab(page.tabId, 'agent', owner);
         }
         session.pushEvent('tab-opened', page.id, page.url(), agentFollows && opener ? 'agent' : 'human');
         await session.prepPage(page); // fail-fast passkeys before any site script runs
@@ -270,6 +277,7 @@ export class BrowserSession {
     this.pages.set(page.id, page);
     this.byTab.set(t.tabId, page);
     if (t.by === 'agent') this.agentPages.add(page); // remembered by the app across reloads
+    if (t.owner) this.owners.set(page, t.owner);
     return page;
   }
 
@@ -293,8 +301,27 @@ export class BrowserSession {
 
   /** The agent's current tab. Throws a clear error when the workspace has none. */
   private current(): AppPage {
+    // Agents working in parallel share one browser, and so one "current tab": a call that
+    // relies on it could land in another agent's tab. Once tabs belong to more than one
+    // owner, every call must say which tab.
+    const owners = this.ownersInUse();
+    if (owners.length > 1) {
+      const tabs = [...this.pages.values()].filter((p) => !p.isClosed() && this.owners.has(p)).map((p) => `${p.id} (${this.owners.get(p)})`);
+      throw new Error(`Several agents are working in this browser (${owners.join(', ')}), so pass pageId: the tab you opened for your task. Their tabs: ${tabs.join(', ')}.`);
+    }
     if (!this.agentActive || this.agentActive.isClosed()) throw new Error('no open page — call new_page first');
     return this.agentActive;
+  }
+
+  /** The owner names of open tabs (new_page owner), each once. */
+  private ownersInUse(): string[] {
+    return [...new Set([...this.pages.values()].filter((p) => !p.isClosed() && this.owners.has(p)).map((p) => this.owners.get(p)!))];
+  }
+
+  /** A tab's owner, if an agent named one. */
+  ownerOf(pageId: string): string | undefined {
+    const p = this.pageById(pageId);
+    return p ? this.owners.get(p) : undefined;
   }
 
   /** The tab a tool acts on: the one named by pageId, or the agent's current tab. */
@@ -458,6 +485,7 @@ export class BrowserSession {
         selected: p === this.agentActive,
         humanViewing: p === this.humanActive,
         openedBy: this.agentPages.has(p) ? 'agent' : 'human',
+        ...(this.owners.has(p) ? { owner: this.owners.get(p) } : {}),
       }));
   }
 
@@ -467,15 +495,16 @@ export class BrowserSession {
    * new-tab command, "open link in new tab", restoring saved tabs): `byAgent: false`, so it
    * is theirs and the agent's target does not move.
    */
-  async newPage(url?: string, opts?: { background?: boolean; byAgent?: boolean; owner?: 'agent' | 'human' }): Promise<PageInfo> {
+  async newPage(url?: string, opts?: { background?: boolean; byAgent?: boolean; openedBy?: 'agent' | 'human'; owner?: string }): Promise<PageInfo> {
     const byAgent = opts?.byAgent !== false;
-    // Whose tab it is, which can differ from who is opening it: restoring saved tabs is the
+    // Who opened it, which can differ from who is opening it now: restoring saved tabs is the
     // human's act, but a tab the agent had opened is still the agent's to tidy up.
-    const owner = opts?.owner ?? (byAgent ? 'agent' : 'human');
+    const openedBy = opts?.openedBy ?? (byAgent ? 'agent' : 'human');
+    const owner = opts?.owner?.trim() || undefined;
     if (byAgent) this.markAgent();
     const [w, h] = this.defaultSize;
-    const page = this.adopt(await this.app.openTab('about:blank', w, h, owner));
-    if (owner === 'agent') this.agentPages.add(page);
+    const page = this.adopt(await this.app.openTab('about:blank', w, h, openedBy, owner));
+    if (openedBy === 'agent') this.agentPages.add(page);
     await this.prepPage(page); // fail-fast passkeys before navigating anywhere
     if (url) await page.goto(url).catch(() => undefined);
     if (byAgent || !this.agentActive) this.setAgentTarget(page, byAgent ? 'agent' : 'human');
@@ -488,7 +517,8 @@ export class BrowserSession {
       title: page.title(),
       selected: page === this.agentActive,
       humanViewing: page === this.humanActive,
-      openedBy: owner,
+      openedBy,
+      ...(owner ? { owner } : {}),
     };
   }
 

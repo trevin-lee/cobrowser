@@ -270,8 +270,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       // Restoring is the human's act (the agent's target does not move), but each tab keeps
       // its owner: one the agent opened is still the agent's to close when done.
       const [first, ...rest] = saved;
-      await s.run(() => s.newPage(first?.url ?? 'about:blank', { byAgent: false, owner: first?.by ?? 'human' }));
-      for (const t of rest) await s.run(() => s.newPage(t.url, { background: true, byAgent: false, owner: t.by ?? 'human' }));
+      await s.run(() => s.newPage(first?.url ?? 'about:blank', { byAgent: false, openedBy: first?.by ?? 'human' }));
+      for (const t of rest) await s.run(() => s.newPage(t.url, { background: true, byAgent: false, openedBy: t.by ?? 'human' }));
     } catch (err) {
       log(`Tab restore failed: ${String(err)}`);
     } finally {

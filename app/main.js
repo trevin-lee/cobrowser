@@ -1213,6 +1213,8 @@ class Tab {
     /** Who opened the tab ('agent' | 'human'), so the agent's own tabs stay its own to tidy
      *  up after an editor reload. */
     this.by = opts.by === 'agent' ? 'agent' : 'human';
+    /** Which agent's task the tab belongs to, when agents work in parallel (new_page owner). */
+    this.owner = typeof opts.owner === 'string' && opts.owner ? opts.owner.slice(0, 60) : undefined;
     this.log = new TabLog();
     /** Out-of-process iframe sessions, by frame id (see routePoint). */
     this.frameSessions = new Map();
@@ -1802,7 +1804,7 @@ document.getElementById('c').onclick=()=>{document.title='cancel'};addEventListe
 
   info() {
     const wc = this.win.webContents;
-    return { tabId: this.id, url: wc.isDestroyed() ? '' : wc.getURL(), title: wc.isDestroyed() ? '' : wc.getTitle(), by: this.by, ...(this.opener ? { opener: this.opener } : {}) };
+    return { tabId: this.id, url: wc.isDestroyed() ? '' : wc.getURL(), title: wc.isDestroyed() ? '' : wc.getTitle(), by: this.by, ...(this.owner ? { owner: this.owner } : {}), ...(this.opener ? { opener: this.opener } : {}) };
   }
 
   close() {
@@ -2157,7 +2159,11 @@ async function handle(ws, state, m) {
       if (!t) return reply({ entries: [], latest: 0, pending: 0, error: 'no such tab' });
       return reply(t.log.requestsSince(Number(m.since) || 0, { limit: m.limit, failedOnly: !!m.failedOnly, urlContains: m.urlContains, minStatus: m.minStatus }));
     }
-    case 'markTab': { const t = w.tabs.get(m.tabId); if (t) t.by = m.by === 'agent' ? 'agent' : 'human'; return; }
+    case 'markTab': {
+      const t = w.tabs.get(m.tabId);
+      if (t) { t.by = m.by === 'agent' ? 'agent' : 'human'; if (typeof m.owner === 'string' && m.owner) t.owner = m.owner.slice(0, 60); }
+      return;
+    }
     case 'closeTab': return void w.tabs.get(m.tabId)?.close();
     case 'closeAll': return void w.closeAll();
     case 'resize': return void w.tabs.get(m.tabId)?.resize(m.width, m.height, m.scale, m.zoom, m.screen);

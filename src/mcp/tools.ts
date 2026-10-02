@@ -27,7 +27,7 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'list_pages',
     {
       description:
-        "List open browser tabs. `selected` is YOUR current tab (what tools act on without a pageId); `humanViewing` is the tab the human is looking at — they are independent, and the human switching tabs does not move you. openedBy is 'agent' (you, an earlier agent turn, or a link you clicked) or 'human'. The human sees every tab as an editor tab, so keep the set small and tidy: reuse an 'agent' tab you are done with (navigate_page) before opening another, and close_page 'agent' tabs left over from finished work. Never close 'human' tabs unless asked.",
+        "List open browser tabs. `selected` is YOUR current tab (what tools act on without a pageId); `humanViewing` is the tab the human is looking at — they are independent, and the human switching tabs does not move you. openedBy is 'agent' (you, an earlier agent turn, or a link you clicked) or 'human'; owner names the agent task a tab is for, when agents work in parallel (new_page owner). The human sees every tab as an editor tab, so keep the set small and tidy: reuse an 'agent' tab you are done with (navigate_page) before opening another, and close_page 'agent' tabs left over from finished work. Never close 'human' tabs unless asked.",
       inputSchema: {},
     },
     async () => {
@@ -54,12 +54,12 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'new_page',
     {
       description:
-        "Open a new tab, optionally at a URL. It becomes your current tab and returns its pageId. It is shown in the human's editor unless background: true — use background when you are working on your own so you do not pull their view away. Every tab you open is a tab in the human's editor, and leaving them behind is the top complaint — so: prefer navigate_page on your current tab when you are simply following a link; reuse a tab you opened earlier instead of opening another (list_pages shows which are yours via openedBy); keep at most one tab per task; and close_page your tabs the moment their work is done.",
-      inputSchema: { url: z.string().optional(), background: z.boolean().optional() },
+        "Open a new tab, optionally at a URL. It becomes your current tab and returns its pageId. It is shown in the human's editor unless background: true — use background when you are working on your own so you do not pull their view away. Every tab you open is a tab in the human's editor, and leaving them behind is the top complaint — so: prefer navigate_page on your current tab when you are simply following a link; reuse a tab you opened earlier instead of opening another (list_pages shows which are yours via openedBy); keep at most one tab per task; and close_page your tabs the moment their work is done. Working alongside other agents (subagents, parallel tasks)? Pass owner, a short name for your task (\"research-2\"), and then pass this tab's pageId to every tool: once tabs have more than one owner, a call without pageId is refused rather than risk acting in another agent's tab, and close_page only closes your owner's tabs.",
+      inputSchema: { url: z.string().optional(), background: z.boolean().optional(), owner: z.string().optional() },
     },
-    async ({ url, background }) => {
+    async ({ url, background, owner }) => {
       const s = await getSession();
-      const info = await s.run(() => s.newPage(url, { background }));
+      const info = await s.run(() => s.newPage(url, { background, owner }));
       return asText(JSON.stringify(info));
     },
   );
@@ -81,14 +81,18 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'close_page',
     {
       description:
-        "Close a tab by pageId. Use it routinely: when a task ends, close every tab you opened for it (list_pages marks yours with openedBy: 'agent') so the human's editor is left as you found it. Tabs the human opened are refused unless you pass allowHumanTab: true, which you do only when they asked you to close that tab. Refuses to close the last remaining tab.",
-      inputSchema: { pageId: z.string(), allowHumanTab: z.boolean().optional() },
+        "Close a tab by pageId. Use it routinely: when a task ends, close every tab you opened for it (list_pages marks yours with openedBy: 'agent') so the human's editor is left as you found it. Tabs the human opened are refused unless you pass allowHumanTab: true, which you do only when they asked you to close that tab. A tab opened for another agent's task (its owner) is refused unless you pass that same owner. Refuses to close the last remaining tab.",
+      inputSchema: { pageId: z.string(), allowHumanTab: z.boolean().optional(), owner: z.string().optional() },
     },
-    async ({ pageId: id, allowHumanTab }) => {
+    async ({ pageId: id, allowHumanTab, owner }) => {
       const s = await getSession();
       const pages = await s.run(() => s.listPages());
       const page = pages.find((p) => p.pageId === id);
       if (!page) throw new Error(`No open page with id ${id} — list_pages shows the open tabs.`);
+      // Another agent's task tab is that agent's to close: pass the owner you opened it with.
+      if (page.owner && page.owner !== owner) {
+        return asText(JSON.stringify({ refused: 'other-agent-tab', owner: page.owner, why: `This tab belongs to "${page.owner}", another agent's task. Close only your own: pass the owner you gave new_page.` }, null, 2));
+      }
       if (page.openedBy === 'human' && allowHumanTab !== true) return asText(JSON.stringify(humanTabRefusal(id), null, 2));
       // Refuse to close the last tab: for a human, closing the final editor tab
       // intentionally quits the browser, but an agent doing so mid-task would

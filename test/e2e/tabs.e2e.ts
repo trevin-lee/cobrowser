@@ -78,9 +78,26 @@ suite('tabs', async (r) => {
     // After an app restart the extension reopens the saved tabs itself (restoreTabs): the
     // human's act, so the agent stays put, but each tab keeps its saved owner.
     const target = (await again.session.listPages()).find((p) => p.selected)?.pageId;
-    const restored = await again.session.run(() => again.session.newPage(srv.base + '/R', { background: true, byAgent: false, owner: 'agent' }));
+    const restored = await again.session.run(() => again.session.newPage(srv.base + '/R', { background: true, byAgent: false, openedBy: 'agent' }));
     const after = await again.session.listPages();
     r.check('a restored tab keeps its owner without taking the agent\'s focus', restored.openedBy === 'agent' && after.find((p) => p.pageId === restored.pageId)?.openedBy === 'agent' && after.find((p) => p.selected)?.pageId === target, { restored, target, after });
+    // Agents in parallel: each names its task's tab; then a call must say which tab.
+    const g = again.session;
+    const one = await g.run(() => g.newPage(srv.base + '/one', { background: true, owner: 'research-1' }));
+    let solo = '';
+    try { await g.run(() => g.readPage({})); } catch (e) { solo = (e as Error).message; }
+    r.check('one named agent works as before: no pageId needed', solo === '', solo);
+    const two = await g.run(() => g.newPage(srv.base + '/two', { background: true, owner: 'research-2' }));
+    let refused = '';
+    try { await g.run(() => g.readPage({})); } catch (e) { refused = (e as Error).message; }
+    r.check('with two owners, a call without pageId is refused, naming the tabs', /Several agents.*research-1.*research-2.*pass pageId/s.test(refused) && refused.includes(`${one.pageId} (research-1)`), refused);
+    const read = await g.run(() => g.readPage({ pageId: two.pageId }), two.pageId);
+    const owners = (await g.listPages()).filter((p) => p.owner).map((p) => `${p.pageId}:${p.owner}`);
+    r.check('with pageId it works, and list_pages shows each tab\'s owner', read.text.includes('page two') && owners.join() === `${one.pageId}:research-1,${two.pageId}:research-2`, { owners, text: read.text.slice(0, 40) });
+    await g.run(() => g.click({ selector: '#pop', pageId: one.pageId }), one.pageId);
+    await sleep(1200);
+    const popup = (await g.listPages()).find((p) => p.url.endsWith('/popup-one'));
+    r.check("a popup from an agent's tab belongs to that agent", popup?.owner === 'research-1' && popup.openedBy === 'agent', popup);
     await again.session.dispose().catch(() => undefined);
   } finally {
     srv.close(); await L.stop();

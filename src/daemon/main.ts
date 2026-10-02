@@ -112,6 +112,20 @@ function saveTools(tools: Tool[]): void {
   }
 }
 
+/**
+ * What every agent is told when it connects (MCP server instructions; clients such as Claude
+ * Code put them in the agent's context). The house rules that cut across tools, which a tool's
+ * own description would leave scattered. Kept short: it is read on every connection.
+ */
+const INSTRUCTIONS = `cobrowser is a real browser inside the human's editor, shared by the human and agents. Each editor workspace has its own browser: tabs, sign-ins, logins and site permissions.
+
+- The panel tools (new_page, read_page, take_snapshot, click, fill, …) drive that browser with real input, and are the default. The bridge_* tools drive the human's own Chrome or Firefox, with synthetic input that some sites ignore: use them only for work already open there.
+- Read with read_page (cheap text); call take_snapshot only to act, and act by its uids, which stay valid while the element exists.
+- Every tab you open appears in the human's editor. Reuse your tab (navigate_page), use background: true when working on your own, and close_page your tabs when the task is done. Never close the human's tabs unless asked.
+- Working in parallel with other agents or subagents in the same browser: each opens its own tab with new_page and an owner name for its task, then passes that tab's pageId to every tool. Once tabs have more than one owner, a call without pageId is refused.
+- Sign in with fill_credentials (and request_credential when a login is not available here), pay with fill_card: you never see passwords or card numbers, and the human confirms card fills. Do not click a button that pays or places an order unless the human asked you to complete it.
+- When a page misbehaves, list_console_messages and list_network_requests show its errors.`;
+
 /** The tool surface exactly as a window publishes it (or last published it). */
 let toolsInFlight: Promise<Tool[]> | undefined;
 async function rawTools(): Promise<Tool[]> {
@@ -178,7 +192,7 @@ function authenticate(req: http.IncomingMessage): Caller | undefined {
  * clients misread as an OAuth challenge.
  */
 function buildOfflineServer(name: string): Server {
-  const server = new Server({ name: 'cobrowser', version: VERSION }, { capabilities: { tools: {} } });
+  const server = new Server({ name: 'cobrowser', version: VERSION }, { capabilities: { tools: {} }, instructions: INSTRUCTIONS });
   const explain = `The editor window for the "${name}" workspace is not running, so its browser cannot be reached. Open that folder in your editor (or reload its window); once the window is up, call the tool again. There is no need to reconnect.`;
   // Every tool, not just list_workspaces: the client keeps this list for the whole session.
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [listWorkspacesTool(true), ...(await rawTools()), ...ZEN_TOOLS] }));
@@ -194,7 +208,7 @@ function buildOfflineServer(name: string): Server {
 function buildServer(scope: Registration | undefined): Server {
   const server = new Server(
     { name: 'cobrowser', version: VERSION },
-    { capabilities: { tools: {} } },
+    { capabilities: { tools: {} }, instructions: INSTRUCTIONS },
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
