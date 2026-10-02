@@ -49,7 +49,8 @@ profile.
 ## Bind a workspace
 
 In the editor, run **Cobrowser: Bind Firefox Container to This Workspace** and pick the
-container. That's all: cobrowser registers the workspace through Firefox's managed-storage
+container (`default` is the tabs in no container; a container the list does not show, as in a
+fork that keeps its profiles elsewhere, can be typed). That's all: cobrowser registers the workspace through Firefox's managed-storage
 manifest (`~/Library/Application Support/Mozilla/ManagedStorage/`) and the add-on connects
 within half a minute. Any number of
 workspaces, each bound to its own container, share the one add-on. The toolbar badge shows how
@@ -59,7 +60,9 @@ If a workspace does not connect, run **Cobrowser: Copy Bridge URL** and paste it
 add-on's toolbar popup under *Endpoints*.
 
 A workspace drives one browser at a time: binding a Firefox container replaces a Chrome tab
-group binding, and the other way round.
+group binding, and the other way round. Run the command again and choose **Unbind** to stop the
+workspace's agent reaching your browser. A container deleted in Firefox is found again if you
+make one with the same name; until then the agent is told it is gone.
 
 ## What the agent can do
 
@@ -88,7 +91,7 @@ behind a login. Cross-origin is refused.
 ## Pace, and what it will not do
 
 Everything that reaches a site waits 1 to 3 seconds, stops at 100 requests in a browser
-session, and pauses for a minute when a site answers 429 or 403 or shows a challenge. Hitting
+session, and pauses for a minute when a site answers `bridge_fetch` with 429 or 403 or a challenge. Hitting
 the cap is a stop, not a retry: the agent is told to report back. The toolbar popup shows the
 count and has a **Reset** button; only that page can reset it, not a script in a tab.
 
@@ -116,4 +119,5 @@ per-container permissions. What keeps one workspace out of another's container i
 the workspace was bound to. That is a real boundary against an agent wandering, not against
 malicious code in the add-on itself. It is about ten lines; read it before you trust it.
 
-Each endpoint URL carries a token and only ever points at `127.0.0.1`.
+Each endpoint URL carries a token, and the add-on dials only this Mac (`127.0.0.1`,
+`localhost`); it ignores any other address.

@@ -3,8 +3,8 @@
 The Chrome counterpart of the Firefox add-on: lets cobrowser, running in your editor, see and
 drive the tabs of your own Chrome — scoped to one tab group, or the whole profile.
 
-Same wire protocol as the Firefox add-on, so the editor and the agent cannot tell them apart.
-The `bridge_*` MCP tools work on whichever browser a workspace is bound to.
+Same wire protocol as the Firefox add-on, and the same `bridge_*` MCP tools, on whichever browser
+a workspace is bound to; the differences are listed below.
 
 ## Install
 
@@ -25,7 +25,10 @@ button, and until then the agent is told the extension is out of date.
 ## How scoping works
 
 A workspace is bound to a **tab group** by its title, or to `profile`. The bridge refuses
-every call that touches a tab outside that scope. Tab groups are visible and nameable in the
+every call that touches a tab outside that scope. Chrome closes a group with its last tab, and
+gives a restored group a new id, so the bridge finds the group again by its title, and if none
+is open, the agent's next new tab starts it again under that name. An untitled group cannot be
+bound until it is named. Running the bind command with an empty name unbinds the workspace. Tab groups are visible and nameable in the
 tab strip, which makes them a good stand-in for Firefox containers — with one honest
 difference: a tab group is not a cookie boundary. Every tab in the profile shares the same
 logins. The group limits what the agent can *reach*, not what the browser *knows*.
@@ -33,7 +36,8 @@ logins. The group limits what the agent can *reach*, not what the browser *knows
 ## Pace
 
 Everything that reaches a site waits 1 to 3 seconds, stops at 100 requests in a browser
-session, and pauses for a minute when a site refuses or shows a challenge. The count survives
+session, and pauses for a minute when a site answers `bridge_fetch` with 429 or 403 or a
+challenge. The count survives
 Chrome stopping and restarting the extension's service worker. The toolbar popup shows it and
 has a **Reset** button; only that page can reset it, not a script in a tab.
 

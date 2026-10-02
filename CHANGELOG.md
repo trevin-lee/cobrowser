@@ -2,6 +2,36 @@
 
 Release notes for earlier versions are on the [GitHub releases page](https://github.com/trevin-lee/cobrowser/releases).
 
+## 0.9.18
+
+### Added
+
+- **A backup for cards.** In the vault's Cards view, **Export CSV…** writes every card to a CSV of cobrowser's own, and **Import CSV…** reads one back (it also reads files that name their columns card number, expiry and so on). A card already saved is updated, never doubled, and adding the same card twice is refused.
+- **A saved security code can be removed** again (Edit → Remove the saved security code); it is then typed at checkout.
+- **Firefox binding:** `default` (the tabs in no container) is offered, a container the list does not show can be typed, and LibreWolf, Floorp and Waterfox profiles are searched as well.
+
+### Changed
+
+- **"Allow once" is one sign-in.** It used to be spent by the first fill, so a sign-in that asks for the email on one page and the password on the next (Microsoft's, Google's) lost it halfway. It now lasts until the password is filled, and lapses after ten minutes, or when the vault is locked, if it is not used. Asking again while one is unused does not ask you twice.
+- **An open vault window shows the vault as it is.** A grant from an agent's request, a login added from the editor and a Lock from the menu bar show at once, and changing a login's workspaces changes only the ones you touched: it never takes away a grant made since the window loaded.
+- **⌥← and ⌥→ are left to text.** They were Back and Forward whenever a browser tab was the active editor, even while typing in a page's form or in a chat box, where they move by word.
+- **A site's permission prompt** (camera, location, notifications) has **Not now**, and dismissing it with Escape no longer blocks the site for good; only Allow and Block are remembered.
+- The bridge scopes are listed by the names the bind commands take (`profile`, a group's title), and a closed Chrome tab group is started again, under its name, by the agent's next new tab. A Firefox container deleted and made again is found by its name.
+- A newer bridge add-on (Firefox updates it on its own) is no longer reported as out of date, and no longer loses tools.
+- A tab's `pageId` is never reused in a workspace, even after a reload or **Restart Browser**, and restored tabs keep their owners.
+- A window without a folder can no longer be "bound" to your own browser, and VS Code's agent there no longer gets the daemon-wide token: it has no workspace to work in.
+- The menu-bar icon counts cards too, and its item is **Lock Vault**, as the command is.
+
+### Fixed
+
+- **A window still on the previous version swapped a newer browser app back to its own**, closing every workspace's tabs each time; it now uses the newer app. You no longer need to quit the editor after an update.
+- **An export re-imported could lose a login's workspaces or websites** when its notes mentioned cobrowser's own marker words; only the note's last lines are read as cobrowser's now.
+- **Enable Passkeys could leave a browser that would not start** when signing failed partway (a denied keychain prompt); it is now put back as it was. Without Xcode, it says so.
+- The first download of the browser says plainly when there is no connection, and gives up on a stalled one after 30 seconds instead of spinning.
+- Cancelling Touch ID in the vault window no longer shows raw error text, and a cancelled workspace change no longer looks saved. ↑ and ↓ follow the filtered list, and the Cards list in the Cards view.
+- The sidebar and `list_pages` no longer wait for an agent's long action in the current tab.
+- The bridge add-ons only dial this Mac, and say which browser a workspace is bound to when it is not theirs.
+
 ## 0.9.17
 
 ### Added
