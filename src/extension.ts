@@ -620,7 +620,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         void vscode.window.showInformationMessage(
           replaced
             ? `Cobrowser: replaced the saved password for ${username || 'the login'} on ${site}; it is now usable in this workspace too.`
-            : `Cobrowser: saved a login for ${site}, usable in this workspace. Change where it can be used with "Cobrowser: Manage Logins".`,
+            : `Cobrowser: saved a login for ${site}, usable in this workspace. Change where it can be used with "Cobrowser: Open Vault".`,
         );
       } catch (err) {
         void vscode.window.showErrorMessage(`Cobrowser: could not save the login — ${String((err as Error).message ?? err)}`);
@@ -712,7 +712,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       try {
         const cards = await app.vaultCards();
         if (!cards.length) {
-          const next = await vscode.window.showInformationMessage('Cobrowser: no card is saved yet. Add one under Cards in the Logins window.', 'Manage Logins');
+          const next = await vscode.window.showInformationMessage('Cobrowser: no card is saved yet. Add one under Cards in the vault.', 'Open Vault');
           if (next) await vscode.commands.executeCommand('cobrowser.manageLogins');
           return;
         }
@@ -732,7 +732,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       try {
         await withApp((c) => c.vaultOpenWindow());
       } catch (err) {
-        void vscode.window.showErrorMessage(`Cobrowser: could not open the Logins window — ${String((err as Error).message ?? err)}`);
+        void vscode.window.showErrorMessage(`Cobrowser: could not open the vault — ${String((err as Error).message ?? err)}`);
       }
     }),
     vscode.commands.registerCommand('cobrowser.lockVault', async () => {
@@ -803,7 +803,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }
         const ok = await vscode.window.showWarningMessage(
           `Forget ${pick.label}'s browser?`,
-          { modal: true, detail: `Its tabs, cookies, sign-ins, site data, cache and site permissions are deleted, and it leaves the workspace list. Logins in the vault are kept: change where they may be used in the Logins window. Opening ${pick.label} again starts its browser signed out of every site.` },
+          { modal: true, detail: `Its tabs, cookies, sign-ins, site data, cache and site permissions are deleted, and it leaves the workspace list. Logins in the vault are kept: change where they may be used in the vault. Opening ${pick.label} again starts its browser signed out of every site.` },
           'Forget',
         );
         if (ok !== 'Forget') return;

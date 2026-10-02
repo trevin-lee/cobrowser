@@ -75,7 +75,7 @@
       },
       {
         "command": "cobrowser.manageLogins",
-        "title": "Cobrowser: Manage Logins"
+        "title": "Cobrowser: Open Vault"
       },
       {
         "command": "cobrowser.addLogin",

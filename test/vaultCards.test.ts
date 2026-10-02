@@ -27,7 +27,7 @@ test("what lists see of a card never includes its number or code", () => {
   const v: Vault = { entries: [] };
   const c = store.addCard(v, { number: '5555555555554444', exp: '12/2030', cvc: '999', label: 'Work' });
   const pub = store.publicCard(c);
-  assert.deepEqual(pub, { id: c.id, label: 'Work', brand: 'Mastercard', last4: '4444', exp: '12/30', name: '', hasCode: true });
+  assert.deepEqual(pub, { id: c.id, label: 'Work', brand: 'Mastercard', last4: '4444', exp: '12/30', name: '', hasCode: true, notes: '' });
   assert.ok(!JSON.stringify(pub).includes('5555555555554444') && !JSON.stringify(pub).includes('999'));
 });
 

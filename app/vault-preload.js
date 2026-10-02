@@ -4,7 +4,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('vault', {
   list: () => ipcRenderer.invoke('vault:list'),
-  add: (host, username, password, scope, also) => ipcRenderer.invoke('vault:add', { host, username, password, scope, also }),
+  add: (host, username, password, scope, also, notes) => ipcRenderer.invoke('vault:add', { host, username, password, scope, also, notes }),
   setScope: (host, username, scope) => ipcRenderer.invoke('vault:setScope', { host, username, scope }),
   workspaces: () => ipcRenderer.invoke('vault:workspaces'),
   remove: (host, username) => ipcRenderer.invoke('vault:remove', { host, username }),

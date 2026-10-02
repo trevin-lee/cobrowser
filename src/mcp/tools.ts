@@ -323,13 +323,13 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'list_credentials',
     {
       description:
-        "Logins THIS workspace may use, from the human's cobrowser vault — sites and usernames only, never passwords, plus the saved cards (label, brand, last four digits) that fill_card can fill. alsoOn lists other websites the same login fills on (one account, several sign-in sites). Logins scoped to other workspaces are not listed and cannot be filled from here; if the site you need is missing, request_credential asks the human to grant one.",
+        "Logins THIS workspace may use, from the human's cobrowser vault — sites and usernames only, never passwords, plus the saved cards (label, brand, last four digits) that fill_card can fill. A login or card can carry notes: the human's Markdown for you (which account to use, how 2FA works, what a card is for). Read them before you sign in or pay. alsoOn lists other websites the same login fills on (one account, several sign-in sites). Logins scoped to other workspaces are not listed and cannot be filled from here; if the site you need is missing, request_credential asks the human to grant one.",
       inputSchema: {},
     },
     async () => {
       const s = await getSession();
       const cards = await s.listCards().catch(() => []);
-      return asText(JSON.stringify({ logins: await s.listCredentials(), cards: cards.map(({ label, brand, last4, exp }) => ({ label, brand, last4, exp })) }, null, 2));
+      return asText(JSON.stringify({ logins: await s.listCredentials(), cards: cards.map(({ label, brand, last4, exp, notes }) => ({ label, brand, last4, exp, ...(notes ? { notes } : {}) })) }, null, 2));
     },
   );
 

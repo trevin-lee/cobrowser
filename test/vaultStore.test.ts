@@ -141,3 +141,25 @@ test('a row from a cobrowser export keeps exactly its workspaces; the chosen one
   assert.deepEqual(store.findEntry(v, 'a.com', 'me')?.scope, ['/x']);
   assert.deepEqual(store.findEntry(v, 'b.com', 'me')?.scope, ['/y']);
 });
+
+test("notes travel with a login: set, kept when adding again without notes, cleared by editing them away", () => {
+  const v = empty();
+  store.upsertLogin(v, 'costco.com', 'me', 'pw', 'all', { notes: '  Use the **business** account.\r\n2FA: ask Trevin.  ' } as never);
+  const e = v.entries[0] as Entry & { notes?: string };
+  assert.equal(e.notes, 'Use the **business** account.\n2FA: ask Trevin.');
+  store.upsertLogin(v, 'costco.com', 'me', 'pw2', 'all');
+  assert.equal(e.notes, 'Use the **business** account.\n2FA: ask Trevin.', 'adding again without notes keeps them');
+  store.updateLogin(v, { host: 'costco.com', username: 'me' }, { notes: '' } as never);
+  assert.equal(e.notes, undefined);
+});
+
+test("export puts the person's notes first in the note column, and import takes them back without cobrowser's own lines", () => {
+  const v = empty();
+  store.upsertLogin(v, 'a.com', 'me', 'pw', ['/w'], { notes: 'Line one\n- a list', also: ['b.com'] } as never);
+  const csv = store.exportCsv(v);
+  assert.match(csv, /"Line one\n- a list\n\ncobrowser-workspaces: \[""\/w""\]\ncobrowser-sites: \[""b.com""\]"/);
+  const back = empty();
+  store.importCsv(back, csv, []);
+  const e = back.entries[0] as Entry & { notes?: string };
+  assert.deepEqual([e.notes, e.scope, e.also?.map((s) => s.host)], ['Line one\n- a list', ['/w'], ['b.com']]);
+});

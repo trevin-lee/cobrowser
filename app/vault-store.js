@@ -4,11 +4,18 @@
  * Pure functions over the decrypted vault object ({ entries: [...] }); the app does the
  * unlocking, the asking and the saving around them.
  *
- * A login: { id, host, port, username, password, scope, also, updatedAt }, where scope is 'all'
+ * A login: { id, host, port, username, password, scope, also, notes, updatedAt }, where scope is 'all'
  * or a list of workspace paths (a workspace can only list and fill logins in its scope), and
  * `also` lists other websites the same account signs in on ({ host, port }), such as a
  * Microsoft account's password page on live.com for a login saved from microsoftonline.com.
+ * `notes` is the person's Markdown about the login, for them and for agents ("sign in with the
+ * work account; 2FA goes to the human's phone"). Cards carry notes the same way.
  */
+
+/** Notes as stored: text, trimmed, bounded (they are read on every list). */
+function normalizeNotes(notes) {
+  return String(notes ?? '').replace(/\r\n/g, '\n').trim().slice(0, 4000);
+}
 const crypto = require('node:crypto');
 const { parseSite, siteLabel, siteMatches, isIp } = require('./site.js');
 
@@ -55,7 +62,7 @@ function mergeScope(a, b) {
 }
 
 function publicEntry(e) {
-  return { host: siteLabel(e), also: (e.also || []).map(siteLabel), username: e.username, scope: e.scope };
+  return { host: siteLabel(e), also: (e.also || []).map(siteLabel), username: e.username, scope: e.scope, notes: e.notes || '' };
 }
 
 function findEntry(vault, label, username) {
@@ -69,7 +76,7 @@ function findEntry(vault, label, username) {
  * only when the caller chose it for this login (the Logins window's form); otherwise
  * (a command, an import) it is widened to include the new scope, never narrowed.
  */
-function upsertLogin(vault, site, username, password, scope, { mergeScope: merge = true, also } = {}) {
+function upsertLogin(vault, site, username, password, scope, { mergeScope: merge = true, also, notes } = {}) {
   const { host, port } = parseSite(site);
   if (!host) throw new Error('site is required');
   const existing = vault.entries.find((e) => e.host === host && (e.port || '') === port && e.username === username);
@@ -79,9 +86,12 @@ function upsertLogin(vault, site, username, password, scope, { mergeScope: merge
     if (scope !== undefined) existing.scope = merge ? mergeScope(existing.scope, normalizeScope(scope)) : normalizeScope(scope);
     // Other websites are only ever added here, like workspaces from a command or an import.
     if (also !== undefined) existing.also = normalizeSites([...(existing.also || []), ...normalizeSites(also)], existing);
+    // Notes are replaced only by new notes; adding again without any keeps the old ones.
+    if (notes !== undefined && normalizeNotes(notes)) existing.notes = normalizeNotes(notes);
     return { entry: existing, replaced: true };
   }
   const entry = { id: crypto.randomBytes(6).toString('hex'), host, port, username, password, scope: normalizeScope(scope), updatedAt: Date.now() };
+  if (normalizeNotes(notes)) entry.notes = normalizeNotes(notes);
   const others = normalizeSites(also, entry);
   if (others.length) entry.also = others;
   vault.entries.push(entry);
@@ -106,6 +116,7 @@ function updateLogin(vault, from, fields) {
   if (fields.password) entry.password = fields.password;
   if (fields.scope !== undefined) entry.scope = normalizeScope(fields.scope);
   if (fields.also !== undefined) entry.also = normalizeSites(fields.also, entry);
+  if (fields.notes !== undefined) { const n = normalizeNotes(fields.notes); if (n) entry.notes = n; else delete entry.notes; }
   if (entry.also && !entry.also.length) delete entry.also;
   entry.updatedAt = Date.now();
   return entry;
@@ -160,6 +171,11 @@ function sitesFromNote(note) {
     return undefined;
   }
 }
+/** A CSV note without cobrowser's own lines: what the person wrote. */
+function personsNote(note) {
+  return normalizeNotes(String(note || '').split('\n').filter((l) => !l.startsWith(WORKSPACES_NOTE) && !l.startsWith(SITES_NOTE)).join('\n'));
+}
+
 function workspacesFromNote(note) {
   const at = String(note || '').indexOf(WORKSPACES_NOTE);
   if (at < 0) return undefined;
@@ -188,7 +204,8 @@ function importCsv(vault, text, scope) {
     if (!url || !pass) continue;
     const noted = inote >= 0 ? workspacesFromNote(r[inote]) : undefined;
     const also = inote >= 0 ? sitesFromNote(r[inote]) : undefined;
-    const { replaced } = upsertLogin(vault, url, user || '', pass, noted === undefined ? scope : noted, { mergeScope: true, also });
+    const notes = inote >= 0 ? personsNote(r[inote]) : undefined;
+    const { replaced } = upsertLogin(vault, url, user || '', pass, noted === undefined ? scope : noted, { mergeScope: true, also, notes });
     result.count++;
     if (replaced) result.replaced++; else result.added++;
   }
@@ -208,7 +225,8 @@ function exportCsv(vault) {
     // http, anything with a domain https.
     const local = isIp(e.host) || !String(e.host).includes('.');
     const url = /^https?:\/\//.test(label) ? label : `${local ? 'http' : 'https'}://${label}`;
-    const note = workspacesNote(e.scope) + (e.also && e.also.length ? `\n${SITES_NOTE} ${JSON.stringify(e.also.map(siteLabel))}` : '');
+    // The person's notes first (other managers show the note as is), then cobrowser's lines.
+    const note = (e.notes ? e.notes + '\n\n' : '') + workspacesNote(e.scope) + (e.also && e.also.length ? `\n${SITES_NOTE} ${JSON.stringify(e.also.map(siteLabel))}` : '');
     rows.push([label, url, e.username || '', e.password || '', note]);
   }
   return rows.map((r) => r.map((c) => q(String(c))).join(',')).join('\n') + '\n';
@@ -259,11 +277,12 @@ function cardFields(fields, existing) {
   if (cvc && !/^\d{3,4}$/.test(cvc)) throw new Error('the security code should be 3 or 4 digits');
   const name = fields.name !== undefined ? String(fields.name).trim() : existing?.name || '';
   const label = (fields.label !== undefined ? String(fields.label).trim() : existing?.label) || `${cardBrand(number)} ${number.slice(-4)}`;
-  return { label, name, number, expMonth, expYear, cvc };
+  const notes = fields.notes !== undefined ? normalizeNotes(fields.notes) : existing?.notes || '';
+  return { label, name, number, expMonth, expYear, cvc, notes };
 }
 
 function publicCard(c) {
-  return { id: c.id, label: c.label, brand: cardBrand(c.number), last4: c.number.slice(-4), exp: `${String(c.expMonth).padStart(2, '0')}/${String(c.expYear).slice(-2)}`, name: c.name, hasCode: !!c.cvc };
+  return { id: c.id, label: c.label, brand: cardBrand(c.number), last4: c.number.slice(-4), exp: `${String(c.expMonth).padStart(2, '0')}/${String(c.expYear).slice(-2)}`, name: c.name, hasCode: !!c.cvc, notes: c.notes || '' };
 }
 
 function addCard(vault, fields) {

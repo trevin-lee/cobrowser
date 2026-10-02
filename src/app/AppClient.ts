@@ -32,6 +32,8 @@ export interface PublicCard {
   exp: string;
   name: string;
   hasCode: boolean;
+  /** The person's Markdown notes about the card, for them and for agents. */
+  notes: string;
 }
 
 /** A site permission a person decided, in one workspace. */
@@ -247,8 +249,8 @@ export class AppConnection {
   /** `scope` defaults to this connection's workspace inside the app. */
   /** Resolves whether it replaced an existing login's password (same site and username). */
   /** `also`: other websites the same account signs in on (added, never removed, here). */
-  async vaultAdd(host: string, username: string, password: string, scope?: 'all' | string[], also?: string[]): Promise<{ replaced: boolean }> {
-    const r = await this.request({ type: 'vault.add', host, username, password, ...(scope ? { scope } : {}), ...(also ? { also } : {}) }, 120000);
+  async vaultAdd(host: string, username: string, password: string, scope?: 'all' | string[], also?: string[], notes?: string): Promise<{ replaced: boolean }> {
+    const r = await this.request({ type: 'vault.add', host, username, password, ...(scope ? { scope } : {}), ...(also ? { also } : {}), ...(notes ? { notes } : {}) }, 120000);
     if (r.error) throw new Error(String(r.error));
     return { replaced: r.replaced === true };
   }
@@ -260,10 +262,10 @@ export class AppConnection {
     if (r.error) throw new Error(String(r.error));
     return { count: Number(r.count) || 0, added: Number(r.added) || 0, replaced: Number(r.replaced) || 0 };
   }
-  async vaultList(): Promise<{ host: string; alsoOn?: string[]; username: string }[]> {
+  async vaultList(): Promise<{ host: string; alsoOn?: string[]; username: string; notes?: string }[]> {
     const r = await this.request({ type: 'vault.list' }, 120000);
     if (r.error) throw new Error(String(r.error));
-    return r.logins as { host: string; alsoOn?: string[]; username: string }[];
+    return r.logins as { host: string; alsoOn?: string[]; username: string; notes?: string }[];
   }
   /** Ask the app to export every login to a CSV the human picks (Touch ID each time). The
    *  passwords are written by the app; nothing but the count and the path comes back. */
@@ -288,7 +290,11 @@ export class AppConnection {
   async vaultFillCard(tabId: string, card: string | undefined, by: 'human' | 'agent'): Promise<{ filled: string[]; card?: string; last4?: string; error?: string; cards?: string[] }> {
     return (await this.request({ type: 'vault.fillCard', tabId, card, by }, 180000)) as unknown as { filled: string[]; card?: string; last4?: string; error?: string; cards?: string[] };
   }
-  /** Bring up the app's Logins window, where logins are viewed, edited and scoped. */
+  /** Test instances only: run a script in the vault window, and optionally photograph it. */
+  async vaultWindow(script?: string, opts: { capture?: boolean; wait?: number } = {}): Promise<{ value?: unknown; width: number; height: number; png?: string; error?: string }> {
+    return (await this.request({ type: 'vault.window', script, ...opts }, 60000)) as unknown as { value?: unknown; width: number; height: number; png?: string; error?: string };
+  }
+  /** Bring up the app's vault window, where logins and cards are viewed, edited and scoped. */
   async vaultOpenWindow(): Promise<void> {
     await this.request({ type: 'vault.open' });
   }

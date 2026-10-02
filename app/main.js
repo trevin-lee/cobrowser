@@ -575,7 +575,7 @@ async function fillCard(tab, { card: which, by, workspaceName }) {
 // Vault window: the menu-bar way to add, remove and import logins. A real (visible) window;
 // the page talks to the app only through the preload's narrow bridge.
 // ---------------------------------------------------------------------------------------
-const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser logins</title>
+const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault</title>
 <style>
   :root {
     color-scheme: light dark;
@@ -613,7 +613,8 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser logins
   .state { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; padding: 0 4px; }
   .state i { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); } .state.on i { background: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
 
-  .panes { display: grid; grid-template-columns: 320px 1fr; gap: 14px; padding: 0 22px 22px; min-height: 0; }
+  .panes { display: grid; grid-template-columns: 340px 1fr; gap: 14px; padding: 0 22px 22px; min-height: 0; }
+  button { white-space: nowrap; }
   .pane { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 
   /* roster */
@@ -641,9 +642,29 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser logins
   .discs small { color: var(--muted); font-size: 11px; margin-left: 5px; }
 
   /* card */
-  .detail { padding: 20px 22px; display: flex; flex-direction: column; gap: 18px; min-height: 0; }
-  .card-in { display: flex; flex-direction: column; gap: 18px; flex: 1; min-height: 0; }
-  .sec.grow { flex: 1; min-height: 0; }
+  .detail { padding: 20px 22px; display: flex; flex-direction: column; gap: 18px; min-height: 0; overflow: auto; }
+  /* a login's websites: one row each, as a list */
+  .sites { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .site { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 6px 0 14px; border-bottom: 1px solid var(--line); background: var(--lift); }
+  .site:last-child { border-bottom: 0; }
+  .site input { flex: 1; min-width: 0; background: none; border: 0; outline: 0; height: 40px; padding: 0; -webkit-user-select: text; } .site input::placeholder { color: var(--dim); }
+  .site .x { width: 26px; height: 26px; padding: 0; color: var(--muted); }
+  .site.add button { padding: 0; height: 40px; color: var(--blue); } .site.add { background: transparent; }
+  /* notes: Markdown, written in a box, read formatted */
+  textarea.notes { width: 100%; min-height: 120px; resize: vertical; background: var(--lift); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; outline: 0; color: var(--fg); font: 12.5px/1.55 ui-monospace, "SF Mono", Menlo, monospace; -webkit-user-select: text; }
+  textarea.notes::placeholder { color: var(--dim); }
+  .md { border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; background: var(--lift); line-height: 1.55; -webkit-user-select: text; overflow-wrap: anywhere; }
+  .md > :first-child { margin-top: 0; } .md > :last-child { margin-bottom: 0; }
+  .md p, .md ul, .md ol, .md pre { margin: 0 0 8px; } .md ul, .md ol { padding-left: 20px; }
+  .md h4, .md h5, .md h6 { margin: 10px 0 4px; font-size: 13px; }
+  .md code { font: 12px ui-monospace, "SF Mono", Menlo, monospace; background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+  .md pre { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; overflow: auto; } .md pre code { border: 0; padding: 0; background: none; }
+  .md a { color: var(--blue); }
+  .md.none { color: var(--muted); }
+  /* The detail pane scrolls; its sections keep their size rather than being squeezed under
+     the buttons when a form is taller than the window. */
+  .card-in { display: flex; flex-direction: column; gap: 18px; flex: 1 0 auto; }
+  .sec.grow { flex: 1 0 auto; }
   .title { display: flex; align-items: flex-start; gap: 12px; }
   .title .id { flex: 1; min-width: 0; } .title h2 { margin: 0; font-size: 22px; font-weight: 600; line-height: 1.2; overflow-wrap: anywhere; } .title h2 em { font-style: normal; font-weight: 400; color: var(--muted); }
   .title .user { color: var(--muted); margin-top: 3px; font-size: 13px; }
@@ -657,7 +678,7 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser logins
   .pw { display: flex; align-items: center; gap: 6px; min-width: 0; }
   .pw span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); letter-spacing: .12em; }
   .pw span.revealed { color: var(--fg); letter-spacing: 0; -webkit-user-select: text; }
-  .scope { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; flex: 1; min-height: 160px; }
+  .scope { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; flex: 1; min-height: 220px; }
   .row { display: flex; align-items: center; gap: 12px; padding: 0 14px; height: 40px; border-bottom: 1px solid var(--line); }
   .row:last-child { border-bottom: 0; }
   .row.every { background: var(--lift); } .row.every b { flex: 1; font-weight: 600; } .row.every small { color: var(--muted); }
@@ -680,10 +701,11 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser logins
 </style>
 <header>
   <svg viewBox="0 0 128 128" aria-hidden="true"><circle cx="46" cy="64" r="40" fill="#388bfd"/><circle cx="82" cy="64" r="40" fill="#29a891"/><path d="M64 33.4a40 40 0 0 1 0 61.2 40 40 0 0 1 0-61.2z" fill="#2fbdb9"/></svg>
-  <h1 id="title">Logins</h1>
+  <h1>Vault</h1>
   <span class="kinds"><button class="quiet on" id="k-logins">Logins</button><button class="quiet" id="k-cards">Cards</button></span>
   <span class="sub" id="sub">what the agent may sign in with, and where</span>
   <span class="spacer"></span>
+  <button class="quiet" id="import">Import CSV…</button><button class="quiet" id="export">Export CSV…</button>
   <span class="state" id="state"><i></i><span>Locked</span></span>
   <button class="quiet" id="lock">Lock</button>
 </header>
@@ -691,20 +713,51 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser logins
   <section class="pane">
     <div class="search"><input id="q" placeholder="Filter" autocomplete="off" spellcheck="false"></div>
     <div class="list" id="list" tabindex="0"></div>
-    <div class="foot"><button class="primary" id="new">Add login</button><button id="import">Import CSV…</button><button id="export">Export CSV…</button></div>
+    <div class="foot"><button class="primary" id="new">Add login</button></div>
   </section>
   <section class="pane detail" id="detail"></section>
 </div>
 <script>
+  ${markdownToHtml.toString()}
   const $ = (id) => document.getElementById(id);
   let known = [], rows = [], unlocked = false, unlocking = false, lastError = '', sel = null, mode = 'view';
-  const draft = { host: '', also: '', user: '', pass: '', scope: [], from: null, matched: null };
-  const resetDraft = () => Object.assign(draft, { host: '', also: '', user: '', pass: '', scope: [], from: null, matched: null });
+  const draft = { sites: [''], user: '', pass: '', notes: '', scope: [], from: null, matched: null };
+  const resetDraft = () => Object.assign(draft, { sites: [''], user: '', pass: '', notes: '', scope: [], from: null, matched: null });
+  const cleanSites = () => draft.sites.map((x) => x.trim()).filter(Boolean);
+  // A login's websites, one row each: every site it fills on, matched as strictly as any other.
+  function sitesEditor(onEnter) {
+    const box = el('div', 'sites');
+    const paint = (focusLast) => {
+      box.innerHTML = '';
+      draft.sites.forEach((value, i) => {
+        const row = el('div', 'site'); const inp = el('input', 'mono'); inp.value = value; inp.placeholder = i === 0 ? 'costco.com, or 192.168.1.50:8080' : 'another site this account signs in on, e.g. live.com'; inp.autocomplete = 'off'; inp.spellcheck = false;
+        inp.oninput = () => { draft.sites[i] = inp.value; sync(); }; inp.onkeydown = (e) => { if (e.key === 'Enter') onEnter(); };
+        row.append(inp);
+        if (draft.sites.length > 1) { const x = el('button', 'quiet x', '×'); x.title = 'Remove this website'; x.onclick = () => { draft.sites.splice(i, 1); paint(); sync(); }; row.append(x); }
+        box.append(row);
+        if (focusLast && i === draft.sites.length - 1) setTimeout(() => inp.focus(), 0);
+      });
+      const add = el('div', 'site add'); const b = el('button', 'quiet', '+ Add website'); b.onclick = () => { draft.sites.push(''); paint(true); }; add.append(b); box.append(add);
+    };
+    paint();
+    return box;
+  }
+  function notesEditor(get, set) {
+    const t = el('textarea', 'notes'); t.value = get(); t.spellcheck = true;
+    t.placeholder = 'Markdown, for you and for agents: which account this is, how 2FA works, anything an agent should know before signing in.';
+    t.oninput = () => set(t.value);
+    return t;
+  }
+  function notesView(text, empty) {
+    const d = el('div', 'md' + (text ? '' : ' none'));
+    if (text) d.innerHTML = markdownToHtml(text); else d.textContent = empty;
+    return d;
+  }
   let repaintScope = () => {};
   // A typed site, reduced to what a login's label shows, to spot a login that already exists.
   // The same reading as the vault's own (site.js parseSite), so the window's "replaces" is the vault's.
   const siteKey = (h) => { const v = String(h || '').trim(); if (!v) return ''; try { const u = new URL(v.includes('://') ? v : 'https://' + v); return u.hostname.toLowerCase() + (u.port ? ':' + u.port : ''); } catch { return v.toLowerCase(); } };
-  const existingFor = () => rows.find((r) => siteKey(r.host) === siteKey(draft.host) && r.username === draft.user.trim());
+  const existingFor = () => rows.find((r) => siteKey(r.host) === siteKey(cleanSites()[0]) && r.username === draft.user.trim());
   const failed = (e) => (String(e && e.message || e).includes('cancelled') ? 'Nothing changed.' : String(e && e.message || e).replace(/^Error invoking remote method '[^']*': (Error: )?/, ''));
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
   const base = (p) => p.split('/').filter(Boolean).slice(-1)[0] || p;
@@ -726,7 +779,12 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser logins
     return box;
   }
 
-  function state() { $('state').className = 'state' + (unlocked ? ' on' : ''); $('state').lastElementChild.textContent = unlocked ? rows.length + ' login' + (rows.length === 1 ? '' : 's') + ' · unlocked' : 'Locked'; }
+  function state() {
+    $('state').className = 'state' + (unlocked ? ' on' : '');
+    // What this view holds: logins in Logins, cards in Cards.
+    const n = kind === 'cards' ? cards.length : rows.length, what = kind === 'cards' ? ' card' : ' login';
+    $('state').lastElementChild.textContent = unlocked ? n + what + (n === 1 ? '' : 's') + ' · unlocked' : 'Locked';
+  }
 
   function renderList() {
     const q = $('q').value.trim().toLowerCase();
@@ -794,15 +852,16 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser logins
       const t = el('div', 'title'); const id = el('div', 'id'); id.append(el('h2', null, importing ? 'Import logins' : editing ? 'Edit login' : 'New login')); t.append(id); wrap.append(t);
       if (importing) wrap.append(el('p', 'hint', 'Logins exported from cobrowser keep the workspaces the file notes for them; the others get the ones you choose here. A login already in the vault gets the password from the file, keeps its workspaces and gains the new ones. You can change each one afterwards.'));
       else {
+        const go = () => { if (canSave()) (editing ? saveEdit : save)(); };
         const f = el('div', 'fields');
-        // "Also fills on": other websites the same account signs in on (a Microsoft login asks
-        // for its password on live.com), each matched as strictly as the login's own site.
-        for (const [key, label, ph, type] of [['host', 'Site', 'costco.com, or 192.168.1.50:8080', 'text'], ['also', 'Also fills on', 'optional: other sites for this account, e.g. live.com', 'text'], ['user', 'Username', 'you@example.com', 'text'], ['pass', 'Password', editing ? 'unchanged' : '', 'password']]) {
+        for (const [key, label, ph, type] of [['user', 'Username', 'you@example.com', 'text'], ['pass', 'Password', editing ? 'unchanged' : '', 'password']]) {
           const row = el('div', 'field'); const inp = el('input', key === 'pass' ? '' : 'mono'); inp.type = type; inp.placeholder = ph; inp.value = draft[key]; inp.autocomplete = 'off'; inp.spellcheck = false;
-          inp.oninput = () => { draft[key] = inp.value; sync(); }; inp.onkeydown = (e) => { if (e.key === 'Enter' && canSave()) (editing ? saveEdit : save)(); };
+          inp.oninput = () => { draft[key] = inp.value; sync(); }; inp.onkeydown = (e) => { if (e.key === 'Enter') go(); };
           row.append(el('label', null, label), inp); f.append(row);
         }
+        wrap.append(section('Websites', sitesEditor(go)));
         wrap.append(section('Login', f));
+        wrap.append(section('Notes', notesEditor(() => draft.notes, (v) => { draft.notes = v; })));
       }
       const editor = scopeEditor(() => draft.scope, (v) => { draft.scope = v; sync(); });
       repaintScope = editor.repaint;
@@ -818,10 +877,9 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser logins
 
     const t = el('div', 'title'); const id = el('div', 'id'); const h2 = el('h2', 'mono'); const [pre, dom] = hostParts(sel.host); h2.append(el('em', null, pre), dom);
     id.append(h2, el('div', 'user mono', sel.username || '(no username)'));
-    if (sel.also && sel.also.length) id.append(el('div', 'user mono', 'also fills on ' + sel.also.join(', ')));
     t.append(id);
     const acts = el('div', 'acts');
-    const ed = el('button', 'quiet', 'Edit'); ed.onclick = () => { Object.assign(draft, { host: sel.host, also: (sel.also || []).join(', '), user: sel.username, pass: '', scope: sel.scope, from: { host: sel.host, username: sel.username } }); mode = 'edit'; render(); };
+    const ed = el('button', 'quiet', 'Edit'); ed.onclick = () => { Object.assign(draft, { sites: [sel.host, ...(sel.also || [])], user: sel.username, pass: '', notes: sel.notes || '', scope: sel.scope, from: { host: sel.host, username: sel.username } }); mode = 'edit'; render(); };
     // Removing asks for Touch ID or the Mac's password, which is the confirmation.
     const rm = el('button', 'quiet danger', 'Remove'); rm.onclick = async () => { try { await vault.remove(sel.host, sel.username); sel = null; await refresh(); } catch (e) { say(failed(e)); } };
     acts.append(ed, rm); t.append(acts); wrap.append(t);
@@ -838,10 +896,14 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser logins
     };
     pval.append(copyBtn, show); prow.append(pval); pw.append(prow);
     wrap.append(section('Password', pw));
+    const sites = el('div', 'sites');
+    for (const s of [sel.host, ...(sel.also || [])]) { const row = el('div', 'site'); row.append(el('span', 'mono', s)); sites.append(row); }
+    wrap.append(section('Websites', sites));
+    wrap.append(section('Notes', notesView(sel.notes, 'No notes. Edit to add some for you and for agents: which account this is, how 2FA works.')));
     wrap.append(section('Where the agent may use it', scopeEditor(() => sel.scope, async (v) => { sel.scope = v; renderList(); try { await vault.setScope(sel.host, sel.username, v); } catch (e) { say(e.message); } }), true));
     const a = el('div', 'actions'); const st = el('div'); st.id = 'status'; a.append(st); wrap.append(a);
   }
-  const canSave = () => !!(draft.host.trim() && (draft.pass || mode === 'edit') && (draft.scope === 'all' || draft.scope.length));
+  const canSave = () => !!(cleanSites().length && (draft.pass || mode === 'edit') && (draft.scope === 'all' || draft.scope.length));
   const sync = () => {
     const b = $('save'); if (!b) return;
     const scoped = draft.scope === 'all' || draft.scope.length > 0;
@@ -857,15 +919,21 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser logins
     }
     if (mode === 'add') b.textContent = replacing ? 'Replace login' : 'Save login';
     // Say why Save is off, once the rest is filled in — the missing piece is otherwise invisible.
-    const st = $('status'); if (st && (mode !== 'add' || (draft.host.trim() && draft.pass))) st.textContent = !scoped ? 'Choose a workspace, or Everywhere.' : replacing ? 'This site and username are already saved: saving replaces the password, and the workspaces shown are the ones it has now.' : '';
+    const st = $('status'); if (st && (mode !== 'add' || (cleanSites().length && draft.pass))) st.textContent = !scoped ? 'Choose a workspace, or Everywhere.' : replacing ? 'This site and username are already saved: saving replaces the password, and the workspaces shown are the ones it has now.' : '';
   };
   async function save() {
-    try { const u = draft.user.trim(); const k = siteKey(draft.host); await vault.add(draft.host.trim(), u, draft.pass, draft.scope, draft.also); resetDraft(); mode = 'view'; await refresh(); sel = rows.find((r) => siteKey(r.host) === k && r.username === u) || null; render(); }
-    catch (e) { say(failed(e)); }
+    try {
+      const sites = cleanSites(); const u = draft.user.trim(); const k = siteKey(sites[0]);
+      await vault.add(sites[0], u, draft.pass, draft.scope, sites.slice(1), draft.notes);
+      resetDraft(); mode = 'view'; await refresh(); sel = rows.find((r) => siteKey(r.host) === k && r.username === u) || null; render();
+    } catch (e) { say(failed(e)); }
   }
   async function saveEdit() {
-    try { const u = draft.user.trim(); const k = siteKey(draft.host); await vault.update(draft.from, { site: draft.host.trim(), also: draft.also, username: u, password: draft.pass || undefined, scope: draft.scope }); resetDraft(); mode = 'view'; await refresh(); sel = rows.find((r) => siteKey(r.host) === k && r.username === u) || null; render(); }
-    catch (e) { say(failed(e)); }
+    try {
+      const sites = cleanSites(); const u = draft.user.trim(); const k = siteKey(sites[0]);
+      await vault.update(draft.from, { site: sites[0], also: sites.slice(1), username: u, password: draft.pass || undefined, scope: draft.scope, notes: draft.notes });
+      resetDraft(); mode = 'view'; await refresh(); sel = rows.find((r) => siteKey(r.host) === k && r.username === u) || null; render();
+    } catch (e) { say(failed(e)); }
   }
   async function doImport() {
     try {
@@ -876,13 +944,12 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser logins
   }
   // ---- cards: the same window, a second kind of thing the vault holds ----
   let kind = 'logins', cards = [], selCard = null, cardMode = 'view';
-  const cdraft = { id: null, label: '', name: '', number: '', exp: '', cvc: '' };
-  const resetCard = () => Object.assign(cdraft, { id: null, label: '', name: '', number: '', exp: '', cvc: '' });
+  const cdraft = { id: null, label: '', name: '', number: '', exp: '', cvc: '', notes: '' };
+  const resetCard = () => Object.assign(cdraft, { id: null, label: '', name: '', number: '', exp: '', cvc: '', notes: '' });
   const cardLine = (c) => c.brand + ' •••• ' + c.last4 + ' · ' + c.exp;
   function paintKinds() {
     const cardsOn = kind === 'cards';
     $('k-logins').classList.toggle('on', !cardsOn); $('k-cards').classList.toggle('on', cardsOn);
-    $('title').textContent = cardsOn ? 'Cards' : 'Logins';
     $('sub').textContent = cardsOn ? 'filled into checkout pages, always with your confirmation' : 'what the agent may sign in with, and where';
     $('new').textContent = cardsOn ? 'Add card' : 'Add login';
     $('import').hidden = cardsOn; $('export').hidden = cardsOn; $('q').parentElement.hidden = cardsOn;
@@ -909,7 +976,10 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser logins
         inp.oninput = () => { cdraft[key] = inp.value; }; inp.onkeydown = (e) => { if (e.key === 'Enter') saveCard(); };
         row.append(el('label', null, label), inp); f.append(row);
       }
-      wrap.append(f);
+      wrap.append(section('Card', f));
+      const notes = notesEditor(() => cdraft.notes, (v) => { cdraft.notes = v; });
+      notes.placeholder = 'Markdown, for you and for agents: which purchases this card is for, a spending limit, the billing address.';
+      wrap.append(section('Notes', notes));
       wrap.append(el('p', 'hint', 'The number and security code stay in the vault: lists show the last four digits, and filling types them into the page without the agent ever seeing them.'));
       const a = el('div', 'actions'); const st = el('div'); st.id = 'status'; a.append(st, el('span', 'spacer'));
       const cancel = el('button', 'quiet', 'Cancel'); cancel.onclick = () => { resetCard(); cardMode = 'view'; render(); };
@@ -921,17 +991,18 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser logins
     if (!selCard) { wrap.append(el('div', 'empty', cards.length ? 'Pick a card.' : 'Add a card to fill checkout pages with it.')); return; }
     const t = el('div', 'title'); const id = el('div', 'id'); id.append(el('h2', null, selCard.label), el('div', 'user mono', cardLine(selCard))); t.append(id);
     const acts = el('div', 'acts');
-    const ed = el('button', 'quiet', 'Edit'); ed.onclick = () => { Object.assign(cdraft, { id: selCard.id, label: selCard.label, name: selCard.name, number: '', exp: selCard.exp, cvc: '' }); cardMode = 'edit'; render(); };
+    const ed = el('button', 'quiet', 'Edit'); ed.onclick = () => { Object.assign(cdraft, { id: selCard.id, label: selCard.label, name: selCard.name, number: '', exp: selCard.exp, cvc: '', notes: selCard.notes || '' }); cardMode = 'edit'; render(); };
     const rm = el('button', 'quiet danger', 'Remove'); rm.onclick = async () => { try { await vault.removeCard(selCard.id); selCard = null; cards = await vault.cards(); render(); } catch (e) { say(failed(e)); } };
     acts.append(ed, rm); t.append(acts); wrap.append(t);
     const info = el('div', 'fields');
     for (const [k, v] of [['Name on card', selCard.name || '(none)'], ['Expires', selCard.exp], ['Security code', selCard.hasCode ? 'saved' : 'not saved: typed at checkout']]) { const row = el('div', 'field'); row.append(el('label', null, k), el('div', 'mono', v)); info.append(row); }
-    wrap.append(info);
+    wrap.append(section('Card', info));
+    wrap.append(section('Notes', notesView(selCard.notes, 'No notes. Edit to add some for you and for agents: which purchases this card is for.')));
     wrap.append(el('p', 'hint', 'Filling it asks you first, with Touch ID or your Mac password: when you use Cobrowser: Fill Card, and every time the agent asks to (it never sees the number, and the pay button stays yours).'));
     const a = el('div', 'actions'); const st = el('div'); st.id = 'status'; a.append(st); wrap.append(a);
   }
   async function saveCard() {
-    const fields = { label: cdraft.label, name: cdraft.name, exp: cdraft.exp };
+    const fields = { label: cdraft.label, name: cdraft.name, exp: cdraft.exp, notes: cdraft.notes };
     if (cdraft.number.trim()) fields.number = cdraft.number;
     if (cdraft.cvc.trim()) fields.cvc = cdraft.cvc;
     try {
@@ -972,33 +1043,78 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser logins
   render(); refresh();
 </script>`;
 
+/** Big enough to see a login and its workspaces at once, without outgrowing the screen. */
+function vaultWindowSize() {
+  const area = require('electron').screen.getPrimaryDisplay().workAreaSize;
+  return { width: Math.min(1180, Math.round(area.width * 0.85)), height: Math.min(860, Math.round(area.height * 0.88)), minWidth: 860, minHeight: 560 };
+}
+
+/**
+ * Notes are Markdown, shown formatted in the vault window: paragraphs, headings, lists, code,
+ * bold, italics and links (web and mail only). Everything is escaped first, so a note can never
+ * become markup of its own. Runs in the window (its source is put into the page).
+ */
+function markdownToHtml(md) {
+  const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const inline = (raw) => {
+    const codes = [];
+    let s = esc(raw).replace(/`([^`]+)`/g, (_m, c) => { codes.push(c); return '\u0000' + (codes.length - 1) + '\u0000'; });
+    s = s
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/(^|[^*\w])[*_]([^*_]+)[*_](?![\w*])/g, '$1<em>$2</em>')
+      .replace(/\[([^\]]+)\]\(((?:https?:\/\/|mailto:)[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>')
+      .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank" rel="noreferrer">$2</a>');
+    return s.replace(/\u0000(\d+)\u0000/g, (_m, i) => '<code>' + codes[Number(i)] + '</code>');
+  };
+  const out = []; let para = []; let list = null; let code = null;
+  const flushPara = () => { if (para.length) { out.push('<p>' + para.map(inline).join('<br>') + '</p>'); para = []; } };
+  const flushList = () => { if (list) { out.push('<' + list.tag + '>' + list.items.map((i) => '<li>' + inline(i) + '</li>').join('') + '</' + list.tag + '>'); list = null; } };
+  for (const line of String(md || '').split('\n')) {
+    if (code) { if (/^```/.test(line)) { out.push('<pre><code>' + esc(code.join('\n')) + '</code></pre>'); code = null; } else code.push(line); continue; }
+    if (/^```/.test(line)) { flushPara(); flushList(); code = []; continue; }
+    const h = /^(#{1,3})\s+(.*)$/.exec(line);
+    if (h) { flushPara(); flushList(); const n = h[1].length + 3; out.push('<h' + n + '>' + inline(h[2]) + '</h' + n + '>'); continue; }
+    const ul = /^\s*[-*+]\s+(.*)$/.exec(line), ol = /^\s*\d+[.)]\s+(.*)$/.exec(line);
+    if (ul || ol) { flushPara(); const tag = ul ? 'ul' : 'ol'; if (!list || list.tag !== tag) { flushList(); list = { tag, items: [] }; } list.items.push((ul || ol)[1]); continue; }
+    if (!line.trim()) { flushPara(); flushList(); continue; }
+    flushList(); para.push(line);
+  }
+  if (code) out.push('<pre><code>' + esc(code.join('\n')) + '</code></pre>');
+  flushPara(); flushList();
+  return out.join('');
+}
+
 let vaultWin;
 function openVaultWindow() {
   if (vaultWin && !vaultWin.isDestroyed()) { vaultWin.show(); vaultWin.focus(); return; }
   const { nativeTheme } = require('electron');
   vaultWin = new BrowserWindow({
-    width: 820, height: 560, minWidth: 660, minHeight: 440, title: 'cobrowser logins', show: false,
+    ...vaultWindowSize(), title: 'cobrowser vault', show: false,
     titleBarStyle: 'hiddenInset', backgroundColor: nativeTheme.shouldUseDarkColors ? '#16181d' : '#f3f4f6',
     webPreferences: { preload: path.join(__dirname, 'vault-preload.js'), contextIsolation: true, sandbox: true, nodeIntegration: false },
   });
   vaultWin.once('ready-to-show', () => { vaultWin.show(); vaultWin.focus(); });
   vaultWin.on('closed', () => { vaultWin = undefined; });
+  // A link in someone's notes opens in their browser, never inside the vault window.
+  const outside = (url) => { if (/^(https?:|mailto:)/.test(url)) void shell.openExternal(url); };
+  vaultWin.webContents.setWindowOpenHandler(({ url }) => { outside(url); return { action: 'deny' }; });
+  vaultWin.webContents.on('will-navigate', (e, url) => { e.preventDefault(); outside(url); });
   void vaultWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(VAULT_HTML));
 }
 
 ipcMain.handle('vault:list', async () => (await unlockVault('show the logins in the cobrowser vault')).entries.map(publicEntry));
 ipcMain.handle('vault:workspaces', () => knownWorkspaces());
-ipcMain.handle('vault:add', async (_e, { host, username, password, scope, also }) => {
+ipcMain.handle('vault:add', async (_e, { host, username, password, scope, also, notes }) => {
   if (!host || !password) throw new Error('site and password are required');
   const exists = !!vault && !!findEntry(host, username || '');
   await confirmFresh(exists ? `replace the saved password for ${username || 'the login'} on ${host}` : `add a login for ${host}`);
   // The form's scope is the one the human chose for this login, so it replaces the old one.
-  const r = upsertLogin(host, username || '', password, scope, { mergeScope: false, also }); saveVault();
+  const r = upsertLogin(host, username || '', password, scope, { mergeScope: false, also, notes }); saveVault();
   return { replaced: r.replaced };
 });
-ipcMain.handle('vault:update', async (_e, { from, site, username, password, scope, also }) => {
+ipcMain.handle('vault:update', async (_e, { from, site, username, password, scope, also, notes }) => {
   await confirmFresh(`change the login for ${from.username || 'the login'} on ${from.host}`);
-  updateLogin(from, { site, username, password: password || undefined, scope, also }); saveVault();
+  updateLogin(from, { site, username, password: password || undefined, scope, also, notes }); saveVault();
 });
 ipcMain.handle('vault:setScope', async (_e, { host, username, scope }) => { await confirmFresh(`change which workspaces may use ${username || 'the login'} on ${host}`); setScope(host, username, scope); saveVault(); });
 ipcMain.handle('vault:remove', async (_e, { host, username }) => { await confirmFresh(`remove the login for ${username || 'the login'} on ${host}`); removeLogin(host, username); saveVault(); });
@@ -1830,7 +1946,7 @@ async function clearBrowsingData(ses) {
 /**
  * Forget a workspace: its tabs, browsing data, site permissions and certificate exceptions,
  * and its place in the list. Its logins stay in the vault (a login may be allowed in several
- * workspaces; the Logins window changes that). Refused while an editor window has it open.
+ * workspaces; the vault window changes that). Refused while an editor window has it open.
  */
 async function forgetWorkspace(id) {
   const w = workspaces.get(id);
@@ -2009,7 +2125,7 @@ async function handle(ws, state, m) {
           const exists = !!vault && !!findEntry(m.host, m.username || '');
           await confirmFresh(exists ? `replace the saved password for ${m.username || 'the login'} on ${m.host}` : `add a login for ${m.host}`);
           // From a command: widen the login's scope to this workspace, never narrow it.
-          const r = upsertLogin(m.host, m.username || '', m.password, m.scope ?? [state.workspace?.id].filter(Boolean), { mergeScope: true, also: m.also }); saveVault();
+          const r = upsertLogin(m.host, m.username || '', m.password, m.scope ?? [state.workspace?.id].filter(Boolean), { mergeScope: true, also: m.also, notes: m.notes }); saveVault();
           return reply({ ok: true, replaced: r.replaced });
         }
         case 'vault.export': { const r = await exportVault(); return reply(r ? { ok: true, ...r } : { ok: false, canceled: true }); }
@@ -2017,10 +2133,23 @@ async function handle(ws, state, m) {
         case 'vault.list': {
           const v = await unlockVault('list the logins in the cobrowser vault');
           const wsId = state.workspace?.id;
-          return reply({ logins: v.entries.filter((e) => wsId && allowed(e, wsId)).map((e) => ({ host: siteLabel(e), ...(e.also && e.also.length ? { alsoOn: e.also.map(siteLabel) } : {}), username: e.username })) });
+          return reply({ logins: v.entries.filter((e) => wsId && allowed(e, wsId)).map((e) => ({ host: siteLabel(e), ...(e.also && e.also.length ? { alsoOn: e.also.map(siteLabel) } : {}), username: e.username, ...(e.notes ? { notes: e.notes } : {}) })) });
         }
         case 'vault.lock': { lockVault(); return reply({ ok: true }); }
         case 'vault.open': { focusApp(); openVaultWindow(); return reply({ ok: true }); }
+        // Test instances only: drive the vault window and photograph it, for the UI suite.
+        case 'vault.window': {
+          if (!SKIP_BIOMETRICS) return reply({ error: 'not available' });
+          openVaultWindow();
+          const wc = vaultWin.webContents;
+          if (wc.isLoading()) await new Promise((r) => wc.once('did-finish-load', r));
+          await new Promise((r) => setTimeout(r, 400));
+          const value = m.script ? await wc.executeJavaScript(String(m.script)) : undefined;
+          await new Promise((r) => setTimeout(r, Number(m.wait) || 400));
+          const [width, height] = vaultWin.getSize();
+          const png = m.capture ? (await wc.capturePage()).toPNG().toString('base64') : undefined;
+          return reply({ value, width, height, png });
+        }
         case 'vault.addCard': {
           await confirmFresh('add a card to the cobrowser vault');
           const c = store.addCard(vault, m.card || {}); saveVault();
@@ -2204,7 +2333,7 @@ function makeTray() {
     }
     if (workspaces.size) items.push({ type: 'separator' });
     items.push({ label: vault ? `Vault: unlocked, ${vault.entries.length} login${vault.entries.length === 1 ? '' : 's'}` : 'Vault: locked', enabled: false });
-    items.push({ label: 'Logins…', click: () => openVaultWindow() });
+    items.push({ label: 'Vault…', click: () => openVaultWindow() });
     if (vault) items.push({ label: 'Lock vault', click: () => lockVault() });
     items.push({ type: 'separator' });
     items.push({ label: 'Quit cobrowser', click: () => app.quit() });
