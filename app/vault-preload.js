@@ -14,4 +14,9 @@ contextBridge.exposeInMainWorld('vault', {
   update: (from, fields) => ipcRenderer.invoke('vault:update', { from, ...fields }),
   exportCsv: () => ipcRenderer.invoke('vault:exportCsv'),
   lock: () => ipcRenderer.invoke('vault:lock'),
+  // Cards: the number and code go in, never come back out (lists carry the last four digits).
+  cards: () => ipcRenderer.invoke('vault:cards'),
+  addCard: (fields) => ipcRenderer.invoke('vault:addCard', fields),
+  updateCard: (id, fields) => ipcRenderer.invoke('vault:updateCard', { id, ...fields }),
+  removeCard: (id) => ipcRenderer.invoke('vault:removeCard', { id }),
 });

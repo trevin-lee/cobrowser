@@ -69,6 +69,11 @@
         "title": "Cobrowser: Show Tab"
       },
       {
+        "command": "cobrowser.fillCard",
+        "title": "Cobrowser: Fill Card",
+        "icon": "$(credit-card)"
+      },
+      {
         "command": "cobrowser.manageLogins",
         "title": "Cobrowser: Manage Logins"
       },
@@ -139,9 +144,15 @@
         { "command": "cobrowser.forward", "when": "activeWebviewPanelId == 'cobrowser'" },
         { "command": "cobrowser.reloadTab", "when": "activeWebviewPanelId == 'cobrowser'" },
         { "command": "cobrowser.closeTab", "when": "activeWebviewPanelId == 'cobrowser'" },
-        { "command": "cobrowser.showTab", "when": "false" }
+        { "command": "cobrowser.showTab", "when": "false" },
+        { "command": "cobrowser.fillCard", "when": "activeWebviewPanelId == 'cobrowser'" }
       ],
       "editor/title": [
+        {
+          "command": "cobrowser.fillCard",
+          "when": "activeWebviewPanelId == 'cobrowser'",
+          "group": "navigation@99"
+        },
         {
           "command": "cobrowser.newTab",
           "group": "navigation@100"

@@ -865,6 +865,17 @@ export class BrowserSession {
 
   /** Fill a saved login into fields the agent chose; the app supplies the secret and checks
    *  the page is on that login's site. The agent only learns what got filled. */
+  /** Fill a saved card into the page's card fields. The human confirms every fill in the app;
+   *  the number and code are typed by the app and never come back. */
+  fillCard(opts: OnPage & { card?: string }) {
+    this.markAgent();
+    return this.app.vaultFillCard(this.pageFor(opts.pageId).tabId, opts.card, 'agent');
+  }
+
+  listCards() {
+    return this.app.vaultCards();
+  }
+
   fillCredentials(opts: OnPage & { usernameUid?: string; passwordUid?: string; username?: string }) {
     this.markAgent();
     const { pageId, ...rest } = opts;

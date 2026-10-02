@@ -23,6 +23,17 @@ export interface ScreenInfo {
   y: number;
 }
 
+/** A saved card as anything outside the app sees it: never the number or the code. */
+export interface PublicCard {
+  id: string;
+  label: string;
+  brand: string;
+  last4: string;
+  exp: string;
+  name: string;
+  hasCode: boolean;
+}
+
 /** A site permission a person decided, in one workspace. */
 export interface SitePermission {
   key: string;
@@ -259,6 +270,21 @@ export class AppConnection {
   }
   async vaultLock(): Promise<void> {
     await this.request({ type: 'vault.lock' });
+  }
+  /** The saved cards, as lists may see them: label, brand, last four digits, expiry. */
+  async vaultCards(): Promise<PublicCard[]> {
+    const r = await this.request({ type: 'vault.cards' }, 120000);
+    if (r.error) throw new Error(String(r.error));
+    return r.cards as PublicCard[];
+  }
+  async vaultAddCard(card: { number: string; exp: string; cvc?: string; name?: string; label?: string }): Promise<PublicCard> {
+    const r = await this.request({ type: 'vault.addCard', card }, 120000);
+    if (r.error) throw new Error(String(r.error));
+    return r.card as PublicCard;
+  }
+  /** Fill a saved card into a tab's card fields, after the person confirms (every time). */
+  async vaultFillCard(tabId: string, card: string | undefined, by: 'human' | 'agent'): Promise<{ filled: string[]; card?: string; last4?: string; error?: string; cards?: string[] }> {
+    return (await this.request({ type: 'vault.fillCard', tabId, card, by }, 180000)) as unknown as { filled: string[]; card?: string; last4?: string; error?: string; cards?: string[] };
   }
   /** Bring up the app's Logins window, where logins are viewed, edited and scoped. */
   async vaultOpenWindow(): Promise<void> {

@@ -214,7 +214,86 @@ function exportCsv(vault) {
   return rows.map((r) => r.map((c) => q(String(c))).join(',')).join('\n') + '\n';
 }
 
+// ---------------------------------------------------------------------------------------
+// Payment cards: { id, label, name, number, expMonth, expYear, cvc, updatedAt }. The number
+// and the code never leave the app: lists see publicCard, and filling types them into the
+// page directly. Every fill asks the person first (main.js), so cards have no workspace scope.
+
+function cardBrand(number) {
+  const n = String(number);
+  if (/^4/.test(n)) return 'Visa';
+  if (/^(5[1-5]|2(2[2-9]|[3-6]\d|7[01]|720))/.test(n)) return 'Mastercard';
+  if (/^3[47]/.test(n)) return 'American Express';
+  if (/^(6011|65|64[4-9])/.test(n)) return 'Discover';
+  if (/^35(2[89]|[3-8])/.test(n)) return 'JCB';
+  if (/^3(0[0-5]|[68])/.test(n)) return 'Diners Club';
+  return 'Card';
+}
+
+/** The checksum every card number carries (Luhn), so a mistyped number is caught on save. */
+function luhnOk(n) {
+  let sum = 0;
+  for (let i = 0; i < n.length; i++) {
+    let d = Number(n[n.length - 1 - i]);
+    if (i % 2 === 1) { d *= 2; if (d > 9) d -= 9; }
+    sum += d;
+  }
+  return sum % 10 === 0;
+}
+
+/** Checked and tidied card fields. `existing` keeps the number and code when not given again. */
+function cardFields(fields, existing) {
+  const number = fields.number ? String(fields.number).replace(/[\s-]/g, '') : existing?.number;
+  if (!number || !/^\d{12,19}$/.test(number) || !luhnOk(number)) throw new Error('that is not a valid card number');
+  let expMonth = fields.expMonth ?? existing?.expMonth, expYear = fields.expYear ?? existing?.expYear;
+  if (fields.exp) {
+    const m = /^\s*(\d{1,2})\s*\/\s*(\d{2}|\d{4})\s*$/.exec(String(fields.exp));
+    if (!m) throw new Error('expiry should look like MM/YY');
+    expMonth = m[1]; expYear = m[2];
+  }
+  expMonth = Number(expMonth); expYear = Number(expYear);
+  if (!(expMonth >= 1 && expMonth <= 12)) throw new Error('the expiry month should be 1 to 12');
+  if (expYear < 100) expYear += 2000;
+  if (!(expYear >= 2000 && expYear <= 2100)) throw new Error('the expiry year is not valid');
+  const cvc = fields.cvc !== undefined && fields.cvc !== '' ? String(fields.cvc).trim() : existing?.cvc || '';
+  if (cvc && !/^\d{3,4}$/.test(cvc)) throw new Error('the security code should be 3 or 4 digits');
+  const name = fields.name !== undefined ? String(fields.name).trim() : existing?.name || '';
+  const label = (fields.label !== undefined ? String(fields.label).trim() : existing?.label) || `${cardBrand(number)} ${number.slice(-4)}`;
+  return { label, name, number, expMonth, expYear, cvc };
+}
+
+function publicCard(c) {
+  return { id: c.id, label: c.label, brand: cardBrand(c.number), last4: c.number.slice(-4), exp: `${String(c.expMonth).padStart(2, '0')}/${String(c.expYear).slice(-2)}`, name: c.name, hasCode: !!c.cvc };
+}
+
+function addCard(vault, fields) {
+  const card = { id: crypto.randomBytes(6).toString('hex'), ...cardFields(fields), updatedAt: Date.now() };
+  (vault.cards ||= []).push(card);
+  return card;
+}
+
+function findCard(vault, which) {
+  const cards = vault.cards || [];
+  if (!which) return cards.length === 1 ? cards[0] : undefined;
+  const w = String(which).toLowerCase();
+  return cards.find((c) => c.id === which) || cards.find((c) => c.label.toLowerCase() === w) || cards.find((c) => c.number.endsWith(String(which)));
+}
+
+function updateCard(vault, id, fields) {
+  const card = (vault.cards || []).find((c) => c.id === id);
+  if (!card) throw new Error('that card is no longer in the vault');
+  Object.assign(card, cardFields(fields, card), { updatedAt: Date.now() });
+  return card;
+}
+
+function removeCard(vault, id) {
+  const before = (vault.cards || []).length;
+  vault.cards = (vault.cards || []).filter((c) => c.id !== id);
+  return before - vault.cards.length;
+}
+
 module.exports = {
+  cardBrand, publicCard, addCard, findCard, updateCard, removeCard,
   normalizeScope, allowed, mergeScope, publicEntry, findEntry, upsertLogin, updateLogin, setScope, removeLogin,
   normalizeSites, sitesOf, loginMatches,
   parseCsv, importCsv, exportCsv,

@@ -700,6 +700,34 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     // The sidebar's tab rows: show that page's editor tab.
     vscode.commands.registerCommand('cobrowser.showTab', (pageId: string) => BrowserPanel.reveal(pageId)),
+    // A saved card into the checkout page in front of you. The app asks you to confirm (Touch
+    // ID or your Mac password) and types the number and code itself; nothing comes back here.
+    vscode.commands.registerCommand('cobrowser.fillCard', async () => {
+      const panel = BrowserPanel.active;
+      const app = BrowserPanel.app;
+      if (!panel || !app) {
+        void vscode.window.showInformationMessage('Cobrowser: open the checkout page in a cobrowser tab first.');
+        return;
+      }
+      try {
+        const cards = await app.vaultCards();
+        if (!cards.length) {
+          const next = await vscode.window.showInformationMessage('Cobrowser: no card is saved yet. Add one under Cards in the Logins window.', 'Manage Logins');
+          if (next) await vscode.commands.executeCommand('cobrowser.manageLogins');
+          return;
+        }
+        const pick = cards.length === 1
+          ? cards[0]
+          : (await vscode.window.showQuickPick(cards.map((c) => ({ label: c.label, description: `${c.brand} •••• ${c.last4} · ${c.exp}`, card: c })), { title: 'Fill which card?' }))?.card;
+        if (!pick) return;
+        const r = await app.vaultFillCard(panel.tabId, pick.id, 'human');
+        if (r.error) void vscode.window.showWarningMessage(`Cobrowser: ${r.error}.`);
+        else vscode.window.setStatusBarMessage(`Cobrowser: filled ${pick.label} (${r.filled.join(', ')})`, 5000);
+      } catch (err) {
+        const msg = String((err as Error).message ?? err);
+        if (!/cancelled/.test(msg)) void vscode.window.showErrorMessage(`Cobrowser: could not fill the card — ${msg}`);
+      }
+    }),
     vscode.commands.registerCommand('cobrowser.manageLogins', async () => {
       try {
         await withApp((c) => c.vaultOpenWindow());

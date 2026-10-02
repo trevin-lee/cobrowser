@@ -60,6 +60,40 @@ suite('credentials', async (r) => {
         two.close();
       }
     }
+    // Cards: a checkout page with its own fields, month/year selects, a hidden card-number field
+    // (autofill theft: must stay empty), and card fields in another site's frame (as Stripe does).
+    {
+      const shop = await serve((q, res) => {
+        const frame = `<input id=fnum autocomplete=cc-number><input id=fexp autocomplete=cc-exp placeholder="MM / YY"><input id=fcvc autocomplete=cc-csc>
+          <script>for (const id of ['fnum','fexp','fcvc']) document.getElementById(id).addEventListener('input', () => parent.postMessage({ [id]: document.getElementById(id).value }, '*'));</script>`;
+        const page = `<title>checkout</title><input id=num name=cardnumber autocomplete=cc-number><input id=name autocomplete=cc-name>
+          <select id=mm autocomplete=cc-exp-month><option value="">Month</option>${Array.from({ length: 12 }, (_, i) => `<option value="${String(i + 1).padStart(2, '0')}">${String(i + 1).padStart(2, '0')}</option>`).join('')}</select>
+          <select id=yy autocomplete=cc-exp-year><option value="">Year</option><option>2028</option><option>2029</option><option>2030</option></select>
+          <input id=cvc autocomplete=cc-csc><input id=trap autocomplete=cc-number style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0">
+          <iframe id=f src="${shop.cross}/frame" style="width:400px;height:80px"></iframe>
+          <script>window.__frame = {}; addEventListener('message', (e) => Object.assign(window.__frame, e.data));</script>`;
+        const [st, h, b] = html(q.url === '/frame' ? frame : page); res.writeHead(st, h); res.end(b);
+      });
+      const L3 = await launch({ workspace: path.join(process.env.COBROWSER_E2E_SCRATCH!, 'ws-C') });
+      try {
+        await L3.conn.vaultAddCard({ number: '4242 4242 4242 4242', exp: '03/29', cvc: '123', name: 'Ada Lovelace', label: 'Personal' });
+        const cards = await L3.conn.vaultCards();
+        r.check('[cards] a saved card is listed without its number or code', cards.length === 1 && cards[0].last4 === '4242' && !JSON.stringify(cards).includes('4242424242424242') && !JSON.stringify(cards).includes('123'), cards);
+        const t = await L3.conn.openTab(shop.base + '/', 900, 600); await sleep(1500);
+        const res = await L3.conn.vaultFillCard(t.tabId, undefined, 'agent');
+        await sleep(500);
+        const got = (await L3.conn.cdp<{ result: { value: Record<string, unknown> } }>(t.tabId, 'Runtime.evaluate', { expression: '({ num: num.value, name: document.getElementById("name").value, mm: mm.value, yy: yy.value, cvc: cvc.value, trap: trap.value, frame: window.__frame })', returnByValue: true })).result.value;
+        r.check('[cards] the card fills the page: number, name, month and year menus, code', got.num === '4242424242424242' && got.name === 'Ada Lovelace' && got.mm === '03' && got.yy === '2029' && got.cvc === '123', { res, got });
+        r.check('[cards] a hidden card field is left empty', got.trap === '', got);
+        const fr = got.frame as Record<string, string>;
+        r.check("[cards] and the fields in another site's frame are filled too", fr.fnum === '4242424242424242' && /^03 ?\/ ?29$/.test(fr.fexp ?? '') && fr.fcvc === '123', { res, frame: fr });
+        const none = await L3.conn.vaultFillCard((await L3.conn.openTab(shop.base + '/frame', 400, 300)).tabId, 'no such card', 'agent');
+        r.check('[cards] an unknown card is a clear error, with the cards there are', /no saved card/.test(none.error ?? '') && none.cards?.[0] === 'Personal', none);
+      } finally {
+        await L3.stop();
+        shop.close();
+      }
+    }
     // export: every login, as a CSV other managers (and this vault) read, round-tripping
     const exportPath = path.join(process.env.COBROWSER_E2E_SCRATCH!, 'export', 'logins.csv');
     require('node:fs').mkdirSync(path.dirname(exportPath), { recursive: true });

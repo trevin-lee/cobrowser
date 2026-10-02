@@ -446,6 +446,131 @@ async function fillCredentials(tab, { usernameUid, passwordUid, username }) {
 }
 
 
+/**
+ * The card fields on a page, in one frame: marked with data-cobrowser-card so the fill can find
+ * them again, and described (what each holds, input or select). Visible, enabled fields only: a
+ * hidden field filled with a card number is how autofill theft works. Runs in the page, so it
+ * must be self-contained (it is sent as source).
+ */
+function detectCardFields() {
+  const visible = (el) => {
+    const r = el.getBoundingClientRect(); const cs = getComputedStyle(el);
+    return r.width > 2 && r.height > 2 && cs.visibility !== 'hidden' && cs.display !== 'none' && Number(cs.opacity) > 0.05 && !el.disabled && !el.readOnly;
+  };
+  const words = (el) => [el.name, el.id, el.placeholder, el.getAttribute('aria-label'), el.getAttribute('data-elements-stable-field-name'), ...(el.labels ? [...el.labels].map((l) => l.innerText) : [])].filter(Boolean).join(' ').toLowerCase();
+  const BY_AUTOCOMPLETE = { 'cc-number': 'number', 'cc-name': 'name', 'cc-exp': 'exp', 'cc-exp-month': 'month', 'cc-exp-year': 'year', 'cc-csc': 'cvc' };
+  const kindOf = (el) => {
+    for (const t of (el.getAttribute('autocomplete') || '').toLowerCase().split(/\s+/)) if (BY_AUTOCOMPLETE[t]) return BY_AUTOCOMPLETE[t];
+    const t = words(el);
+    if (/cvc|cvv|csc|security.?code|card.?code|card.?verification/.test(t)) return 'cvc';
+    if (/card.?num|cc.?num|cardnumber|credit.?card.?(no|number)|\bpan\b/.test(t)) return 'number';
+    if (/name.?on.?card|card.?holder|cc.?name|nameoncard|cardname/.test(t)) return 'name';
+    if (/(exp|expir)\w*.?(month|mm)\b|\bcc.?month/.test(t)) return 'month';
+    if (/(exp|expir)\w*.?(year|yy)|\bcc.?year/.test(t)) return 'year';
+    if (/\bexp(iry|iration)?\b|exp.?date|mm.?\/.?yy/.test(t)) return 'exp';
+    return null;
+  };
+  const out = []; let n = 0;
+  const walk = (root) => {
+    for (const el of root.querySelectorAll('input, select')) {
+      if (el.type === 'hidden' || !visible(el)) continue;
+      const kind = kindOf(el); if (!kind) continue;
+      const id = 'c' + (n++) + '-' + Math.random().toString(36).slice(2, 6);
+      el.setAttribute('data-cobrowser-card', id);
+      out.push({ id, kind, select: el.tagName === 'SELECT', maxLength: el.maxLength > 0 ? el.maxLength : 0, options: el.tagName === 'SELECT' ? [...el.options].map((o) => [o.value, o.text]) : undefined });
+    }
+    for (const e of root.querySelectorAll('*')) if (e.shadowRoot) walk(e.shadowRoot);
+    for (const f of root.querySelectorAll('iframe')) { try { if (f.contentDocument) walk(f.contentDocument); } catch { /* another site's frame: its own session handles it */ } }
+  };
+  walk(document);
+  return out;
+}
+
+/** In the page: focus a marked field (selecting what is in it), or set a marked select. */
+function touchCardField(id, selectValue) {
+  let el = null;
+  const find = (root) => {
+    el = el || root.querySelector('[data-cobrowser-card="' + id + '"]');
+    if (el) return;
+    for (const e of root.querySelectorAll('*')) { if (e.shadowRoot) find(e.shadowRoot); if (el) return; }
+    for (const f of root.querySelectorAll('iframe')) { try { if (f.contentDocument) find(f.contentDocument); } catch { /* other site */ } if (el) return; }
+  };
+  find(document);
+  if (!el) return false;
+  if (selectValue != null) {
+    el.value = selectValue;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }
+  el.focus();
+  if (el.select) el.select();
+  return true;
+}
+
+/** What goes in each kind of card field, shaped to the field (2- or 4-digit year, MM/YY). */
+function cardValue(card, f) {
+  const mm = String(card.expMonth).padStart(2, '0'), yyyy = String(card.expYear), yy = yyyy.slice(-2);
+  if (f.select) {
+    const want = f.kind === 'month' ? [mm, String(card.expMonth), new Date(2000, card.expMonth - 1).toLocaleString('en', { month: 'long' }).toLowerCase(), new Date(2000, card.expMonth - 1).toLocaleString('en', { month: 'short' }).toLowerCase()] : [yyyy, yy];
+    const hit = (f.options || []).find(([v, t]) => want.includes(String(v).trim().toLowerCase()) || want.includes(String(t).trim().toLowerCase()) || (f.kind === 'month' && want.some((w) => String(t).trim().toLowerCase().startsWith(w + ' '))));
+    return hit ? { select: hit[0] } : undefined;
+  }
+  switch (f.kind) {
+    case 'number': return { text: card.number };
+    case 'name': return card.name ? { text: card.name } : undefined;
+    case 'cvc': return card.cvc ? { text: card.cvc } : undefined;
+    case 'month': return { text: mm };
+    case 'year': return { text: f.maxLength === 2 ? yy : yyyy };
+    case 'exp': return { text: f.maxLength && f.maxLength < 5 ? mm + yy : mm + '/' + yy };
+  }
+  return undefined;
+}
+
+/**
+ * Fill a saved card into the page: its own fields and those in the payment provider's frames
+ * (Stripe and the like put each field in a frame of their own). Asks the person first, every
+ * time, whoever asked for it; the number and code are typed by the app, never returned.
+ */
+async function fillCard(tab, { card: which, by, workspaceName }) {
+  const v = await unlockVault('fill a card into the browser');
+  const card = store.findCard(v, which);
+  if (!card) {
+    const have = (v.cards || []).map((c) => store.publicCard(c).label);
+    return { filled: [], error: have.length ? (which ? `no saved card "${which}"` : 'several cards are saved: name one') : 'no card is saved in the vault', cards: have };
+  }
+  const wc = tab.win.webContents;
+  const host = hostOf(wc.getURL());
+  const pub = store.publicCard(card);
+  const dbg = wc.debugger;
+  const run = (expression, sessionId) => dbg.sendCommand('Runtime.evaluate', { expression, returnByValue: true }, sessionId).then((r) => r.result.value).catch(() => undefined);
+  // Find the fields first, so nothing is asked for a page with nowhere to put a card.
+  const targets = [undefined, ...tab.frameSessions.values()];
+  const found = [];
+  for (const sessionId of targets) {
+    for (const f of (await run(`(${detectCardFields.toString()})()`, sessionId)) || []) found.push({ ...f, sessionId });
+  }
+  if (!found.length) return { filled: [], error: `no card fields on ${host}` };
+  await confirmFresh(by === 'agent'
+    ? `let the agent in "${workspaceName}" fill your card ${pub.label} (•••• ${pub.last4}) on ${host}`
+    : `fill your card ${pub.label} (•••• ${pub.last4}) on ${host}`);
+  tab.boost();
+  const filled = [];
+  for (const f of found) {
+    const value = cardValue(card, f);
+    if (!value) continue;
+    if (value.select !== undefined) {
+      if (await run(`(${touchCardField.toString()})(${JSON.stringify(f.id)}, ${JSON.stringify(value.select)})`, f.sessionId)) filled.push(f.kind);
+      continue;
+    }
+    if (!(await run(`(${touchCardField.toString()})(${JSON.stringify(f.id)}, null)`, f.sessionId))) continue;
+    await dbg.sendCommand('Input.insertText', { text: value.text }, f.sessionId).catch(() => undefined); // trusted keystrokes, never page JS
+    filled.push(f.kind);
+  }
+  log(`vault: filled card ${pub.label} (${filled.join('+')}) on ${host} for the ${by}`);
+  return { filled, card: pub.label, last4: pub.last4 };
+}
+
 // ---------------------------------------------------------------------------------------
 // Vault window: the menu-bar way to add, remove and import logins. A real (visible) window;
 // the page talks to the app only through the preload's narrow bridge.
@@ -481,6 +606,9 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser logins
   header svg { width: 20px; height: 20px; }
   header h1 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: -.01em; }
   header .sub { color: var(--muted); margin-left: 2px; }
+  .kinds { display: flex; gap: 2px; margin-left: 6px; -webkit-app-region: no-drag; }
+  .kinds button { padding: 3px 10px; border-radius: 6px; color: var(--muted); }
+  .kinds button.on { color: var(--fg); background: var(--lift); }
   header .spacer { flex: 1; } header button, header .state { -webkit-app-region: no-drag; }
   .state { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; padding: 0 4px; }
   .state i { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); } .state.on i { background: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
@@ -552,7 +680,9 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser logins
 </style>
 <header>
   <svg viewBox="0 0 128 128" aria-hidden="true"><circle cx="46" cy="64" r="40" fill="#388bfd"/><circle cx="82" cy="64" r="40" fill="#29a891"/><path d="M64 33.4a40 40 0 0 1 0 61.2 40 40 0 0 1 0-61.2z" fill="#2fbdb9"/></svg>
-  <h1>Logins</h1><span class="sub">what the agent may sign in with, and where</span>
+  <h1 id="title">Logins</h1>
+  <span class="kinds"><button class="quiet on" id="k-logins">Logins</button><button class="quiet" id="k-cards">Cards</button></span>
+  <span class="sub" id="sub">what the agent may sign in with, and where</span>
   <span class="spacer"></span>
   <span class="state" id="state"><i></i><span>Locked</span></span>
   <button class="quiet" id="lock">Lock</button>
@@ -744,23 +874,98 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser logins
       say('Imported ' + n(r.count) + ': ' + r.added + ' new, ' + r.replaced + ' already here (password replaced, workspaces kept and added to).');
     } catch (e) { say(failed(e)); }
   }
-  function render() { renderList(); renderDetail(); state(); }
+  // ---- cards: the same window, a second kind of thing the vault holds ----
+  let kind = 'logins', cards = [], selCard = null, cardMode = 'view';
+  const cdraft = { id: null, label: '', name: '', number: '', exp: '', cvc: '' };
+  const resetCard = () => Object.assign(cdraft, { id: null, label: '', name: '', number: '', exp: '', cvc: '' });
+  const cardLine = (c) => c.brand + ' •••• ' + c.last4 + ' · ' + c.exp;
+  function paintKinds() {
+    const cardsOn = kind === 'cards';
+    $('k-logins').classList.toggle('on', !cardsOn); $('k-cards').classList.toggle('on', cardsOn);
+    $('title').textContent = cardsOn ? 'Cards' : 'Logins';
+    $('sub').textContent = cardsOn ? 'filled into checkout pages, always with your confirmation' : 'what the agent may sign in with, and where';
+    $('new').textContent = cardsOn ? 'Add card' : 'Add login';
+    $('import').hidden = cardsOn; $('export').hidden = cardsOn; $('q').parentElement.hidden = cardsOn;
+  }
+  function renderCards() {
+    const list = $('list'); list.innerHTML = '';
+    if (!unlocked) list.append(el('div', 'empty', 'Locked.'));
+    else if (!cards.length) list.append(el('div', 'empty', 'No cards yet. Add one, and it can be filled into a checkout page: by you, or by the agent, each time after you confirm.'));
+    else for (const c of cards) {
+      const it = el('div', 'item' + (selCard && selCard.id === c.id ? ' sel' : ''));
+      const id = el('div', 'id'); id.append(el('b', null, c.label), el('span', 'mono', cardLine(c)));
+      it.append(id); it.onclick = () => { selCard = c; cardMode = 'view'; render(); };
+      list.append(it);
+    }
+    if (!unlocked) { renderDetail(); return; }
+    const d = $('detail'); d.innerHTML = '';
+    const wrap = el('div', 'card-in'); d.append(wrap);
+    if (cardMode === 'add' || cardMode === 'edit') {
+      const editing = cardMode === 'edit';
+      const t = el('div', 'title'); const id = el('div', 'id'); id.append(el('h2', null, editing ? 'Edit card' : 'New card')); t.append(id); wrap.append(t);
+      const f = el('div', 'fields');
+      for (const [key, label, ph, type] of [['label', 'Label', 'optional, e.g. Personal Visa', 'text'], ['name', 'Name on card', '', 'text'], ['number', 'Card number', editing ? 'unchanged' : '', 'text'], ['exp', 'Expiry', 'MM/YY', 'text'], ['cvc', 'Security code', editing ? 'unchanged' : '3 or 4 digits', 'password']]) {
+        const row = el('div', 'field'); const inp = el('input', key === 'name' || key === 'label' ? '' : 'mono'); inp.type = type; inp.placeholder = ph; inp.value = cdraft[key]; inp.autocomplete = 'off'; inp.spellcheck = false;
+        inp.oninput = () => { cdraft[key] = inp.value; }; inp.onkeydown = (e) => { if (e.key === 'Enter') saveCard(); };
+        row.append(el('label', null, label), inp); f.append(row);
+      }
+      wrap.append(f);
+      wrap.append(el('p', 'hint', 'The number and security code stay in the vault: lists show the last four digits, and filling types them into the page without the agent ever seeing them.'));
+      const a = el('div', 'actions'); const st = el('div'); st.id = 'status'; a.append(st, el('span', 'spacer'));
+      const cancel = el('button', 'quiet', 'Cancel'); cancel.onclick = () => { resetCard(); cardMode = 'view'; render(); };
+      const ok = el('button', 'primary', editing ? 'Save changes' : 'Save card'); ok.onclick = saveCard;
+      a.append(cancel, ok); wrap.append(a);
+      wrap.querySelector('input').focus();
+      return;
+    }
+    if (!selCard) { wrap.append(el('div', 'empty', cards.length ? 'Pick a card.' : 'Add a card to fill checkout pages with it.')); return; }
+    const t = el('div', 'title'); const id = el('div', 'id'); id.append(el('h2', null, selCard.label), el('div', 'user mono', cardLine(selCard))); t.append(id);
+    const acts = el('div', 'acts');
+    const ed = el('button', 'quiet', 'Edit'); ed.onclick = () => { Object.assign(cdraft, { id: selCard.id, label: selCard.label, name: selCard.name, number: '', exp: selCard.exp, cvc: '' }); cardMode = 'edit'; render(); };
+    const rm = el('button', 'quiet danger', 'Remove'); rm.onclick = async () => { try { await vault.removeCard(selCard.id); selCard = null; cards = await vault.cards(); render(); } catch (e) { say(failed(e)); } };
+    acts.append(ed, rm); t.append(acts); wrap.append(t);
+    const info = el('div', 'fields');
+    for (const [k, v] of [['Name on card', selCard.name || '(none)'], ['Expires', selCard.exp], ['Security code', selCard.hasCode ? 'saved' : 'not saved: typed at checkout']]) { const row = el('div', 'field'); row.append(el('label', null, k), el('div', 'mono', v)); info.append(row); }
+    wrap.append(info);
+    wrap.append(el('p', 'hint', 'Filling it asks you first, with Touch ID or your Mac password: when you use Cobrowser: Fill Card, and every time the agent asks to (it never sees the number, and the pay button stays yours).'));
+    const a = el('div', 'actions'); const st = el('div'); st.id = 'status'; a.append(st); wrap.append(a);
+  }
+  async function saveCard() {
+    const fields = { label: cdraft.label, name: cdraft.name, exp: cdraft.exp };
+    if (cdraft.number.trim()) fields.number = cdraft.number;
+    if (cdraft.cvc.trim()) fields.cvc = cdraft.cvc;
+    try {
+      const saved = cardMode === 'edit' ? await vault.updateCard(cdraft.id, fields) : await vault.addCard(fields);
+      resetCard(); cardMode = 'view'; cards = await vault.cards(); selCard = cards.find((c) => c.id === saved.id) || null; render();
+    } catch (e) { say(failed(e)); }
+  }
+  function render() {
+    paintKinds();
+    if (kind === 'cards') renderCards(); else { renderList(); renderDetail(); }
+    state();
+  }
   async function refresh() {
     if (unlocking) return; unlocking = true; render();
-    try { rows = await vault.list(); unlocked = true; lastError = ''; } catch (e) { unlocked = false; rows = []; lastError = e.message; } finally { unlocking = false; }
+    try { rows = await vault.list(); cards = await vault.cards(); unlocked = true; lastError = ''; } catch (e) { unlocked = false; rows = []; cards = []; lastError = e.message; } finally { unlocking = false; }
     known = await vault.workspaces();
     if (sel) sel = rows.find((r) => r.host === sel.host && r.username === sel.username) || null;
     render();
   }
   const ensureUnlocked = async () => { if (!unlocked) await refresh(); return unlocked; };
   $('q').oninput = renderList;
-  $('new').onclick = async () => { if (!(await ensureUnlocked())) return; mode = 'add'; sel = null; render(); };
+  $('new').onclick = async () => {
+    if (!(await ensureUnlocked())) return;
+    if (kind === 'cards') { resetCard(); cardMode = 'add'; selCard = null; } else { mode = 'add'; sel = null; }
+    render();
+  };
+  $('k-logins').onclick = () => { kind = 'logins'; render(); };
+  $('k-cards').onclick = () => { kind = 'cards'; render(); };
   $('import').onclick = async () => { if (!(await ensureUnlocked())) return; mode = 'import'; sel = null; render(); };
   $('export').onclick = async () => {
     try { const r = await vault.exportCsv(); if (r) say('Exported ' + r.count + ' login' + (r.count === 1 ? '' : 's') + ' to ' + r.file + '. The file is plain text: delete it once it is imported elsewhere.'); }
     catch (e) { say(e.message); }
   };
-  $('lock').onclick = async () => { await vault.lock(); unlocked = false; rows = []; sel = null; mode = 'view'; render(); };
+  $('lock').onclick = async () => { await vault.lock(); unlocked = false; rows = []; sel = null; mode = 'view'; cards = []; selCard = null; cardMode = 'view'; render(); };
   // ↑/↓ move the selection through the roster.
   $('list').addEventListener('keydown', (e) => { if (!rows.length || (e.key !== 'ArrowDown' && e.key !== 'ArrowUp')) return; e.preventDefault(); const i = rows.indexOf(sel); sel = rows[Math.max(0, Math.min(rows.length - 1, i + (e.key === 'ArrowDown' ? 1 : -1)))]; mode = 'view'; render(); });
   vault.workspaces().then((w) => { known = w; });
@@ -816,6 +1021,21 @@ ipcMain.handle('vault:importCsv', async (_e, { scope } = {}) => {
 });
 ipcMain.handle('vault:exportCsv', () => exportVault(vaultWin));
 ipcMain.handle('vault:lock', () => lockVault());
+ipcMain.handle('vault:cards', async () => ((await unlockVault('show the cards in the cobrowser vault')).cards || []).map(store.publicCard));
+ipcMain.handle('vault:addCard', async (_e, fields) => {
+  await confirmFresh('add a card to the cobrowser vault');
+  const c = store.addCard(vault, fields || {}); saveVault();
+  return store.publicCard(c);
+});
+ipcMain.handle('vault:updateCard', async (_e, { id, ...fields }) => {
+  await confirmFresh('change a card in the cobrowser vault');
+  const c = store.updateCard(vault, id, fields); saveVault();
+  return store.publicCard(c);
+});
+ipcMain.handle('vault:removeCard', async (_e, { id }) => {
+  await confirmFresh('remove a card from the cobrowser vault');
+  store.removeCard(vault, id); saveVault();
+});
 
 // ---------------------------------------------------------------------------------------
 // Page dialogs (alert / confirm / prompt), sent by app/tab-preload.js. The page is paused on
@@ -1799,6 +2019,20 @@ async function handle(ws, state, m) {
         }
         case 'vault.lock': { lockVault(); return reply({ ok: true }); }
         case 'vault.open': { focusApp(); openVaultWindow(); return reply({ ok: true }); }
+        case 'vault.addCard': {
+          await confirmFresh('add a card to the cobrowser vault');
+          const c = store.addCard(vault, m.card || {}); saveVault();
+          return reply({ card: store.publicCard(c) });
+        }
+        case 'vault.cards': {
+          const v = await unlockVault('list the cards in the cobrowser vault');
+          return reply({ cards: (v.cards || []).map(store.publicCard) });
+        }
+        case 'vault.fillCard': {
+          const tab = state.workspace?.tabs.get(m.tabId);
+          if (!tab) return reply({ filled: [], error: 'no such tab in this workspace' });
+          return reply(await fillCard(tab, { card: m.card, by: m.by === 'agent' ? 'agent' : 'human', workspaceName: path.basename(state.workspace.id) }));
+        }
         case 'vault.request': {
           if (!state.workspace) return reply({ granted: 'denied', error: 'no workspace' });
           return reply(await requestCredential(state.workspace.id, m));

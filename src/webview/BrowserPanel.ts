@@ -89,6 +89,11 @@ export class BrowserPanel {
   /** The panel that is the active editor, for the keyboard-shortcut commands. */
   static active: BrowserPanel | undefined;
 
+  /** The app's id for this panel's tab. */
+  get tabId(): string {
+    return this.page.tabId;
+  }
+
   /** Inlined webview assets (CSS/JS), read ONCE and cached in memory. */
   private static assetCache: { css: string; js: string } | undefined;
 
