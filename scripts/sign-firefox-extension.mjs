@@ -70,14 +70,11 @@ execFileSync(
 );
 
 // web-ext names the artifact after the id+version; copy the newest to a stable path.
-const signed = readdirSync(outDir)
+const newest = readdirSync(outDir)
   .filter((f) => f.endsWith('.xpi'))
-  .map((f) => ({ f, t: existsSync(path.join(outDir, f)) ? readFileSync(path.join(outDir, f)).length : 0 }));
-if (signed.length) {
-  const newest = readdirSync(outDir)
-    .filter((f) => f.endsWith('.xpi'))
-    .sort()
-    .pop();
+  .sort()
+  .pop();
+if (newest) {
   const dest = path.join(root, 'cobrowser-bridge-signed.xpi');
   copyFileSync(path.join(outDir, newest), dest);
   console.log(`\nsigned add-on: ${dest}`);

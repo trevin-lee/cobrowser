@@ -47,18 +47,7 @@ function read(file: string): ManagedManifest | undefined {
   return undefined;
 }
 
-/**
- * Register THIS workspace's bridge endpoint so the Zen extension configures itself, instead
- * of the human copying a URL into its options page.
- *
- * All workspaces share one manifest (it is keyed by extension id), so this is a
- * read-modify-write keyed by workspace path. Entries whose workspace directory no longer
- * exists are dropped, which keeps deleted checkouts from leaving the extension retrying a
- * dead port forever.
- *
- * The file carries live localhost tokens, so it is written 0600 — same sensitivity as the
- * MCP client configs.
- */
+/** Take THIS workspace's endpoint out of the manifest (it was unbound, or bound to Chrome). */
 export function unregisterEndpoint(workspace: string, log: (m: string) => void): void {
   const file = manifestPath();
   if (!file) return;
@@ -91,10 +80,22 @@ function write(file: string, workspaces: Record<string, string>, log: (m: string
   }
 }
 
+/**
+ * Register THIS workspace's bridge endpoint so the Firefox add-on configures itself, instead
+ * of the human copying a URL into its options page.
+ *
+ * All workspaces share one manifest (it is keyed by extension id), so this is a
+ * read-modify-write keyed by workspace path. Entries whose workspace directory no longer
+ * exists are dropped, which keeps deleted checkouts from leaving the extension retrying a
+ * dead port forever.
+ *
+ * The file carries live localhost tokens, so it is written 0600 — same sensitivity as the
+ * MCP client configs.
+ */
 export function registerEndpoint(workspace: string, url: string, log: (m: string) => void): void {
   const file = manifestPath();
   if (!file) {
-    log('Zen bridge: managed-storage auto-config is not supported on this platform — paste the URL into the extension instead.');
+    log('Firefox bridge: managed-storage auto-config is not supported on this platform — paste the URL into the add-on instead.');
     return;
   }
 

@@ -75,7 +75,7 @@ test('an out-of-date add-on is named in list_tabs and in errors, with how to upd
   const current = fakeHub(() => ({ container: 'profile', tabs: [] }), { ...OLD!, version: '9.9.9', stale: false });
   assert.equal(json(await callZenTool(current.hub, '/ws', 'bridge_list_tabs', {})).addonUpdate, undefined);
   const failing = { call: async () => { throw new Error('unknown method: closeTab'); }, addon: () => OLD } as unknown as ZenHub;
-  await assert.rejects(callZenTool(failing, '/ws', 'bridge_close_tab', { tabId: 3 }), /unknown method: closeTab \(The Cobrowser Bridge add-on in Chrome/);
+  await assert.rejects(callZenTool(failing, '/ws', 'bridge_close_tab', { tabId: 3 }), /unknown method: closeTab \(The Cobrowser Bridge extension in Chrome/);
 });
 
 test('the hub records the add-on\'s version from its ready message and compares it with its own', async () => {
@@ -95,7 +95,14 @@ test('the hub records the add-on\'s version from its ready message and compares 
   const cur = await dial('1.2.3');
   assert.equal(hub.addon('/w')?.stale, false);
   assert.equal(hub.status('/w').version, '1.2.3');
-  cur.close(); hub.close(); await new Promise<void>((r) => server.close(() => r()));
+  cur.close(); await new Promise((r) => setTimeout(r, 50));
+  // Firefox updates the add-on itself, often before the editor: newer is not out of date.
+  const newer = await dial('1.10.0');
+  assert.equal(hub.addon('/w')?.stale, false);
+  newer.close(); await new Promise((r) => setTimeout(r, 50));
+  const older = await dial('1.2.2');
+  assert.equal(hub.addon('/w')?.stale, true);
+  older.close(); hub.close(); await new Promise<void>((r) => server.close(() => r()));
 });
 
 test('closing one of the human\'s tabs needs the override, passed through only when given', async () => {

@@ -40,18 +40,19 @@ export function parseContainers(json: string, profile: string): FirefoxContainer
     .filter((c) => c.name);
 }
 
-/** Profile roots to search. Zen first only because it is the fork this was developed
- *  against; the bridge is plain Firefox and works in any Gecko browser with containers. */
+/** Profile roots to search: Firefox and the Gecko browsers the README names. Zen first only
+ *  because it is the fork this was developed against; the bridge is plain Firefox and works in
+ *  any of them, and a container kept anywhere else can be typed into the picker. */
 function profileRoots(): string[] {
   const support = path.join(os.homedir(), 'Library', 'Application Support');
   const linux = os.homedir();
   return process.platform === 'darwin'
-    ? [path.join(support, 'zen', 'Profiles'), path.join(support, 'Firefox', 'Profiles')]
-    : [path.join(linux, '.zen'), path.join(linux, '.mozilla', 'firefox')];
+    ? ['zen', 'Firefox', 'librewolf', 'Floorp', 'Waterfox'].map((b) => path.join(support, b, 'Profiles'))
+    : [path.join(linux, '.zen'), path.join(linux, '.mozilla', 'firefox'), path.join(linux, '.librewolf'), path.join(linux, '.floorp'), path.join(linux, '.waterfox')];
 }
 
 /**
- * Every container across the user's Zen/Firefox profiles.
+ * Every container across the user's Firefox, Zen, LibreWolf, Floorp and Waterfox profiles.
  *
  * Read straight off disk rather than through the bridge, because the bridge only connects
  * once a container is already bound — asking it first would be a chicken-and-egg.

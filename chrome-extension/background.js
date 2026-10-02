@@ -113,23 +113,26 @@ const KEEPALIVE_MS = 20000;
 
 // ---------------------------------------------------------------- endpoints
 
+/** Only this Mac's cobrowser: an endpoint URL carries a token, and whoever answers on it is
+ *  handed the tabs the workspace may reach. */
+const isLocalEndpoint = (e) => {
+  try {
+    const u = new URL(e);
+    return (u.protocol === 'ws:' || u.protocol === 'wss:') && ['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname);
+  } catch {
+    return false;
+  }
+};
 const clean = (list) =>
   (Array.isArray(list) ? list : [])
     .map((e) => (typeof e === 'string' ? e.trim() : ''))
-    .filter((e) => e.startsWith('ws://') || e.startsWith('wss://'));
+    .filter(isLocalEndpoint);
 
 /** Chrome has no writable managed-storage manifest outside enterprise policy, so endpoints
- *  come from the options page. The managed area is still read in case one is provisioned. */
+ *  come from the options page. */
 async function loadEndpoints() {
-  let managed = [];
-  try {
-    const m = await api.storage.managed.get('endpoints');
-    managed = clean(m && m.endpoints);
-  } catch {
-    /* none */
-  }
   const { endpoints } = await api.storage.local.get('endpoints');
-  return [...new Set([...managed, ...clean(endpoints)])];
+  return [...new Set(clean(endpoints))];
 }
 
 /** Tell the daemon which browser this is: it keys sockets by (workspace, browser). */
@@ -214,6 +217,10 @@ function send(conn, payload) {
 async function handleMessage(conn, msg) {
   if (msg.type === 'hello') {
     try {
+      // Unbound here: say why, and which browser the workspace uses instead, if any.
+      if (!msg.container) {
+        throw new Error(msg.boundTo ? `this workspace is bound to ${msg.boundTo === 'firefox' ? 'Firefox' : 'Chrome'}, not Chrome` : 'this workspace is not bound to Chrome: run "Cobrowser: Bind Chrome Tab Group to This Workspace" in its editor window');
+      }
       conn.scope = await resolveScope(msg.container);
       conn.workspace = msg.workspace ?? null;
       send(conn, { type: 'ready', container: conn.scope, browser: BROWSER, version: api.runtime.getManifest().version });
@@ -247,9 +254,14 @@ function withTimeout(promise, ms) {
 /** The whole profile, or one tab group by title. Chrome's answer to a Firefox container. */
 const PROFILE = { name: 'This Chrome profile', groupId: null, cookieStoreId: 'chrome-profile', color: null };
 
+/** What a workspace can be bound to, each with the name the bind command takes (bindAs): an
+ *  untitled group has none until it is named in Chrome, since binding finds a group by name. */
 async function listScopes() {
   const groups = await api.tabGroups.query({});
-  return [PROFILE, ...groups.map((g) => ({ name: g.title || `(untitled ${g.color} group)`, groupId: g.id, cookieStoreId: `chrome-group-${g.id}`, color: g.color }))];
+  return [
+    { ...PROFILE, bindAs: 'profile' },
+    ...groups.map((g) => ({ name: g.title || `(untitled ${g.color} group)`, bindAs: g.title || null, groupId: g.id, cookieStoreId: `chrome-group-${g.id}`, color: g.color })),
+  ];
 }
 
 async function resolveScope(name) {
@@ -265,12 +277,31 @@ async function resolveScope(name) {
 }
 
 function requireScope(conn) {
-  if (!conn.scope) throw new Error('bridge is not bound to a tab group yet');
+  if (!conn.scope) throw new Error(conn.error || 'bridge is not bound to a tab group yet');
+  return conn.scope;
+}
+
+/**
+ * The bound scope as it is now. Chrome removes a tab group when its last tab closes, and gives a
+ * restored group a new id, so a group is found again by its name. With none open, `closed` is
+ * set: the group's tabs are none, and the next new tab starts the group again.
+ */
+async function liveScope(conn) {
+  const scope = requireScope(conn);
+  if (scope.groupId === null) return scope;
+  if (!scope.closed) {
+    try { await api.tabGroups.get(scope.groupId); return scope; } catch { /* closed */ }
+  }
+  const groups = await api.tabGroups.query({});
+  const hit = groups.find((g) => (g.title || '').toLowerCase() === scope.name.toLowerCase());
+  conn.scope = hit
+    ? { name: hit.title, groupId: hit.id, cookieStoreId: `chrome-group-${hit.id}`, color: hit.color }
+    : { ...scope, closed: true };
   return conn.scope;
 }
 
 async function assertInScope(conn, tabId) {
-  const scope = requireScope(conn);
+  const scope = await liveScope(conn);
   let tab;
   try {
     tab = await api.tabs.get(tabId);
@@ -299,15 +330,18 @@ const publicTab = (t) => ({
 async function dispatch(conn, method, params) {
   switch (method) {
     case 'listContainers':
-      // Setup metadata only (names, no tab access), so the editor can say what to bind to.
-      return (await listScopes()).map((s) => ({ name: s.name, cookieStoreId: s.cookieStoreId, color: s.color }));
+      // Setup metadata only (names, no tab access), so the editor can say what to bind to. Each
+      // name is one the bind command takes; an untitled group is listed with how to make it one.
+      return (await listScopes()).map((s) => s.bindAs
+        ? { name: s.bindAs, color: s.color, ...(s.groupId === null ? { description: 'every tab in this Chrome profile' } : {}) }
+        : { name: null, color: s.color, description: `an untitled ${s.color} group: the human names it in Chrome to bind to it` });
 
     case 'listTabs': {
-      const scope = requireScope(conn);
+      const scope = await liveScope(conn);
       await restoreSession();
       const all = await api.tabs.query({});
-      const tabs = scope.groupId === null ? all : all.filter((t) => t.groupId === scope.groupId);
-      return { container: scope.name, tabs: tabs.map(publicTab) };
+      const tabs = scope.groupId === null ? all : scope.closed ? [] : all.filter((t) => t.groupId === scope.groupId);
+      return { container: scope.name, tabs: tabs.map(publicTab), ...(scope.closed ? { note: `the "${scope.name}" tab group is not open in Chrome; bridge_new_tab starts it again` } : {}) };
     }
 
     case 'navigate': {
@@ -325,10 +359,25 @@ async function dispatch(conn, method, params) {
     }
 
     case 'newTab': {
-      const scope = requireScope(conn);
+      const scope = await liveScope(conn);
       await pace();
       const tab = await api.tabs.create({ url: params.url, active: params.active !== false });
-      if (scope.groupId !== null) await api.tabs.group({ tabIds: [tab.id], groupId: scope.groupId });
+      if (scope.groupId !== null) {
+        try {
+          if (scope.closed) {
+            // The group closed with its last tab: this tab starts it again, under its name.
+            const groupId = await api.tabs.group({ tabIds: [tab.id] });
+            const g = await api.tabGroups.update(groupId, { title: scope.name, ...(scope.color ? { color: scope.color } : {}) });
+            conn.scope = { name: scope.name, groupId, cookieStoreId: `chrome-group-${groupId}`, color: g.color };
+          } else {
+            await api.tabs.group({ tabIds: [tab.id], groupId: scope.groupId });
+          }
+        } catch (err) {
+          // Never leave a tab outside the scope it was opened for.
+          await api.tabs.remove(tab.id).catch(() => undefined);
+          throw new Error(`could not put the new tab in the "${scope.name}" tab group: ${err && err.message ? err.message : err}`);
+        }
+      }
       agentTabs.add(tab.id);
       persistSession();
       return publicTab(await api.tabs.get(tab.id));
@@ -546,19 +595,6 @@ const PAGE_SCRIPTS = {
     }, ms);
     return true;
   },
-
-  /**
-   * Evaluate an expression and return JSON.
-   *
-   * Default world is ISOLATED: the content-script realm, which shares the DOM with the page
-   * but not its JavaScript. That is the safe default — page code cannot see the expression
-   * or tamper with its result. It is NOT a read-only sandbox: the DOM is shared, so a script
-   * that wants to mutate the page still can. Read-only is a contract with the agent, not a
-   * guarantee the browser enforces.
-   *
-   * world:"page" injects a <script> into the page's own realm, which is what reaching
-   * framework internals (React fibres, app globals) requires.
-   */
 
   watch: () => {
     const prev = window.__cobrowserWatch;

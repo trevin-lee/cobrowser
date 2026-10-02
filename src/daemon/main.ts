@@ -57,8 +57,9 @@ const registry = new Registry(
   () => {
     toolCache = undefined; // membership changed: a new window may run a different build
   },
-  // Beside the daemon token, so known workspaces survive a restart of this process.
-  path.join(path.dirname(TOKEN_FILE), 'known-workspaces.json'),
+  // Beside the daemon token, so known workspaces survive a restart of this process; named after
+  // it, so a development daemon (dev-daemon-token) keeps its own list.
+  path.join(path.dirname(TOKEN_FILE), `${path.basename(TOKEN_FILE).replace(/daemon-token$/, '')}known-workspaces.json`),
 );
 /** Upstream tools are identical in every window, so fetch them once. Cleared whenever the
  *  registry changes, since a new window may be running a different build. Stored RAW: the
@@ -68,7 +69,7 @@ let lastOccupied = Date.now();
 
 const log = (m: string): void => console.log(`[cobrowserd] ${m}`);
 
-/** The Firefox bridge lives here so its endpoint never moves with an editor window. */
+/** The browser bridge (Firefox and Chrome) lives here so its endpoint never moves with an editor window. */
 const zen = new ZenHub(
   currentToken,
   (workspace) => {
@@ -411,6 +412,12 @@ const httpServer = http.createServer((req, res) => {
       });
       await server.connect(transport);
       await transport.handleRequest(req, res, body);
+      return;
+    }
+    if (url.startsWith('/mcp')) {
+      // Stateless: no GET event stream and no sessions to DELETE. 405 is what MCP clients
+      // expect for that (a 404 reads to them as a missing endpoint).
+      res.writeHead(405, { Allow: 'POST' }).end('Method Not Allowed');
       return;
     }
 

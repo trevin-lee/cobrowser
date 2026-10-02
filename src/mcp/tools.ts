@@ -32,7 +32,7 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     },
     async () => {
       const s = await getSession();
-      const pages = await s.run(() => s.listPages());
+      const pages = await s.listPages(); // the session's own state: waits on no tab's queue
       return asText(JSON.stringify(pages, null, 2));
     },
   );
@@ -68,7 +68,7 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'select_page',
     {
       description:
-        "Make a tab your current tab: the one tools act on when not given a pageId. It does NOT move the human's view unless bringToFront: true (they may be reading another tab — only bring it to the front when you want them to look). For a single action in another tab, pass pageId to that tool instead.",
+        "Make a tab your current tab: the one tools act on when not given a pageId. It does NOT move the human's view unless bringToFront: true (they may be reading another tab — only bring it to the front when you want them to look). For a single action in another tab, pass pageId to that tool instead. Once several agents (owners) have tabs here, tools refuse calls without pageId, so the current tab no longer matters: use it only to bring a tab to the human's attention.",
       inputSchema: { pageId: z.string(), bringToFront: z.boolean().optional() },
     },
     async ({ pageId: id, bringToFront }) => {
@@ -86,7 +86,7 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     },
     async ({ pageId: id, allowHumanTab, owner }) => {
       const s = await getSession();
-      const pages = await s.run(() => s.listPages());
+      const pages = await s.listPages();
       const page = pages.find((p) => p.pageId === id);
       if (!page) throw new Error(`No open page with id ${id} — list_pages shows the open tabs.`);
       // Another agent's task tab is that agent's to close: pass the owner you opened it with.
@@ -302,7 +302,7 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'list_network_requests',
     {
       description:
-        "The page's request log: method, URL, HTTP status (or the network error), content type and timing, for documents, XHR/fetch, scripts, images — no bodies or headers. Use it to see what a form submit or API call actually returned (a 401, a 500, a CORS block, a request that never completed — `pending` counts those). Defaults to your current tab; `failedOnly` keeps errors and 4xx/5xx; `urlContains` filters by URL; `since` (the `latest` from a prior call) returns only newer requests.",
+        "The page's request log: method, URL, HTTP status (or the network error), content type and timing, for documents, XHR/fetch, scripts, images — no bodies or headers. Use it to see what a form submit or API call actually returned (a 401, a 500, a CORS block, a request that never completed — `pending` counts those). Defaults to your current tab; `failedOnly` keeps errors and 4xx/5xx; `minStatus` keeps statuses at or above it (400 for client errors); `urlContains` filters by URL; `since` (the `latest` from a prior call) returns only newer requests.",
       inputSchema: {
         pageId,
         since: z.number().optional(),
@@ -368,7 +368,7 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'request_credential',
     {
       description:
-        'Ask the human to let THIS workspace use a saved login for a site (one that list_credentials does not show). They answer in the cobrowser app: allow it here from now on, allow it once, or deny — you learn only the outcome, never the password, and a denial looks the same as no such login. Give a one-line `reason` the human will read (what you are doing that needs it). After a grant, use fill_credentials. Blocks until they answer, up to a few minutes.',
+        'Ask the human to let THIS workspace use a saved login for a site (one that list_credentials does not show). They answer in the cobrowser app: allow it here from now on, allow it once (one sign-in: it lasts until the password is filled, so a username page and then a password page both work, and lapses after ten minutes), or deny — you learn only the outcome, never the password, and a denial looks the same as no such login. Give a one-line `reason` the human will read (what you are doing that needs it). After a grant, use fill_credentials. Blocks until they answer, up to a few minutes.',
       inputSchema: {
         site: z.string().describe('The site, e.g. "github.com" or the page URL'),
         username: z.string().optional(),

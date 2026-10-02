@@ -162,14 +162,14 @@ const currentNames = (text: string): string => text.replace(/\bfirefox_([a-z_]+)
 
 const asJson = (v: unknown): { content: Content[] } => ({ content: [{ type: 'text', text: currentNames(JSON.stringify(v, null, 2)) }] });
 
-/** When the add-on is older than this editor, what to tell the human. */
+/** When the add-on is older than this editor, what to tell the human. A newer one needs nothing. */
 function staleNote(hub: ZenHub, workspace: string): string | undefined {
   const a = hub.addon?.(workspace);
   if (!a?.stale) return undefined;
   const how = a.browser === 'chrome'
     ? 'update cobrowser, then reload Cobrowser Bridge in chrome://extensions'
     : 'install cobrowser-bridge-firefox .xpi from the latest cobrowser release, or in about:addons use Check for Updates';
-  return `The Cobrowser Bridge add-on in ${a.browser === 'chrome' ? 'Chrome' : 'Firefox'} is ${a.version ? `version ${a.version}` : 'an older version'}; this editor expects ${a.expected}. Some tools may not work until the human updates it (${how}).`;
+  return `The Cobrowser Bridge ${a.browser === 'chrome' ? 'extension in Chrome' : 'add-on in Firefox'} is ${a.version ? `version ${a.version}` : 'an older version'}; this editor expects ${a.expected}. Some tools may not work until the human updates it (${how}).`;
 }
 
 /** Run one bridge_* tool for a workspace through its bridge connection. */

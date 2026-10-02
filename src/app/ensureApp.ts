@@ -68,26 +68,41 @@ export function buildIdOf(appMain: string): string {
   }
 }
 
+/**
+ * Why the running app must make way for this extension's, or undefined to keep it. Only ever an
+ * older version, or this same version built differently: after an update, a window still on the
+ * old extension keeps using the newer app instead of swapping it back (each swap would close
+ * every workspace's tabs).
+ */
+export function replaceReason(
+  running: Pick<AppState, 'version' | 'build' | 'webauthn'>,
+  mine: { version: string; build: string; signed: boolean; unbranded: boolean },
+): string | undefined {
+  if (isOlder(running.version, mine.version)) return `cobrowser app ${running.version} is older than this extension (${mine.version}) — restarting it.`;
+  // A newer app belongs to a newer extension in another window: it is left alone.
+  if (running.version !== mine.version) return undefined;
+  // Same version, different app code (a reinstall while iterating): the process must be
+  // the code that shipped, or a fix in the app is invisible until someone restarts it.
+  if (running.build !== mine.build) return 'cobrowser app is running an older build of this version — restarting it.';
+  // Branding renames the bundle the running process was launched from; it has to stop first.
+  if (mine.unbranded) return 'cobrowser app is being renamed and given its icon — restarting it.';
+  // Signed for passkeys since it started (Enable Passkeys ran): the unsigned process can't
+  // reach the authenticator, so it restarts as the signed one.
+  if (!running.webauthn && mine.signed) return 'cobrowser app is running unsigned but the browser is now signed for passkeys — restarting it.';
+  return undefined;
+}
+
 export async function ensureApp(opts: EnsureAppOptions): Promise<AppState> {
   const running = readAppState();
   if (running) {
-    const stale = isOlder(running.version, opts.version);
-    // Same version, different app code (a reinstall while iterating): the process must be
-    // the code that shipped, or a fix in the app is invisible until someone restarts it.
-    const rebuilt = !stale && running.build !== buildIdOf(opts.appMain);
-    // Signed for passkeys since it started (Enable Passkeys ran): the unsigned process can't
-    // reach the authenticator, so it restarts as the signed one.
-    const unsignedButSigned = !running.webauthn && !!readSignedMarker(electronExecutable(opts) ?? '');
-    // Branding renames the bundle the running process was launched from; it has to stop first.
-    const unbranded = needsBrand(opts);
-    if (!stale && !rebuilt && !unsignedButSigned && !unbranded) return running;
-    opts.log(stale
-      ? `cobrowser app ${running.version} is older than this extension (${opts.version}) — restarting it.`
-      : rebuilt
-        ? 'cobrowser app is running an older build of this version — restarting it.'
-        : unbranded
-          ? 'cobrowser app is being renamed and given its icon — restarting it.'
-          : 'cobrowser app is running unsigned but the browser is now signed for passkeys — restarting it.');
+    const reason = replaceReason(running, {
+      version: opts.version,
+      build: buildIdOf(opts.appMain),
+      signed: !!readSignedMarker(electronExecutable(opts) ?? ''),
+      unbranded: needsBrand(opts),
+    });
+    if (!reason) return running;
+    opts.log(reason);
     try {
       process.kill(running.pid, 'SIGTERM');
     } catch {
@@ -116,11 +131,11 @@ export async function ensureApp(opts: EnsureAppOptions): Promise<AppState> {
   });
   child.unref();
   // Whichever instance won the app's single-instance lock is the app now — ours or one another
-  // window spawned in the same moment. Either is fine when it is this version; an older
+  // window spawned in the same moment. Either is fine when it is this version or newer; an older
   // winner (another window still on an old extension) is told to go, once.
   const state = await waitFor(() => readAppState(), 20000);
   if (!state) throw new Error(`cobrowser app did not start (no ${stateFile()} within 20s)`);
-  if (state.version !== opts.version && !opts.retried) {
+  if (isOlder(state.version, opts.version) && !opts.retried) {
     opts.log(`another window started cobrowser app ${state.version}; replacing it with ${opts.version}.`);
     try { process.kill(state.pid, 'SIGTERM'); } catch { /* gone */ }
     await waitFor(() => (readAppState() ? undefined : true), 8000);
@@ -162,7 +177,7 @@ export async function keepSigningValid(electron: string, opts: Pick<EnsureAppOpt
     } catch (u) {
       opts.log(`could not remove the expired signing: ${(u as Error).message}`);
     }
-    opts.onSigningNotice?.('warning', `The browser's passkey signing expired on ${date(expires!)} and could not be renewed (${(e as Error).message}). It now starts unsigned, and passkeys fall back to passwords. Run "Cobrowser: Enable Passkeys" to sign it again.`);
+    opts.onSigningNotice?.('warning', `The browser's passkey signing expired on ${date(expires!)} and could not be renewed (${(e as Error).message}). It now starts unsigned, and passkeys fall back to passwords. Run "Cobrowser: Enable Passkeys (Sign the Browser)" to sign it again.`);
   }
 }
 
@@ -182,10 +197,17 @@ async function ensureElectron(opts: EnsureAppOptions): Promise<string> {
   opts.log(`Downloading ${asset}…`);
   fs.mkdirSync(dir, { recursive: true });
   const zip = path.join(dir, asset);
-  const sums = await (await fetch(`${base}/SHASUMS256.txt`)).text();
+  const sumsRes = await reach(`${base}/SHASUMS256.txt`, AbortSignal.timeout(30_000));
+  if (!sumsRes.ok) throw new Error(`could not download the browser: GitHub answered HTTP ${sumsRes.status} for Electron's checksums. Try again in a few minutes.`);
+  const sums = await sumsRes.text();
   const want = sums.split('\n').find((l) => l.trim().endsWith(`*${asset}`) || l.trim().endsWith(` ${asset}`))?.split(/\s+/)[0];
   if (!want) throw new Error(`no checksum published for ${asset}`);
-  await download(`${base}/${asset}`, zip, opts.onProgress);
+  try {
+    await download(`${base}/${asset}`, zip, opts.onProgress);
+  } catch (e) {
+    fs.rmSync(zip, { force: true });
+    throw e;
+  }
   const got = crypto.createHash('sha256').update(fs.readFileSync(zip)).digest('hex');
   if (got !== want) {
     fs.rmSync(zip, { force: true });
@@ -199,19 +221,42 @@ async function ensureElectron(opts: EnsureAppOptions): Promise<string> {
   return brand();
 }
 
+/** fetch, with "no connection" said as such rather than as fetch's own "fetch failed". */
+async function reach(url: string, signal: AbortSignal): Promise<Response> {
+  try {
+    return await fetch(url, { signal });
+  } catch (e) {
+    const timedOut = (e as Error).name === 'TimeoutError' || (e as Error).name === 'AbortError';
+    throw new Error(`could not download the browser (Electron ${ELECTRON_VERSION}) from GitHub: ${timedOut ? 'the connection stalled' : 'no connection'}. Check the network, then open a tab again.`);
+  }
+}
+
+/** Stream a download to disk. A connection that stops sending for 30 seconds is given up on,
+ *  rather than leaving "starting browser" spinning forever. */
 async function download(url: string, dest: string, onProgress?: (d: number, t: number) => void): Promise<void> {
-  const res = await fetch(url);
-  if (!res.ok || !res.body) throw new Error(`download failed: HTTP ${res.status} for ${url}`);
+  const stall = new AbortController();
+  let timer = setTimeout(() => stall.abort(), 30_000);
+  const res = await reach(url, stall.signal);
+  if (!res.ok || !res.body) throw new Error(`could not download the browser: HTTP ${res.status} for ${url}`);
   const total = Number(res.headers.get('content-length') ?? 0);
   const out = fs.createWriteStream(dest);
   let done = 0;
   const reader = res.body.getReader();
-  for (;;) {
-    const { value, done: end } = await reader.read();
-    if (end) break;
-    out.write(value);
-    done += value.length;
-    onProgress?.(done, total);
+  try {
+    for (;;) {
+      clearTimeout(timer);
+      timer = setTimeout(() => stall.abort(), 30_000);
+      const { value, done: end } = await reader.read();
+      if (end) break;
+      out.write(value);
+      done += value.length;
+      onProgress?.(done, total);
+    }
+  } catch {
+    out.destroy();
+    throw new Error(`could not download the browser (Electron ${ELECTRON_VERSION}): the connection stalled at ${Math.round(done / 1e6)} MB. Check the network, then open a tab again.`);
+  } finally {
+    clearTimeout(timer);
   }
   await new Promise<void>((resolve, reject) => {
     out.end(() => resolve());

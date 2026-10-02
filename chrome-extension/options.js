@@ -59,7 +59,7 @@ async function refreshGroups() {
     return;
   }
   for (const s of scopes) {
-    ul.append(li(span('', s.name), span('mono grow', s.groupId == null ? 'profile' : `group ${s.groupId} · ${s.color}`)));
+    ul.append(li(span('', s.name), span('mono grow', s.bindAs ? `bind as "${s.bindAs}"` : 'name this group in Chrome to bind it')));
   }
 }
 

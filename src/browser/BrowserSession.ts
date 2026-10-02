@@ -134,7 +134,14 @@ export class BrowserSession {
   /** Pages in creation order, by the session's stable id. */
   private pages = new Map<string, AppPage>();
   private byTab = new Map<string, AppPage>();
-  private idSeq = 0;
+  /**
+   * Page ids are never reused, across this workspace's sessions too (Restart Browser, the app
+   * quitting, a window reload): an agent still holding an old pageId must get "no such page",
+   * never a different tab that happens to have the same number. The extension keeps the counter
+   * in the workspace's state between reloads (lastPageId / onPageId).
+   */
+  static lastPageId = 0;
+  static onPageId: ((id: number) => void) | undefined;
 
   /** Soft advisory flag; the FIFO queue is the real serialization mechanism. */
   inputOwner: InputOwner = null;
@@ -273,7 +280,9 @@ export class BrowserSession {
   private adopt(t: AppTabInfo): AppPage {
     const known = this.byTab.get(t.tabId);
     if (known) return known;
-    const page = new AppPage(String(++this.idSeq), t.tabId, this.app, t.url, t.title ?? '');
+    const n = ++BrowserSession.lastPageId;
+    BrowserSession.onPageId?.(n);
+    const page = new AppPage(String(n), t.tabId, this.app, t.url, t.title ?? '');
     this.pages.set(page.id, page);
     this.byTab.set(t.tabId, page);
     if (t.by === 'agent') this.agentPages.add(page); // remembered by the app across reloads
@@ -930,8 +939,11 @@ export class BrowserSession {
 
   /** Current pages (stable id + URL) in creation order, synchronously — for persisting the
    *  open-tab list + panel layout so a reload can restore both. */
-  pageEntries(): { id: string; url: string; by: 'agent' | 'human' }[] {
-    return [...this.pages.values()].filter((p) => !p.isClosed()).map((p) => ({ id: p.id, url: p.url(), by: this.agentPages.has(p) ? 'agent' : 'human' }));
+  pageEntries(): { id: string; url: string; by: 'agent' | 'human'; owner?: string }[] {
+    return [...this.pages.values()].filter((p) => !p.isClosed()).map((p) => {
+      const owner = this.owners.get(p);
+      return { id: p.id, url: p.url(), by: this.agentPages.has(p) ? 'agent' : 'human', ...(owner ? { owner } : {}) };
+    });
   }
 
   /** Detach, leaving the tabs alive in the app for the next connection (a reload). */

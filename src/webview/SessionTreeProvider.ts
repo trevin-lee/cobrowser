@@ -63,7 +63,9 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<TreeNode> {
     if (node.kind === 'profile') {
       const s = this.getSession();
       if (!s) return [];
-      const pages = await s.run(() => s.listPages());
+      // Read straight from the session, not through a tab's queue: the list must not wait for
+      // an agent's long action in the current tab.
+      const pages = await s.listPages();
       return pages.map((page) => ({ kind: 'tab', page }));
     }
     return [];

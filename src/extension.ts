@@ -10,7 +10,7 @@ import { BrowserPanel } from './webview/BrowserPanel';
 import { SessionTreeProvider } from './webview/SessionTreeProvider';
 import { writeClientConfigs } from './clients/writeClientConfigs';
 import { snippetFor, type OtherClient } from './clients/agentConfigs';
-import { daemonToken, deregister, ensureDaemon, register, registrationState } from './daemon/client';
+import { daemonToken, deregister, ensureDaemon, isOlder, register, registrationState } from './daemon/client';
 import { DEFAULT_DAEMON_PORT, DEV_DAEMON_PORT, bridgeEndpointUrl } from './daemon/protocol';
 import { AppConnection, readAppState, type AppState } from './app/AppClient';
 import { ensureApp, electronExecutable } from './app/ensureApp';
@@ -51,7 +51,11 @@ interface SavedTab {
   col?: number;
   /** Who opened it: the agent's tabs stay the agent's to tidy up after a restart. */
   by?: 'agent' | 'human';
+  /** Which agent it belongs to (new_page's owner), kept for the same reason. */
+  owner?: string;
 }
+/** The last page id this workspace handed out, so ids stay unique across reloads. */
+const PAGE_ID_KEY = 'cobrowser.lastPageId';
 
 /** Where Chrome loads the bridge from: a fixed folder, so "Load unpacked" survives updates
  *  (this extension's own install folder is renamed with every version). */
@@ -71,7 +75,8 @@ function copyChromeBridge(context: vscode.ExtensionContext, install: boolean): {
   const src = path.join(context.extensionUri.fsPath, 'chrome-extension');
   const to = manifestVersion(src);
   const from = manifestVersion(CHROME_BRIDGE_DIR);
-  if (!to || (!install && (!from || from === to))) return { changed: false, from, to };
+  // Updated only forward: an editor still on an older cobrowser leaves a newer copy alone.
+  if (!to || (!install && (!from || !isOlder(from, to)))) return { changed: false, from, to };
   fs.mkdirSync(CHROME_BRIDGE_DIR, { recursive: true });
   fs.cpSync(src, CHROME_BRIDGE_DIR, { recursive: true, force: true });
   return { changed: from !== to, from, to };
@@ -121,6 +126,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   output = vscode.window.createOutputChannel('Cobrowser');
   context.subscriptions.push(output);
   const log = (m: string) => output.appendLine(m);
+  BrowserSession.lastPageId = context.workspaceState.get<number>(PAGE_ID_KEY, 0);
+  BrowserSession.onPageId = (id) => void context.workspaceState.update(PAGE_ID_KEY, id);
 
   // Keep an installed Chrome bridge in step with this release. Chrome picks the new files up
   // when it restarts, or at once with the extension's reload button.
@@ -226,7 +233,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const entries = s
         .pageEntries()
         .filter((e) => e.url && e.url !== 'about:blank')
-        .map((e) => ({ url: e.url, col: BrowserPanel.columnOf(e.id), by: e.by }));
+        .map((e) => ({ url: e.url, col: BrowserPanel.columnOf(e.id), by: e.by, ...(e.owner ? { owner: e.owner } : {}) }));
       void context.workspaceState.update(TABS_KEY, entries);
     };
     s.onPagesChanged(() => {
@@ -270,8 +277,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       // Restoring is the human's act (the agent's target does not move), but each tab keeps
       // its owner: one the agent opened is still the agent's to close when done.
       const [first, ...rest] = saved;
-      await s.run(() => s.newPage(first?.url ?? 'about:blank', { byAgent: false, openedBy: first?.by ?? 'human' }));
-      for (const t of rest) await s.run(() => s.newPage(t.url, { background: true, byAgent: false, openedBy: t.by ?? 'human' }));
+      await s.run(() => s.newPage(first?.url ?? 'about:blank', { byAgent: false, openedBy: first?.by ?? 'human', owner: first?.owner }));
+      for (const t of rest) await s.run(() => s.newPage(t.url, { background: true, byAgent: false, openedBy: t.by ?? 'human', owner: t.owner }));
     } catch (err) {
       log(`Tab restore failed: ${String(err)}`);
     } finally {
@@ -407,15 +414,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         // The DAEMON's endpoint, not this window's. This definition belongs to this window, so
         // it carries this workspace's own token, as Claude Code's entry does: VS Code's agent
         // here drives this folder's browser and uses this folder's logins, and no other's. A
-        // window without a folder has no workspace, so its agent is unscoped.
-        provideMcpServerDefinitions: () => [
-          new McpHttpDef(
-            'Cobrowser',
-            vscode.Uri.parse(`http://127.0.0.1:${daemonPort}/mcp`),
-            { Authorization: `Bearer ${vscode.workspace.workspaceFolders?.length ? token : daemonToken(undefined, dev)}` },
-            context.extension.packageJSON.version,
-          ),
-        ],
+        // window without a folder has no workspace for its agent to work in, so it offers none
+        // (rather than the daemon-wide token, which would reach every other workspace).
+        provideMcpServerDefinitions: () => vscode.workspace.workspaceFolders?.length
+          ? [
+              new McpHttpDef(
+                'Cobrowser',
+                vscode.Uri.parse(`http://127.0.0.1:${daemonPort}/mcp`),
+                { Authorization: `Bearer ${token}` },
+                context.extension.packageJSON.version,
+              ),
+            ]
+          : [],
         resolveMcpServerDefinition: (s: unknown) => s,
       }),
     );
@@ -467,6 +477,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     await writeClientConfigs(daemonPort, token, log, dev);
   }
 
+  /** Binding needs a workspace: a window without a folder has none for an agent to work in.
+   *  Says so and answers false there. */
+  const hasWorkspace = (): boolean => {
+    if (vscode.workspace.workspaceFolders?.length) return true;
+    void vscode.window.showWarningMessage('Cobrowser: open a folder first. A window without one has no workspace for an agent to work in, so it cannot be bound to your own browser.');
+    return false;
+  };
+
   context.subscriptions.push(
     vscode.commands.registerCommand('cobrowser.open', async () => {
       const s = await getSession();
@@ -484,10 +502,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('cobrowser.back', () => BrowserPanel.active?.navigate('back')),
     vscode.commands.registerCommand('cobrowser.forward', () => BrowserPanel.active?.navigate('forward')),
     vscode.commands.registerCommand('cobrowser.copyFirefoxBridgeUrl', async () => {
+      if (!hasWorkspace()) return;
       await vscode.env.clipboard.writeText(bridgeUrl());
       void vscode.window.showInformationMessage(
-        'Cobrowser: bridge URL copied. It never changes for this workspace. Firefox configures itself from the managed manifest; ' +
-          'paste it into the add-on (toolbar button → Endpoints) only if that did not happen — or into the Chrome extension, which has no manifest.',
+        'Cobrowser: bridge URL copied. It never changes for this workspace (unless cobrowser.port does). Firefox configures itself from the managed manifest; ' +
+          'paste it into the add-on\'s toolbar popup only if that did not happen, or into the Chrome extension\'s toolbar popup, which has no manifest.',
       );
     }),
     vscode.commands.registerCommand('cobrowser.installChromeBridge', async () => {
@@ -508,6 +527,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (next === 'Open Chrome Extensions') execFile('open', ['-a', 'Google Chrome', 'chrome://extensions'], () => undefined);
     }),
     vscode.commands.registerCommand('cobrowser.bindFirefoxContainer', async () => {
+      if (!hasWorkspace()) return;
       // Per-workspace, stored in workspaceState: the binding decides what an agent may touch
       // in the human's real browser, and it should not require a file in their repo.
       const containers = listFirefoxContainers();
@@ -515,31 +535,43 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const current = bridgeBrowser() === 'firefox' ? bound : '';
       // A workspace drives one browser at a time: binding Firefox ends a Chrome binding.
       const replacing = bridgeBrowser() === 'chrome' ? bound : '';
+      const UNBIND = '$(circle-slash) Unbind';
       const items: vscode.QuickPickItem[] = containers.map((c) => ({
         label: c.name,
         description: c.name === current ? 'currently bound' : undefined,
         detail: `container ${c.userContextId} in profile ${c.profile}`,
       }));
-      items.push({ label: '$(circle-slash) Unbind', detail: "Stop this workspace's agent reaching your own browser" });
-      const picked = await vscode.window.showQuickPick(items, {
-        title: replacing ? `Bind this workspace to one Firefox container (replaces the Chrome tab group "${replacing}")` : 'Bind this workspace to one Firefox container',
-        placeHolder: containers.length
-          ? 'The agent will be able to drive ONLY this container'
-          : 'No containers found — create one in Firefox first, then run this again',
+      items.push({ label: 'default', description: current === 'default' ? 'currently bound' : undefined, detail: 'No container: the tabs outside every container' });
+      if (current || replacing) items.push({ label: UNBIND, detail: "Stop this workspace's agent reaching your own browser" });
+      // A container this Mac's profiles do not show (a Firefox fork kept elsewhere) can be typed.
+      const pick = vscode.window.createQuickPick();
+      pick.items = items;
+      pick.title = replacing ? `Bind this workspace to one Firefox container (replaces the Chrome tab group "${replacing}")` : 'Bind this workspace to one Firefox container';
+      pick.placeholder = containers.length
+        ? 'The agent will be able to drive ONLY this container (or type a container\'s name)'
+        : 'No containers found in Firefox or Zen profiles: type a container\'s name, or choose default';
+      const picked = await new Promise<string | undefined>((resolve) => {
+        pick.onDidAccept(() => resolve(pick.selectedItems[0]?.label ?? (pick.value.trim() || undefined)));
+        pick.onDidHide(() => resolve(undefined));
+        pick.show();
       });
+      pick.dispose();
       if (!picked) return;
-      const next = picked.label.includes('Unbind') ? '' : picked.label;
+      const next = picked === UNBIND ? '' : picked;
+      // Unbinding ends whichever binding the workspace has; binding makes it Firefox's.
       await context.workspaceState.update(FIREFOX_CONTAINER_KEY, next);
-      await context.workspaceState.update(BRIDGE_BROWSER_KEY, 'firefox');
+      if (next) await context.workspaceState.update(BRIDGE_BROWSER_KEY, 'firefox');
       syncBridge(); // takes effect now: the daemon re-hellos the add-on's socket, no reload
+      const was = replacing ? `the Chrome tab group "${replacing}"` : `the "${current}" container`;
       void vscode.window.showInformationMessage(
         next
           ? `Cobrowser: this workspace is bound to the "${next}" container${replacing ? ` instead of the Chrome tab group "${replacing}"` : ''}.`
-          : 'Cobrowser: Firefox container unbound for this workspace.',
+          : `Cobrowser: this workspace is no longer bound to ${was}; its agent cannot reach your own browser.`,
       );
-      log(next ? `Firefox bridge: bound to container "${next}".` : 'Firefox bridge: unbound.');
+      log(next ? `Firefox bridge: bound to container "${next}".` : 'Bridge: unbound.');
     }),
     vscode.commands.registerCommand('cobrowser.bindChromeTabGroup', async () => {
+      if (!hasWorkspace()) return;
       // Chrome has no containers; a tab group's title (or "profile" for every tab) is the scope.
       const bound = context.workspaceState.get<string>(FIREFOX_CONTAINER_KEY)?.trim() ?? '';
       const current = bridgeBrowser() === 'chrome' ? bound : '';
@@ -552,7 +584,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       });
       if (next === undefined) return;
       await context.workspaceState.update(FIREFOX_CONTAINER_KEY, next.trim());
-      await context.workspaceState.update(BRIDGE_BROWSER_KEY, 'chrome');
+      if (next.trim()) await context.workspaceState.update(BRIDGE_BROWSER_KEY, 'chrome');
       syncBridge();
       void vscode.window.showInformationMessage(
         next.trim()
@@ -573,7 +605,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       // team's last a year. Renewal at startup reuses this choice.
       const ids = listSigningIdentities();
       if (!ids.length) {
-        void vscode.window.showErrorMessage('Cobrowser: no code-signing identity on this Mac. Sign in to Xcode with your Apple ID (Xcode → Settings → Accounts), then run this again.');
+        void vscode.window.showErrorMessage('Cobrowser: no code-signing identity on this Mac. Install Xcode (from the App Store) and sign in with your Apple ID in Xcode → Settings → Accounts, then run this again.');
         return;
       }
       const previous = readSignedMarker(exe);
@@ -585,7 +617,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           detail: i.name + (previous?.team === i.team ? '  (current)' : ''),
           identity: i,
         })),
-        { title: 'Sign the browser for passkeys with which team?', placeHolder: 'Renewal before it expires is automatic, with the same team' },
+        { title: 'Sign the browser for passkeys with which team?', placeHolder: 'Signing quits the browser: every workspace\'s tabs close, and reopen when a panel next opens' },
       );
       if (!pick) return;
       const team = pick.identity.team;
@@ -652,7 +684,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
       const ok = await vscode.window.showWarningMessage(
         'Turn passkeys off?',
-        { modal: true, detail: 'The browser is signed again as it was downloaded, and passkey prompts fall back to passwords. Passkeys already saved stay in your keychain, and work again if you enable passkeys with the same team and identifier.' },
+        { modal: true, detail: 'The browser quits, closing every workspace\'s tabs (they reopen when a panel next opens), and is signed again as it was downloaded; passkey prompts fall back to passwords. Passkeys already saved stay in your keychain, and work again if you enable passkeys with the same team and identifier.' },
         'Turn Off',
       );
       if (ok !== 'Turn Off') return;
@@ -748,7 +780,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           const { conn } = await connectAs(st);
           try { await conn.vaultLock(); } finally { conn.close(); }
         }
-        void vscode.window.showInformationMessage('Cobrowser: vault locked. Using a login asks for Touch ID again.');
+        void vscode.window.showInformationMessage('Cobrowser: vault locked. Using a login or a card asks for Touch ID or your Mac password again.');
       } catch (err) {
         void vscode.window.showErrorMessage(`Cobrowser: could not lock the vault — ${String((err as Error).message ?? err)}`);
       }

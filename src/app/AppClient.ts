@@ -281,7 +281,7 @@ export class AppConnection {
     if (r.error) throw new Error(String(r.error));
     return r.cards as PublicCard[];
   }
-  async vaultAddCard(card: { number: string; exp: string; cvc?: string; name?: string; label?: string }): Promise<PublicCard> {
+  async vaultAddCard(card: { number: string; exp: string; cvc?: string; name?: string; label?: string; notes?: string }): Promise<PublicCard> {
     const r = await this.request({ type: 'vault.addCard', card }, 120000);
     if (r.error) throw new Error(String(r.error));
     return r.card as PublicCard;

@@ -2,6 +2,7 @@ import type * as http from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { claimUpgradePath } from '../util/upgradeRouter';
 import { bridgeEndpointUrl, type BridgeBrowser } from './protocol';
+import { isOlder } from './client';
 
 export interface FirefoxContainer {
   name: string;
@@ -112,14 +113,18 @@ export class ZenHub {
     return { browser: c.browser, version: c.version, expected: this.expectedVersion, stale: this.isStale(c) };
   }
 
+  /** Older than this editor, not merely different: Firefox updates the add-on from GitHub on
+   *  its own, often before the editor updates, and a newer add-on does everything this editor
+   *  asks of it. An add-on that sends no version predates versions altogether. */
   private isStale(c: Conn): boolean {
-    return !!this.expectedVersion && c.version !== this.expectedVersion;
+    if (!this.expectedVersion) return false;
+    return c.version === undefined || isOlder(c.version, this.expectedVersion);
   }
 
   /** Call a method in the add-on on behalf of a workspace. */
   call<T>(workspace: string, method: string, params: Record<string, unknown> = {}): Promise<T> {
     const b = this.bindingFor(workspace);
-    if (!b && method !== 'listContainers') {
+    if (!b) {
       return Promise.reject(
         new Error(
           'This workspace is not bound to the human\'s own browser, so the bridge_* tools have nothing to drive. ' +
@@ -136,13 +141,13 @@ export class ZenHub {
           `No ${which} browser is connected for this workspace. Install the Cobrowser Bridge extension in ${which}` +
             (b?.browser === 'chrome'
               ? ' (Cobrowser: Install Chrome Bridge Extension) and paste this workspace\'s bridge URL into it (Cobrowser: Copy Bridge URL).'
-              : '; it configures itself from the managed manifest the editor writes.'),
+              : ' (the cobrowser-bridge-firefox .xpi attached to each cobrowser release on GitHub). It configures itself from the managed manifest the editor writes; if it does not, paste the URL from Cobrowser: Copy Bridge URL into its toolbar popup.'),
         ),
       );
     }
     if (!c.container && method !== 'listContainers') {
       return Promise.reject(
-        new Error(c.lastError ?? `${c.browser} is connected but this workspace is not bound to a scope yet.`),
+        new Error(c.lastError ?? `${browserName(c.browser)} is connected but this workspace is not bound to a scope yet.`),
       );
     }
     const id = this.nextId++;
@@ -175,7 +180,7 @@ export class ZenHub {
     const prev = this.conns.get(key);
     if (prev && prev.ws !== ws) {
       // The browser restarted before the old socket timed out: the new one wins.
-      this.log(`zen: ${workspace} [${browser}] — a new connection replaced the previous one`);
+      this.log(`bridge: ${workspace} [${browser}] — a new connection replaced the previous one`);
       prev.ws.close();
     }
     const c: Conn = { ws, browser, version: undefined, container: undefined, lastError: undefined, pending: new Map() };
@@ -195,22 +200,24 @@ export class ZenHub {
       this.conns.delete(key);
       for (const [id, p] of c.pending) {
         clearTimeout(p.timer);
-        p.reject(new Error(`${c.browser} disconnected`));
+        p.reject(new Error(`${browserName(c.browser)} disconnected`));
         c.pending.delete(id);
       }
-      this.log(`zen: ${workspace} [${browser}] — disconnected`);
+      this.log(`bridge: ${workspace} [${browser}] — disconnected`);
     });
 
-    this.log(`zen: ${workspace} [${browser}] — connected`);
+    this.log(`bridge: ${workspace} [${browser}] — connected`);
     this.sendHello(workspace, c);
   }
 
   private sendHello(workspace: string, c: Conn): void {
     if (c.ws.readyState !== WebSocket.OPEN) return;
     const b = this.bindingFor(workspace);
-    // A browser the workspace is not bound to gets an empty scope and reports itself unbound.
-    const container = b && (b.browser ?? 'firefox') === c.browser ? b.container : '';
-    c.ws.send(JSON.stringify({ type: 'hello', container, workspace }));
+    // A browser the workspace is not bound to gets an empty scope and reports itself unbound,
+    // saying which browser it is bound to instead, if any.
+    const here = b && (b.browser ?? 'firefox') === c.browser;
+    const container = here ? b.container : '';
+    c.ws.send(JSON.stringify({ type: 'hello', container, workspace, ...(!here && b?.container ? { boundTo: b.browser } : {}) }));
   }
 
   private handle(workspace: string, c: Conn, msg: Record<string, unknown>): void {
@@ -218,13 +225,13 @@ export class ZenHub {
       c.container = msg.container as FirefoxContainer;
       c.version = typeof msg.version === 'string' ? msg.version : undefined;
       c.lastError = undefined;
-      this.log(`zen: ${workspace} [${c.browser}] — bound to "${c.container.name}" (add-on ${c.version ?? 'unversioned'}${this.isStale(c) ? `, expected ${this.expectedVersion}` : ''})`);
+      this.log(`bridge: ${workspace} [${c.browser}] — bound to "${c.container.name}" (add-on ${c.version ?? 'unversioned'}${this.isStale(c) ? `, expected ${this.expectedVersion}` : ''})`);
       return;
     }
     if (msg.type === 'error') {
       c.container = undefined;
       c.lastError = String(msg.message ?? 'unknown error');
-      this.log(`zen: ${workspace} [${c.browser}] — ${c.lastError}`);
+      this.log(`bridge: ${workspace} [${c.browser}] — ${c.lastError}`);
       return;
     }
     if (msg.type === 'res') {
@@ -237,3 +244,5 @@ export class ZenHub {
     }
   }
 }
+
+const browserName = (b: BridgeBrowser): string => (b === 'chrome' ? 'Chrome' : 'Firefox');

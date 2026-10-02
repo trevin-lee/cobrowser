@@ -201,7 +201,8 @@
         "cobrowser.port": {
           "type": "number",
           "default": 0,
-          "description": "Localhost port for the shared cobrowser daemon — the single MCP endpoint every editor window and every agent client uses. 0 (default) means 39273. All windows must agree on this value; each window's own internal server takes an ephemeral port and is never contacted directly. Takes effect after reloading every window."
+          "scope": "application",
+          "description": "Localhost port for the shared cobrowser daemon — the single MCP endpoint every editor window and every agent client uses. 0 (default) means 39273. It is set for the whole editor, so every window agrees on it; each window's own internal server takes an ephemeral port and is never contacted directly. Takes effect after reloading every window; paste the new Copy Bridge URL into a bridge extension's popup."
         },
         "cobrowser.autoFallbackPasskeys": {
           "type": "boolean",
@@ -259,16 +260,6 @@
         "command": "cobrowser.forward",
         "key": "ctrl+]",
         "mac": "cmd+]",
-        "when": "activeWebviewPanelId == 'cobrowser'"
-      },
-      {
-        "command": "cobrowser.back",
-        "key": "alt+left",
-        "when": "activeWebviewPanelId == 'cobrowser'"
-      },
-      {
-        "command": "cobrowser.forward",
-        "key": "alt+right",
         "when": "activeWebviewPanelId == 'cobrowser'"
       }
     ]

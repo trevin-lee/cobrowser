@@ -148,6 +148,9 @@ export async function obtainProvisioningProfile(team: string, log: Log, bundleId
   } catch (e) {
     const msg = String((e as { stdout?: string }).stdout ?? '') + String((e as { stderr?: string }).stderr ?? '');
     const line = msg.split('\n').find((l) => /error:/i.test(l)) ?? msg.slice(-400);
+    if (/requires Xcode|xcode-select/i.test(msg)) {
+      throw new Error('Enable Passkeys needs Xcode itself (from the App Store), signed in with your Apple ID in Xcode → Settings → Accounts; this Mac has only the Command Line Tools.');
+    }
     const taken = /not available/i.test(line) ? ` The identifier ${bundleId} belongs to another team; sign with an identifier of this team's own.` : '';
     throw new Error(`xcodebuild could not create a provisioning profile: ${line.trim()}${taken}`);
   }
@@ -219,43 +222,58 @@ export async function signElectronForPasskeys(electronExe: string, log: Log, opt
   const profile = await obtainProvisioningProfile(identity.team, log, bundleId);
   const group = `${identity.team}.${bundleId}.webauthn`;
 
-  // Identity + name: the Touch ID prompt says "<name> is trying to …", so not "Electron".
-  sh('plutil', ['-replace', 'CFBundleIdentifier', '-string', bundleId, path.join(contents, 'Info.plist')]);
-  sh('plutil', ['-replace', 'CFBundleName', '-string', 'cobrowser', path.join(contents, 'Info.plist')]);
-  sh('plutil', ['-replace', 'CFBundleDisplayName', '-string', 'cobrowser', path.join(contents, 'Info.plist')]);
-  fs.copyFileSync(profile, path.join(contents, 'embedded.provisionprofile'));
-  const { expires, entitlements: granted } = readProfile(profile);
-
-  const jit = {
-    'com.apple.security.cs.allow-jit': true,
-    'com.apple.security.cs.allow-unsigned-executable-memory': true,
-    'com.apple.security.cs.disable-library-validation': true,
-  };
-  const appEnt = { ...jit, 'com.apple.application-identifier': granted['com.apple.application-identifier'], 'com.apple.developer.team-identifier': granted['com.apple.developer.team-identifier'], 'keychain-access-groups': [`${identity.team}.${bundleId}`, group] };
-  const appEntPath = path.join(os.tmpdir(), `cobrowser-app-${process.pid}.plist`);
-  const helperEntPath = path.join(os.tmpdir(), `cobrowser-helper-${process.pid}.plist`);
-  fs.writeFileSync(appEntPath, toPlist(appEnt));
-  fs.writeFileSync(helperEntPath, toPlist(jit));
-
-  const sign = (target: string, entitlements: string): void => {
-    sh('codesign', ['--force', '--sign', identity.name, '--entitlements', entitlements, '--options', 'runtime', target]);
-  };
+  // From here the bundle is being changed. If any step fails (a keychain prompt denied, an
+  // expired certificate), it is sealed again ad hoc, as downloaded, so the browser still starts:
+  // a half-signed app is one macOS refuses to run, with no marker to say what happened.
+  let expires: string | undefined;
   try {
-    sh('xattr', ['-cr', appDir]);
-    const fw = path.join(contents, 'Frameworks');
-    for (const name of fs.readdirSync(fw)) {
-      const p = path.join(fw, name);
-      if (name.endsWith('.app')) sign(p, helperEntPath);
+    // Identity + name: the Touch ID prompt says "<name> is trying to …", so not "Electron".
+    sh('plutil', ['-replace', 'CFBundleIdentifier', '-string', bundleId, path.join(contents, 'Info.plist')]);
+    sh('plutil', ['-replace', 'CFBundleName', '-string', 'cobrowser', path.join(contents, 'Info.plist')]);
+    sh('plutil', ['-replace', 'CFBundleDisplayName', '-string', 'cobrowser', path.join(contents, 'Info.plist')]);
+    fs.copyFileSync(profile, path.join(contents, 'embedded.provisionprofile'));
+    const read = readProfile(profile);
+    expires = read.expires;
+    const granted = read.entitlements;
+
+    const jit = {
+      'com.apple.security.cs.allow-jit': true,
+      'com.apple.security.cs.allow-unsigned-executable-memory': true,
+      'com.apple.security.cs.disable-library-validation': true,
+    };
+    const appEnt = { ...jit, 'com.apple.application-identifier': granted['com.apple.application-identifier'], 'com.apple.developer.team-identifier': granted['com.apple.developer.team-identifier'], 'keychain-access-groups': [`${identity.team}.${bundleId}`, group] };
+    const appEntPath = path.join(os.tmpdir(), `cobrowser-app-${process.pid}.plist`);
+    const helperEntPath = path.join(os.tmpdir(), `cobrowser-helper-${process.pid}.plist`);
+    fs.writeFileSync(appEntPath, toPlist(appEnt));
+    fs.writeFileSync(helperEntPath, toPlist(jit));
+
+    const sign = (target: string, entitlements: string): void => {
+      sh('codesign', ['--force', '--sign', identity.name, '--entitlements', entitlements, '--options', 'runtime', target]);
+    };
+    try {
+      sh('xattr', ['-cr', appDir]);
+      const fw = path.join(contents, 'Frameworks');
+      for (const name of fs.readdirSync(fw)) {
+        const p = path.join(fw, name);
+        if (name.endsWith('.app')) sign(p, helperEntPath);
+      }
+      for (const name of fs.readdirSync(fw)) {
+        const p = path.join(fw, name);
+        if (name.endsWith('.framework')) sh('codesign', ['--force', '--sign', identity.name, '--options', 'runtime', p]);
+      }
+      sign(appDir, appEntPath);
+      sh('codesign', ['--verify', '--deep', '--strict', appDir]);
+    } finally {
+      fs.rmSync(appEntPath, { force: true });
+      fs.rmSync(helperEntPath, { force: true });
     }
-    for (const name of fs.readdirSync(fw)) {
-      const p = path.join(fw, name);
-      if (name.endsWith('.framework')) sh('codesign', ['--force', '--sign', identity.name, '--options', 'runtime', p]);
+  } catch (e) {
+    try {
+      unsignForPasskeys(electronExe, log);
+    } catch (u) {
+      log(`could not seal the browser again after a failed signing: ${(u as Error).message}`);
     }
-    sign(appDir, appEntPath);
-    sh('codesign', ['--verify', '--deep', '--strict', appDir]);
-  } finally {
-    fs.rmSync(appEntPath, { force: true });
-    fs.rmSync(helperEntPath, { force: true });
+    throw new Error(`${(e as Error).message} (the browser is left as it was, unsigned: passkeys stay off)`);
   }
   refreshLaunchServices(appDir);
   const marker: SignedMarker = { identity: identity.name, team: identity.team, bundleId, webauthnGroup: group, profile: path.basename(profile), expires, at: new Date().toISOString() };

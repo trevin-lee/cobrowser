@@ -544,7 +544,7 @@ export class BrowserPanel {
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}'; connect-src ws://127.0.0.1:*; media-src blob: mediastream:;" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}';" />
   <style nonce="${nonce}">${css}</style>
   <title>Cobrowser</title>
 </head>
@@ -571,12 +571,9 @@ export class BrowserPanel {
       <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M8 4v8M4 8h8"/></svg>
     </button>
   </div>
-  <!-- Input binds to the STAGE, not to a render surface: the canvas is display:none in
-       WebRTC mode, and listeners on a hidden element receive nothing (that is why input
-       died when video engaged). The stage is present in both modes. -->
+  <!-- Input binds to the STAGE, which holds the canvas and the highlight. -->
   <div id="stage" tabindex="0">
     <canvas id="screen"></canvas>
-    <video id="video" autoplay muted playsinline hidden></video>
     <div id="highlight" hidden></div>
   </div>
   <script nonce="${nonce}">${js}</script>

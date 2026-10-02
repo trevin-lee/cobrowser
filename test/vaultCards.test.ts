@@ -6,7 +6,9 @@ type Vault = { entries: unknown[]; cards?: Card[] };
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const store = require('../app/vault-store.js') as {
   addCard: (v: Vault, f: Record<string, string>) => Card;
-  updateCard: (v: Vault, id: string, f: Record<string, string>) => Card;
+  updateCard: (v: Vault, id: string, f: Record<string, string | null>) => Card;
+  exportCards: (v: Vault) => string;
+  importCards: (v: Vault, text: string) => { count: number; added: number; replaced: number; skipped: number };
   removeCard: (v: Vault, id: string) => number;
   findCard: (v: Vault, which?: string) => Card | undefined;
   publicCard: (c: Card) => Record<string, unknown>;
@@ -42,4 +44,39 @@ test('editing keeps the number and code unless new ones are given; cards are fou
   assert.equal(store.findCard(v), undefined, 'with two cards, one must be named');
   assert.equal(store.removeCard(v, a.id), 1);
   assert.equal(store.findCard(v)?.label, 'Mastercard 4444', 'with one card left, it is the one');
+});
+
+test('a card is saved once; its last four find it only when all four are given and only one card ends so', () => {
+  const v: Vault = { entries: [] };
+  store.addCard(v, { number: '4242424242424242', exp: '01/30', label: 'Personal' });
+  assert.throws(() => store.addCard(v, { number: '4242 4242 4242 4242', exp: '02/31' }), /already saved, as Personal/);
+  assert.equal(store.findCard(v, '2'), undefined);
+  assert.equal(store.findCard(v, '4242')?.label, 'Personal');
+  store.addCard(v, { number: '4000000000024242', exp: '01/30' });
+  assert.equal(store.findCard(v, '4242'), undefined, 'two cards end in 4242: name one');
+});
+
+test('a saved security code can be removed again', () => {
+  const v: Vault = { entries: [] };
+  const c = store.addCard(v, { number: '4242424242424242', exp: '01/30', cvc: '123' });
+  store.updateCard(v, c.id, { cvc: '' });
+  assert.equal(c.cvc, '123', 'blank keeps it');
+  store.updateCard(v, c.id, { cvc: null });
+  assert.equal(c.cvc, '');
+});
+
+test('cards export to a CSV of their own and import back whole; a card already saved is updated, not doubled', () => {
+  const v: Vault = { entries: [] };
+  store.addCard(v, { number: '4242424242424242', exp: '01/30', cvc: '123', label: 'Personal', name: 'Ada Lovelace', notes: 'For **groceries**, "and" more' } as never);
+  const csv = store.exportCards(v);
+  assert.match(csv, /^label,name,number,expiry,code,notes\n/);
+  const back: Vault = { entries: [] };
+  assert.deepEqual(store.importCards(back, csv), { count: 1, added: 1, replaced: 0, skipped: 0 });
+  const c = back.cards![0] as Card & { notes?: string };
+  assert.deepEqual([c.label, c.name, c.number, c.expMonth, c.expYear, c.cvc, c.notes], ['Personal', 'Ada Lovelace', '4242424242424242', 1, 2030, '123', 'For **groceries**, "and" more']);
+  assert.deepEqual(store.importCards(back, csv), { count: 1, added: 0, replaced: 1, skipped: 0 });
+  assert.equal(back.cards!.length, 1);
+  const other = 'Card Number,Expiration Month,Expiration Year,CVV,Cardholder Name\n5555555555554444,12,2031,999,Bo\n1234,1,2030,,x\n';
+  assert.deepEqual(store.importCards(back, other), { count: 1, added: 1, replaced: 0, skipped: 1 });
+  assert.throws(() => store.importCards(back, 'url,username,password\na.com,me,pw\n'), /card number and expiry/);
 });

@@ -27,6 +27,20 @@ suite('credentials', async (r) => {
         const typed = (await b.cdp<{ result: { value: string } }>(t.tabId, 'Runtime.evaluate', { expression: 'document.getElementById("u").value + "/" + document.getElementById("p").value.length', returnByValue: true })).result.value;
         if (mode === 'workspace') r.check('[workspace] a grant for the workspace fills now and later, and the login is listed', req.granted === 'workspace' && first.filled.length === 2 && second.filled.length === 2 && listed === 1 && typed === 'alice/13', { req, first, second, listed, typed });
         if (mode === 'once') r.check('[once] a one-time grant fills exactly once and is never listed', req.granted === 'once' && first.filled.length === 2 && second.filled.length === 0 && listed === 0 && typed === 'alice/13', { req, first, second, listed, typed });
+        if (mode === 'once') {
+          // A two-step sign-in: the email on one page, the password on the next. The grant
+          // outlives the username and is spent by the password.
+          await b.vaultRequest(srv.base, undefined, 'two-step sign-in');
+          const user = await b.vaultFill(t.tabId, { usernameUid: '1' });
+          const pass = await b.vaultFill(t.tabId, { passwordUid: '2' });
+          const after = await b.vaultFill(t.tabId, { passwordUid: '2' });
+          r.check('[once] one sign-in: the username alone keeps the grant for the password page, which spends it', user.filled.join() === 'username' && pass.filled.join() === 'password' && after.filled.length === 0, { user, pass, after });
+          // Locking ends a grant nobody used.
+          await b.vaultRequest(srv.base, undefined, 'then locked');
+          await b.vaultLock();
+          const locked = await b.vaultFill(t.tabId, { usernameUid: '1', passwordUid: '2' });
+          r.check('[once] locking the vault ends an unused grant', locked.filled.length === 0 && /no saved login/.test(locked.error ?? ''), locked);
+        }
         if (mode === 'deny') r.check('[deny] a denial fills nothing and reads like no such login', req.granted === 'denied' && /was granted/.test(req.error ?? '') && first.filled.length === 0 && typed === '/0', { req, first, typed });
         const unknown = await b.vaultRequest('nowhere.example', undefined, 'x');
         r.check(`[${mode}] a request for a site with no login is denied the same way`, unknown.granted === 'denied', unknown);

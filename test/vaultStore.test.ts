@@ -18,6 +18,8 @@ const store = require('../app/vault-store.js') as {
   removeLogin: (v: Vault, host: string, username: string) => number;
   importCsv: (v: Vault, text: string, scope: Scope) => { count: number; added: number; replaced: number };
   exportCsv: (v: Vault) => string;
+  applyScopeChange: (current: Scope, before: Scope, after: Scope) => Scope;
+  splitNote: (note: string) => { notes: string; workspaces?: Scope; sites?: string[] };
 };
 
 const empty = (): Vault => ({ entries: [] });
@@ -162,4 +164,26 @@ test("export puts the person's notes first in the note column, and import takes 
   store.importCsv(back, csv, []);
   const e = back.entries[0] as Entry & { notes?: string };
   assert.deepEqual([e.notes, e.scope, e.also?.map((s) => s.host)], ['Line one\n- a list', ['/w'], ['b.com']]);
+});
+
+test("only a note's last lines are cobrowser's own: the same words in the person's text stay theirs", () => {
+  const note = 'Uses the cobrowser-workspaces: "all" trick\ncobrowser-sites: written by hand\n\ncobrowser-workspaces: ["/ws/a"]\ncobrowser-sites: ["c.com"]';
+  assert.deepEqual(store.splitNote(note), { notes: 'Uses the cobrowser-workspaces: "all" trick\ncobrowser-sites: written by hand', workspaces: ['/ws/a'], sites: ['c.com'] });
+  assert.deepEqual(store.splitNote('cobrowser-workspaces: not json'), { notes: 'cobrowser-workspaces: not json', workspaces: undefined, sites: undefined });
+  const v = empty();
+  store.upsertLogin(v, 'a.com', 'me', 'pw', ['/ws/a'], { notes: 'cobrowser-sites: is how I label things', also: ['c.com'] } as never);
+  const back = empty();
+  store.importCsv(back, store.exportCsv(v), ['/default']);
+  const e = back.entries[0] as Entry & { notes?: string };
+  assert.deepEqual([e.notes, e.scope, e.also?.map((s) => s.host)], ['cobrowser-sites: is how I label things', ['/ws/a'], ['c.com']]);
+});
+
+test('a change to the workspaces someone was looking at never undoes a grant made since', () => {
+  // The window showed [/a]; an agent in /b was allowed meanwhile; the person ticks /c.
+  assert.deepEqual(store.applyScopeChange(['/a', '/b'], ['/a'], ['/a', '/c']), ['/a', '/b', '/c']);
+  // Unticking /a takes off /a only.
+  assert.deepEqual(store.applyScopeChange(['/a', '/b'], ['/a'], []), ['/b']);
+  // Everywhere, on or off, is a choice of the whole scope.
+  assert.equal(store.applyScopeChange(['/a', '/b'], ['/a'], 'all'), 'all');
+  assert.deepEqual(store.applyScopeChange('all', 'all', ['/a']), ['/a']);
 });

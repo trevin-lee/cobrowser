@@ -90,10 +90,20 @@ const conns = new Map();
 
 // ---------------------------------------------------------------- endpoints
 
+/** Only this Mac's cobrowser: an endpoint URL carries a token, and whoever answers on it is
+ *  handed the tabs the workspace may reach. */
+const isLocalEndpoint = (e) => {
+  try {
+    const u = new URL(e);
+    return (u.protocol === 'ws:' || u.protocol === 'wss:') && ['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname);
+  } catch {
+    return false;
+  }
+};
 const clean = (list) =>
   (Array.isArray(list) ? list : [])
     .map((e) => (typeof e === 'string' ? e.trim() : ''))
-    .filter((e) => e.startsWith('ws://') || e.startsWith('wss://'));
+    .filter(isLocalEndpoint);
 
 /**
  * Endpoints come from two places:
@@ -193,6 +203,10 @@ function send(conn, payload) {
 async function handleMessage(conn, msg) {
   if (msg.type === 'hello') {
     try {
+      // Unbound here: say why, and which browser the workspace uses instead, if any.
+      if (!msg.container) {
+        throw new Error(msg.boundTo ? `this workspace is bound to ${msg.boundTo === 'chrome' ? 'Chrome' : 'Firefox'}, not Firefox` : 'this workspace is not bound to Firefox: run "Cobrowser: Bind Firefox Container to This Workspace" in its editor window');
+      }
       conn.scope = await resolveContainer(msg.container);
       conn.workspace = msg.workspace ?? null;
       send(conn, { type: 'ready', container: conn.scope, browser: 'firefox', version: api.runtime.getManifest().version });
@@ -239,12 +253,25 @@ async function resolveContainer(name) {
 }
 
 function requireScope(conn) {
-  if (!conn.scope) throw new Error('bridge is not bound to a container yet');
+  if (!conn.scope) throw new Error(conn.error || 'bridge is not bound to a container yet');
+  return conn.scope;
+}
+
+/** The bound container as it is now: one deleted in Firefox and made again under the same name
+ *  is found again; one that is gone is said plainly, rather than listing no tabs. */
+async function liveScope(conn) {
+  const scope = requireScope(conn);
+  if (scope.cookieStoreId === 'firefox-default') return scope;
+  try { await api.contextualIdentities.get(scope.cookieStoreId); return scope; } catch { /* deleted */ }
+  const all = await api.contextualIdentities.query({});
+  const hit = all.find((c) => c.name.toLowerCase() === scope.name.toLowerCase());
+  if (!hit) throw new Error(`the "${scope.name}" container was deleted in Firefox: the human creates it again, or binds this workspace to another (Cobrowser: Bind Firefox Container to This Workspace)`);
+  conn.scope = { name: hit.name, cookieStoreId: hit.cookieStoreId, color: hit.color, icon: hit.icon };
   return conn.scope;
 }
 
 async function assertInScope(conn, tabId) {
-  const scope = requireScope(conn);
+  const scope = await liveScope(conn);
   let tab;
   try {
     tab = await api.tabs.get(tabId);
@@ -276,11 +303,14 @@ async function dispatch(conn, method, params) {
       // Deliberately NOT scoped — this is setup metadata (names only, no tab access) so
       // the editor side can tell you what to bind a workspace to.
       const all = await api.contextualIdentities.query({});
-      return all.map((c) => ({ name: c.name, cookieStoreId: c.cookieStoreId, color: c.color }));
+      return [
+        ...all.map((c) => ({ name: c.name, color: c.color })),
+        { name: 'default', color: null, description: 'no container: the tabs outside every container' },
+      ];
     }
 
     case 'listTabs': {
-      const scope = requireScope(conn);
+      const scope = await liveScope(conn);
       const tabs = await api.tabs.query({ cookieStoreId: scope.cookieStoreId });
       return { container: scope.name, tabs: tabs.map(publicTab) };
     }
@@ -301,7 +331,7 @@ async function dispatch(conn, method, params) {
     }
 
     case 'newTab': {
-      const scope = requireScope(conn);
+      const scope = await liveScope(conn);
       await pace();
       const tab = await api.tabs.create({
         cookieStoreId: scope.cookieStoreId,
