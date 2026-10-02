@@ -2,6 +2,18 @@
 
 Release notes for earlier versions are on the [GitHub releases page](https://github.com/trevin-lee/cobrowser/releases).
 
+## 0.9.17
+
+### Added
+
+- **Notes on every login and card**, in Markdown: for you and for agents (which account this is, how 2FA works, what a card is for). The vault shows them formatted, `list_credentials` hands them to agents, and exports carry them in the note column other password managers show.
+
+### Changed
+
+- **One name for one window: the Vault.** It holds Logins and Cards as two views; the menu-bar item is **Vault…** and the command **Cobrowser: Open Vault** (it was Logins…, and Cards were behind it).
+- **A login's websites are a list**: one row per site it fills on, each removable, and **Add website**, instead of a comma-separated "Also fills on" field.
+- The vault window opens larger, sized to the screen, and its detail side scrolls, so a login's workspaces are always in reach. Import and Export moved to the header, so the Add button no longer wraps; the status counts what the current view holds.
+
 ## 0.9.16
 
 ### Added

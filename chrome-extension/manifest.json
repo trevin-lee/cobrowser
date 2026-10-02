@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Cobrowser Bridge",
-  "version": "0.9.16",
+  "version": "0.9.17",
   "description": "Lets Cobrowser (in your editor) see and drive the tabs of ONE tab group, or this whole Chrome profile.",
   "minimum_chrome_version": "116",
   "permissions": ["tabs", "tabGroups", "scripting", "storage", "alarms"],
