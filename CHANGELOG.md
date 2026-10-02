@@ -2,6 +2,13 @@
 
 Release notes for earlier versions are on the [GitHub releases page](https://github.com/trevin-lee/cobrowser/releases).
 
+## 0.9.16
+
+### Added
+
+- **Agents in parallel, safely.** `new_page` takes an `owner` name for the agent's task, and `list_pages` shows it. Once tabs belong to more than one owner, a tool called without `pageId` is refused (it lists the tabs) instead of acting in whichever tab is current, which could be another agent's; `close_page` closes only the caller's own owner's tabs; a popup from an agent's tab belongs to that agent. One agent on its own works as before.
+- **Agents are told cobrowser's house rules when they connect** (MCP server instructions): panel first, read before snapshotting, tidy tabs, parallel work, logins and cards through the vault, and the console and network logs for a misbehaving page.
+
 ## 0.9.15
 
 ### Added
