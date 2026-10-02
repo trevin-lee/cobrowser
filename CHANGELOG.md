@@ -2,6 +2,12 @@
 
 Release notes for earlier versions are on the [GitHub releases page](https://github.com/trevin-lee/cobrowser/releases).
 
+## 0.9.15
+
+### Added
+
+- **Card autofill.** Save cards in the Logins window's new Cards view (number, expiry, name and security code, encrypted in the vault). **Cobrowser: Fill Card**, or the card button on a browser tab, fills one into a checkout page, including the fields inside a payment provider's frames; an agent can ask to with the new `fill_card` tool, and `list_credentials` shows the saved cards by brand and last four digits. Every fill asks you first with Touch ID or your Mac password, the agent never sees the number, and only visible fields are filled, never hidden ones.
+
 ## 0.9.14
 
 ### Changed
