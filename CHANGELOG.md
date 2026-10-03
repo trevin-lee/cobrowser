@@ -2,6 +2,12 @@
 
 Release notes for earlier versions are on the [GitHub releases page](https://github.com/trevin-lee/cobrowser/releases).
 
+## 0.9.20
+
+### Fixed
+
+- **The Touch ID prompt showed a Terminal-like icon** instead of cobrowser's. The helper that asks macOS for Touch ID or your password is now an app of its own, with cobrowser's name and icon.
+
 ## 0.9.19
 
 ### Changed
