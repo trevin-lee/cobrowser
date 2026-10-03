@@ -9,6 +9,10 @@ Release notes for earlier versions are on the [GitHub releases page](https://git
 - **A new mark and colours.** Two square panes, one over the other's corner, and where they meet, the space you share with the agent, in cobalt. Black, white and cobalt replace the blue and green throughout: the app, menu-bar, store and sidebar icons, the vault window (sharper corners, a white main button, each workspace in its own shade of cobalt), and the frame the bridge draws on tabs the agent touches. An installed browser takes the new icon once, the next time it starts.
 - **The bridge extensions have an icon**, in the toolbar and in the extensions list, instead of the browser's generic one.
 
+### Added
+
+- **`cobrowser.accentColor`**: the colour of what concerns the agent (its highlight in a tab, the bridge's frame on tabs in your own browser, selection and the agent's switches in the vault). Cobalt by default; any `#rrggbb`, picked in the Settings editor, applies everywhere at once. The logo keeps its own colours.
+
 ## 0.9.18
 
 ### Added
