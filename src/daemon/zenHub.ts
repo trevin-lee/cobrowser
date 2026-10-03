@@ -1,7 +1,7 @@
 import type * as http from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { claimUpgradePath } from '../util/upgradeRouter';
-import { bridgeEndpointUrl, type BridgeBrowser } from './protocol';
+import { accentOrDefault, bridgeEndpointUrl, type BridgeBrowser } from './protocol';
 import { isOlder } from './client';
 
 export interface FirefoxContainer {
@@ -53,7 +53,7 @@ export class ZenHub {
     /** The current admin token; read per request so a rotated token file takes effect. */
     private readonly token: () => string | undefined,
     /** A workspace's current binding (undefined: not bound / no window). */
-    private readonly bindingFor: (workspace: string) => { browser: BridgeBrowser; container: string } | undefined,
+    private readonly bindingFor: (workspace: string) => { browser: BridgeBrowser; container: string; accent?: string } | undefined,
     private readonly log: (message: string) => void,
     /** The add-on version this editor ships (they are released together). */
     private readonly expectedVersion?: string,
@@ -217,7 +217,7 @@ export class ZenHub {
     // saying which browser it is bound to instead, if any.
     const here = b && (b.browser ?? 'firefox') === c.browser;
     const container = here ? b.container : '';
-    c.ws.send(JSON.stringify({ type: 'hello', container, workspace, ...(!here && b?.container ? { boundTo: b.browser } : {}) }));
+    c.ws.send(JSON.stringify({ type: 'hello', container, workspace, accent: accentOrDefault(b?.accent), ...(!here && b?.container ? { boundTo: b.browser } : {}) }));
   }
 
   private handle(workspace: string, c: Conn, msg: Record<string, unknown>): void {

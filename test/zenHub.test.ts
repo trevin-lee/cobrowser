@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import * as http from 'node:http';
 import WebSocket from 'ws';
 import { ZenHub } from '../src/daemon/zenHub';
+import { accentOrDefault } from '../src/daemon/protocol';
 
 /** A daemon-shaped server with a hub on it, plus a fake add-on that dials in. */
-type Binding = { browser: 'firefox' | 'chrome'; container: string } | undefined;
+type Binding = { browser: 'firefox' | 'chrome'; container: string; accent?: string } | undefined;
 const fx = (container: string): Binding => ({ browser: 'firefox', container });
 async function setup(bindings: Record<string, Binding>) {
   const server = http.createServer((_q, r) => r.writeHead(404).end());
@@ -102,4 +103,14 @@ test('Firefox and Chrome can both be connected for one workspace; calls go to th
   assert.equal(ff.reqs.length, 1);
   ff.ws.close(); ch.ws.close();
   await s.stop();
+});
+
+test("the add-on is told the accent colour for the frame it draws, cobalt unless the setting says otherwise", async () => {
+  const s = await setup({ '/w/a': { browser: 'firefox', container: 'p', accent: '#ff5c1a' }, '/w/b': fx('q') });
+  const a = await s.dial('/w/a');
+  const b = await s.dial('/w/b');
+  assert.equal((a.hellos[0] as { accent: string }).accent, '#ff5c1a');
+  assert.equal((b.hellos[0] as { accent: string }).accent, '#2b5bff');
+  assert.deepEqual(['#FF5C1A', ' #00aa11 ', 'red', '#abc', undefined].map(accentOrDefault), ['#ff5c1a', '#00aa11', '#2b5bff', '#2b5bff', '#2b5bff']);
+  a.ws.close(); b.ws.close(); await s.stop();
 });

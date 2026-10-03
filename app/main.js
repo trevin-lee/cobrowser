@@ -630,12 +630,17 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
        the space shared with the agent. Cobalt marks what concerns the agent and what is chosen. */
     --bg: #0a0a0c; --panel: #111114; --lift: #19191d; --line: rgba(255,255,255,.08); --line-2: rgba(255,255,255,.15);
     --fg: #fafafa; --muted: #8e8e99; --dim: #4a4a53;
-    --accent: #2b5bff; --accent-text: #6f9bff; --accent-soft: rgba(43,91,255,.16); --accent-glow: rgba(43,91,255,.4); --danger: #ff5a52;
-    --sel-ring: #141a2e; --pane: #3a3a44;
+    /* Every shade of the accent comes from it, so the cobrowser.accentColor setting (set on
+       this page by the app) recolours the whole window. */
+    --accent: #2b5bff; --danger: #ff5a52; --pane: #3a3a44;
+    --accent-text: color-mix(in srgb, var(--accent) 62%, white); --accent-soft: color-mix(in srgb, var(--accent) 16%, transparent);
+    --accent-glow: color-mix(in srgb, var(--accent) 40%, transparent); --sel-ring: color-mix(in srgb, var(--accent) 14%, var(--panel));
   }
   @media (prefers-color-scheme: light) {
     :root { --bg: #f4f4f5; --panel: #fff; --lift: #f6f6f7; --line: rgba(0,0,0,.08); --line-2: rgba(0,0,0,.16);
-      --fg: #0a0a0c; --muted: #6b6b76; --dim: #b9b9c1; --accent: #2b5bff; --accent-text: #1f47d6; --accent-soft: rgba(43,91,255,.1); --accent-glow: rgba(43,91,255,.3); --danger: #d93a32; --sel-ring: #e8eeff; --pane: #c9c9d1; }
+      --fg: #0a0a0c; --muted: #6b6b76; --dim: #b9b9c1; --danger: #d93a32; --pane: #c9c9d1;
+      --accent-text: color-mix(in srgb, var(--accent) 80%, black); --accent-soft: color-mix(in srgb, var(--accent) 10%, transparent);
+      --accent-glow: color-mix(in srgb, var(--accent) 30%, transparent); --sel-ring: color-mix(in srgb, var(--accent) 9%, var(--panel)); }
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
@@ -817,10 +822,9 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
   const hostParts = (h) => { const [hostOnly, port] = h.split(':'); const p = hostOnly.split('.'); const tail = port ? ':' + port : ''; return p.length > 2 && !/^\\d+$/.test(p[0]) ? [p.slice(0, -2).join('.') + '.', p.slice(-2).join('.') + tail] : ['', h]; };
   const scopeText = (sc) => sc === 'all' ? 'everywhere' : !sc || !sc.length ? 'nowhere' : sc.length === 1 ? base(sc[0]) : sc.length + ' workspaces';
 
-  /** A stable shade per workspace, all of them cobalt's: hue 214–224° (never toward violet),
-   *  from deep to light. */
-  const shade = (w) => { let h = 0; for (const ch of w) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return h; };
-  const color = (w) => { const h = shade(w); return 'hsl(' + (214 + (h % 11)) + ' 100% ' + (46 + ((h >>> 5) % 4) * 6) + '%)'; };
+  /** A stable shade of the accent per workspace, from deep to light. */
+  const SHADES = ['var(--accent)', 'color-mix(in oklab, var(--accent) 78%, white)', 'color-mix(in oklab, var(--accent) 58%, white)', 'color-mix(in oklab, var(--accent) 78%, black)', 'color-mix(in oklab, var(--accent) 62%, black)'];
+  const color = (w) => { let h = 0; for (const ch of w) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return SHADES[h % SHADES.length]; };
   function disc(cls, w) { const d = el('span', 'disc' + (cls ? ' ' + cls : '')); if (w) { d.style.setProperty('--c', color(w)); d.title = base(w); } return d; }
   function discStack(sc) {
     const box = el('span', 'discs');
@@ -1196,7 +1200,27 @@ function openVaultWindow() {
   const outside = (url) => { if (/^(https?:|mailto:)/.test(url)) void shell.openExternal(url); };
   vaultWin.webContents.setWindowOpenHandler(({ url }) => { outside(url); return { action: 'deny' }; });
   vaultWin.webContents.on('will-navigate', (e, url) => { e.preventDefault(); outside(url); });
+  vaultWin.webContents.on('did-finish-load', () => paintAccent());
   void vaultWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(VAULT_HTML));
+}
+
+/**
+ * The accent (the editor's cobrowser.accentColor), kept here so a vault window opened from the
+ * menu bar, before any editor connects, has it too. Each editor sends it with its hello, and
+ * again when it changes.
+ */
+const ACCENT_FILE = path.join(DATA_DIR, 'accent.json');
+const DEFAULT_ACCENT = '#2b5bff';
+let accent = (() => { try { const v = JSON.parse(fs.readFileSync(ACCENT_FILE, 'utf8')).accent; return /^#[0-9a-f]{6}$/i.test(v) ? v : DEFAULT_ACCENT; } catch { return DEFAULT_ACCENT; } })();
+function setAccent(v) {
+  if (typeof v !== 'string' || !/^#[0-9a-f]{6}$/i.test(v) || v.toLowerCase() === accent) return;
+  accent = v.toLowerCase();
+  try { fs.writeFileSync(ACCENT_FILE, JSON.stringify({ accent })); } catch { /* kept for this run */ }
+  paintAccent();
+}
+function paintAccent() {
+  if (!vaultWin || vaultWin.isDestroyed()) return;
+  void vaultWin.webContents.executeJavaScript(`document.documentElement.style.setProperty('--accent', ${JSON.stringify(accent)}); 0`).catch(() => undefined);
 }
 
 ipcMain.handle('vault:list', async () => (await unlockVault('show the logins in the cobrowser vault')).entries.map(publicEntry));
@@ -2212,8 +2236,10 @@ function workspaceFor(id) {
 }
 
 async function handle(ws, state, m) {
+  if (m.type === 'accent') { setAccent(m.color); return; }
   if (m.type === 'hello') {
     if (typeof m.workspace !== 'string' || !m.workspace) return;
+    setAccent(m.accent);
     state.workspace = workspaceFor(m.workspace);
     state.workspace.sockets.add(ws);
     rememberWorkspace(m.workspace);

@@ -100,6 +100,9 @@ const COMMITTING = /\b(pay\s+now|confirm\s+(payment|order|purchase)|place\s+orde
 
 /** How long an activity marker stays visible after an agent action. */
 const ACTIVITY_MS = 2500;
+/** The colour of the frame drawn on tabs the agent touches: cobrowser's accent setting, sent
+ *  with each hello (cobalt until one arrives). */
+let markColor = '#2b5bff';
 const BACKOFF_MS = [1000, 2000, 5000, 10000, 30000];
 const CALL_TIMEOUT_MS = 30000;
 const MAX_TEXT = 20000;
@@ -217,6 +220,7 @@ function send(conn, payload) {
 async function handleMessage(conn, msg) {
   if (msg.type === 'hello') {
     try {
+      if (typeof msg.accent === 'string' && /^#[0-9a-f]{6}$/i.test(msg.accent)) markColor = msg.accent;
       // Unbound here: say why, and which browser the workspace uses instead, if any.
       if (!msg.container) {
         throw new Error(msg.boundTo ? `this workspace is bound to ${msg.boundTo === 'firefox' ? 'Firefox' : 'Chrome'}, not Chrome` : 'this workspace is not bound to Chrome: run "Cobrowser: Bind Chrome Tab Group to This Workspace" in its editor window');
@@ -547,7 +551,7 @@ async function runInTab(tabId, fn, args, world = 'ISOLATED') {
 
 async function markTabActivity(tabId, label) {
   try {
-    await runInTab(tabId, PAGE_SCRIPTS.markActivity, [label, ACTIVITY_MS]);
+    await runInTab(tabId, PAGE_SCRIPTS.markActivity, [label, ACTIVITY_MS, markColor]);
   } catch {
     /* unscriptable page, or the tab closed mid-action — the action itself still stands */
   }
@@ -557,11 +561,14 @@ async function markTabActivity(tabId, label) {
 // shorthand method stringifies to "name() { … }", which is a syntax error in that position.
 const PAGE_SCRIPTS = {
   /** Draw a non-interactive frame + label, prefix the tab title, then undo both. */
-  markActivity: (label, ms) => {
+  markActivity: (label, ms, color = '#2b5bff') => {
     const ID = '__cobrowser_activity__';
     const PREFIX = '\u25CF '; // ● — shows in the tab strip, where an overlay cannot reach
     const prior = document.getElementById(ID);
     if (prior) prior.remove();
+    // The label's text: white on a dark colour, black on a light one (a yellow, say).
+    const [r, g, b] = [1, 3, 5].map((i) => parseInt(color.slice(i, i + 2), 16));
+    const ink = 0.299 * r + 0.587 * g + 0.114 * b > 160 ? '#000' : '#fff';
 
     const box = document.createElement('div');
     box.id = ID;
@@ -569,14 +576,14 @@ const PAGE_SCRIPTS = {
     // underneath, and the agent's own synthetic clicks must not land on this element.
     box.style.cssText = [
       'position:fixed', 'inset:0', 'pointer-events:none', 'z-index:2147483647',
-      'border:3px solid #2b5bff', 'box-sizing:border-box',
+      `border:3px solid ${color}`, 'box-sizing:border-box',
       'transition:opacity .4s ease', 'opacity:1',
     ].join(';');
     const tag = document.createElement('div');
     tag.textContent = 'cobrowser: ' + label;
     tag.style.cssText = [
       'position:absolute', 'top:0', 'left:50%', 'transform:translateX(-50%)',
-      'background:#2b5bff', 'color:#fff', 'font:600 12px/1.6 system-ui,sans-serif',
+      `background:${color}`, `color:${ink}`, 'font:600 12px/1.6 system-ui,sans-serif',
       'padding:2px 10px', 'border-radius:0 0 6px 6px', 'white-space:nowrap',
     ].join(';');
     box.appendChild(tag);

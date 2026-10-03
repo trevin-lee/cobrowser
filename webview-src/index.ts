@@ -60,6 +60,10 @@ window.addEventListener('message', (event: MessageEvent) => {
     vscode.setState({ url: m.url });
     return;
   }
+  if (m?.type === 'extension.accent') {
+    if (/^#[0-9a-f]{6}$/i.test(String(m.color))) document.body.style.setProperty('--cobrowser-agent', m.color);
+    return;
+  }
   if (m?.type === 'extension.title') {
     // The editor tab shows the title cut short; hovering the address bar shows all of it.
     urlInput.title = String(m.title ?? '');

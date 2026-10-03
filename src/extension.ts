@@ -11,7 +11,7 @@ import { SessionTreeProvider } from './webview/SessionTreeProvider';
 import { writeClientConfigs } from './clients/writeClientConfigs';
 import { snippetFor, type OtherClient } from './clients/agentConfigs';
 import { daemonToken, deregister, ensureDaemon, isOlder, register, registrationState } from './daemon/client';
-import { DEFAULT_DAEMON_PORT, DEV_DAEMON_PORT, bridgeEndpointUrl } from './daemon/protocol';
+import { DEFAULT_DAEMON_PORT, DEV_DAEMON_PORT, accentOrDefault, bridgeEndpointUrl } from './daemon/protocol';
 import { AppConnection, readAppState, type AppState } from './app/AppClient';
 import { ensureApp, electronExecutable } from './app/ensureApp';
 import { APP_BUNDLE_ID, listSigningIdentities, readSignedMarker, signElectronForPasskeys, unsignForPasskeys } from './app/signApp';
@@ -181,8 +181,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     BrowserPanel.tabTitleMax = c.get<number>('tabTitleMaxLength', 30);
   };
   readRender(cfg);
+  // The accent colours what concerns the agent: its highlight in the panels, the vault (through
+  // the app) and the frame the bridge draws on tabs (through the daemon).
+  const readAccent = (): string => accentOrDefault(vscode.workspace.getConfiguration('cobrowser').get<string>('accentColor'));
+  AppConnection.accent = BrowserPanel.accent = readAccent();
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration('cobrowser.accentColor')) {
+        const color = readAccent();
+        AppConnection.accent = color;
+        BrowserPanel.setAccent(color);
+        BrowserPanel.app?.setAccent(color);
+        void registerWithDaemon();
+      }
       if (e.affectsConfiguration('cobrowser.renderScale') || e.affectsConfiguration('cobrowser.renderBudgetMegapixels')) {
         readRender(vscode.workspace.getConfiguration('cobrowser'));
         BrowserPanel.remeasureAll();
@@ -446,7 +457,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       registerWithDaemon = () =>
         register(
           daemonPort,
-          { id, name: path.basename(id), url: `http://127.0.0.1:${mcpPort}/mcp`, token, pid: process.pid, container: firefoxContainerFor(context) || undefined, browser: bridgeBrowser() },
+          { id, name: path.basename(id), url: `http://127.0.0.1:${mcpPort}/mcp`, token, pid: process.pid, container: firefoxContainerFor(context) || undefined, browser: bridgeBrowser(), accent: AppConnection.accent },
           log,
           dev,
         );

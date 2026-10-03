@@ -136,10 +136,11 @@ button.icon svg {
   position: absolute;
   box-sizing: border-box;
   pointer-events: none;
-  border: 2px solid var(--cobrowser-accent);
+  /* The agent's colour (cobrowser.accentColor), not the editor theme's. */
+  border: 2px solid var(--cobrowser-agent, var(--cobrowser-accent));
   border-radius: 3px;
-  background: color-mix(in srgb, var(--cobrowser-accent) 14%, transparent);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--cobrowser-accent) 40%, transparent);
+  background: color-mix(in srgb, var(--cobrowser-agent, var(--cobrowser-accent)) 14%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--cobrowser-agent, var(--cobrowser-accent)) 40%, transparent);
   opacity: 0;
   transition: opacity 0.45s ease;
 }
