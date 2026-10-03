@@ -10,5 +10,13 @@
   <string>cobrowser</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
+  <key>CFBundleExecutable</key>
+  <string>cobrowser-auth</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleIconFile</key>
+  <string>cobrowser</string>
+  <key>LSUIElement</key>
+  <true/>
 </dict>
 </plist>

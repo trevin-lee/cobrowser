@@ -228,7 +228,8 @@ const TEST_LOGIN = SKIP_BIOMETRICS ? process.env.COBROWSER_TEST_LOGIN : undefine
 // The helper that asks macOS for Touch ID or the Mac's password (app/auth, built beside this
 // file). Electron's own prompt is Touch ID only, which strands a Mac whose sensor is out of
 // reach (a closed lid, a desktop without Apple's Touch ID keyboard).
-const AUTH_HELPER = path.join(__dirname, 'cobrowser-auth');
+// In an app bundle of its own, with cobrowser's name and icon, which the Touch ID sheet shows.
+const AUTH_HELPER = path.join(__dirname, 'cobrowser-auth.app', 'Contents', 'MacOS', 'cobrowser-auth');
 const CONFIRM_TIMEOUT_MS = 60000;
 
 /** Ask through the helper. Resolves true when confirmed, false when the helper cannot be used

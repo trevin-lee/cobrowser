@@ -70,7 +70,7 @@ jobs:
         run: |
           npm run package
           npm run package:chrome
-          unzip -l cobrowser-*.vsix | grep -q 'extension/dist/app/cobrowser-auth$' || { echo "::error::the .vsix has no cobrowser-auth"; exit 1; }
+          unzip -l cobrowser-*.vsix | grep -q 'extension/dist/app/cobrowser-auth.app/Contents/MacOS/cobrowser-auth$' || { echo "::error::the .vsix has no cobrowser-auth"; exit 1; }
 
       - name: Package the macOS builds the stores get
         run: |
