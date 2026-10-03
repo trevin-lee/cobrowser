@@ -2,6 +2,13 @@
 
 Release notes for earlier versions are on the [GitHub releases page](https://github.com/trevin-lee/cobrowser/releases).
 
+## 0.9.19
+
+### Changed
+
+- **A new mark and colours.** Two square panes, one over the other's corner, and where they meet, the space you share with the agent, in cobalt. Black, white and cobalt replace the blue and green throughout: the app, menu-bar, store and sidebar icons, the vault window (sharper corners, a white main button, each workspace in its own shade of cobalt), and the frame the bridge draws on tabs the agent touches. An installed browser takes the new icon once, the next time it starts.
+- **The bridge extensions have an icon**, in the toolbar and in the extensions list, instead of the browser's generic one.
+
 ## 0.9.18
 
 ### Added
