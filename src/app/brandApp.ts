@@ -6,8 +6,9 @@ import { APP_BUNDLE_ID, readSignedMarker } from './signApp';
 
 type Log = (message: string) => void;
 
-/** Bump when the branding below changes, so existing installs are re-branded once. */
-export const BRAND_REVISION = 1;
+/** Bump when the branding below changes, so existing installs are re-branded once.
+ *  2: the solid-panes mark in black, white and cobalt. */
+export const BRAND_REVISION = 2;
 export const APP_NAME = 'cobrowser';
 
 /** The pinned Electron's cache directory, from its executable (…/X.app/Contents/MacOS/Electron). */

@@ -626,43 +626,44 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
 <style>
   :root {
     color-scheme: light dark;
-    /* cobrowser's palette, from its mark: navy, blue, teal (the overlap), green. */
-    --bg: #16181d; --panel: #1b1e24; --lift: #22262d; --line: rgba(255,255,255,.07); --line-2: rgba(255,255,255,.13);
-    --fg: #e6e8ec; --muted: #8b919c; --dim: #4f5560;
-    --blue: #388bfd; --teal: #2fbdb9; --green: #29a891; --danger: #e5534b;
-    --blue-soft: rgba(56,139,253,.14); --green-soft: rgba(41,168,145,.16); --teal-glow: rgba(47,189,185,.35); --sel-ring: #1f2b3d;
+    /* cobrowser's palette, from its mark: black, white, and cobalt where the two panes meet,
+       the space shared with the agent. Cobalt marks what concerns the agent and what is chosen. */
+    --bg: #0a0a0c; --panel: #111114; --lift: #19191d; --line: rgba(255,255,255,.08); --line-2: rgba(255,255,255,.15);
+    --fg: #fafafa; --muted: #8e8e99; --dim: #4a4a53;
+    --accent: #2b5bff; --accent-text: #6f9bff; --accent-soft: rgba(43,91,255,.16); --accent-glow: rgba(43,91,255,.4); --danger: #ff5a52;
+    --sel-ring: #141a2e; --pane: #3a3a44;
   }
   @media (prefers-color-scheme: light) {
-    :root { --bg: #f2f3f5; --panel: #fff; --lift: #f7f8fa; --line: rgba(0,0,0,.07); --line-2: rgba(0,0,0,.14);
-      --fg: #171a20; --muted: #656b77; --dim: #b3b8c2; --blue: #1f6fe0; --teal: #1a9c98; --green: #1f8f7b; --danger: #c93c31; --teal-glow: rgba(26,156,152,.3); --sel-ring: #e4ecfa; }
+    :root { --bg: #f4f4f5; --panel: #fff; --lift: #f6f6f7; --line: rgba(0,0,0,.08); --line-2: rgba(0,0,0,.16);
+      --fg: #0a0a0c; --muted: #6b6b76; --dim: #b9b9c1; --accent: #2b5bff; --accent-text: #1f47d6; --accent-soft: rgba(43,91,255,.1); --accent-glow: rgba(43,91,255,.3); --danger: #d93a32; --sel-ring: #e8eeff; --pane: #c9c9d1; }
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
   body { background: var(--bg); color: var(--fg); font: 13px/1.45 -apple-system, "SF Pro Text", system-ui, sans-serif; -webkit-user-select: none; display: grid; grid-template-rows: auto 1fr; -webkit-font-smoothing: antialiased; }
   .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; letter-spacing: -.01em; }
   input { font: inherit; color: var(--fg); }
-  button { font: inherit; color: var(--fg); background: var(--lift); border: 1px solid var(--line-2); border-radius: 7px; height: 28px; padding: 0 12px; cursor: default; }
+  button { font: inherit; color: var(--fg); background: var(--lift); border: 1px solid var(--line-2); border-radius: 6px; height: 28px; padding: 0 12px; cursor: default; }
   button:hover { border-color: var(--muted); }
   button.quiet { background: transparent; border-color: transparent; color: var(--muted); } button.quiet:hover { color: var(--fg); background: var(--lift); }
-  button.primary { background: var(--blue); border-color: transparent; color: #fff; font-weight: 600; } button.primary:disabled { opacity: .4; }
+  button.primary { background: var(--fg); border-color: transparent; color: var(--bg); font-weight: 600; } button.primary:disabled { opacity: .4; }
   button.danger:hover { color: var(--danger); border-color: var(--danger); }
-  :focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   ::-webkit-scrollbar { width: 8px; } ::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 4px; border: 2px solid transparent; background-clip: padding-box; }
 
   header { -webkit-app-region: drag; display: flex; align-items: center; gap: 10px; padding: 30px 22px 14px; }
   header svg { width: 20px; height: 20px; }
-  header h1 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: -.01em; }
+  header h1 { margin: 0; font-size: 16px; font-weight: 650; letter-spacing: -.025em; }
   header .sub { color: var(--muted); margin-left: 2px; }
   .kinds { display: flex; gap: 2px; margin-left: 6px; -webkit-app-region: no-drag; }
   .kinds button { padding: 3px 10px; border-radius: 6px; color: var(--muted); }
   .kinds button.on { color: var(--fg); background: var(--lift); }
   header .spacer { flex: 1; } header button, header .state { -webkit-app-region: no-drag; }
   .state { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; padding: 0 4px; }
-  .state i { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); } .state.on i { background: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
+  .state i { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); } .state.on i { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 
   .panes { display: grid; grid-template-columns: 340px 1fr; gap: 14px; padding: 0 22px 22px; min-height: 0; }
   button { white-space: nowrap; }
-  .pane { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+  .pane { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 
   /* roster */
   .search { padding: 10px 12px; border-bottom: 1px solid var(--line); }
@@ -671,42 +672,43 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
   .search input::placeholder { color: var(--dim); }
   .list { overflow: auto; flex: 1; }
   .item { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
-  .item:hover { background: var(--lift); } .item.sel { background: var(--blue-soft); box-shadow: inset 3px 0 0 var(--blue); }
+  .item:hover { background: var(--lift); } .item.sel { background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent); }
   .item .id { min-width: 0; flex: 1; }
   .item b { display: block; font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } b em { font-style: normal; color: var(--muted); font-weight: 400; }
   .item .id span { display: block; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .foot { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); } .foot .primary { flex: 1; }
   .empty { margin: auto; padding: 24px; text-align: center; color: var(--muted); max-width: 300px; line-height: 1.5; }
 
-  /* the signature: where a login meets a workspace. One disc per workspace, in its hue. */
+  /* the signature: where a login meets a workspace. One square per workspace, in its shade of
+     cobalt, overlapping as the panes of the mark do. */
   .discs { display: inline-flex; align-items: center; flex: none; }
-  .disc { width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid var(--dim); background: transparent; flex: none; }
+  .disc { width: 13px; height: 13px; border-radius: 3px; border: 1.5px solid var(--dim); background: transparent; flex: none; }
   .discs .disc { margin-left: -5px; box-shadow: 0 0 0 2px var(--panel); } .discs .disc:first-child { margin-left: 0; }
   .item.sel .discs .disc { box-shadow: 0 0 0 2px var(--sel-ring); }
-  .disc.on { border-color: transparent; background: var(--c, var(--teal)); }
-  .disc.all { border-color: var(--green); background: radial-gradient(circle, var(--green) 0 3px, transparent 3.5px); }
+  .disc.on { border-color: transparent; background: var(--c, var(--accent)); }
+  .disc.all { border-color: var(--accent); background: linear-gradient(var(--accent), var(--accent)) center / 5px 5px no-repeat; }
   .disc.none { border-style: dashed; }
   .discs small { color: var(--muted); font-size: 11px; margin-left: 5px; }
 
   /* card */
   .detail { padding: 20px 22px; display: flex; flex-direction: column; gap: 18px; min-height: 0; overflow: auto; }
   /* a login's websites: one row each, as a list */
-  .sites { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .sites { border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
   .site { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 6px 0 14px; border-bottom: 1px solid var(--line); background: var(--lift); }
   .site:last-child { border-bottom: 0; }
   .site input { flex: 1; min-width: 0; background: none; border: 0; outline: 0; height: 40px; padding: 0; -webkit-user-select: text; } .site input::placeholder { color: var(--dim); }
   .site .x { width: 26px; height: 26px; padding: 0; color: var(--muted); }
-  .site.add button { padding: 0; height: 40px; color: var(--blue); } .site.add { background: transparent; }
+  .site.add button { padding: 0; height: 40px; color: var(--accent-text); } .site.add { background: transparent; }
   /* notes: Markdown, written in a box, read formatted */
-  textarea.notes { width: 100%; min-height: 120px; resize: vertical; background: var(--lift); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; outline: 0; color: var(--fg); font: 12.5px/1.55 ui-monospace, "SF Mono", Menlo, monospace; -webkit-user-select: text; }
+  textarea.notes { width: 100%; min-height: 120px; resize: vertical; background: var(--lift); border: 1px solid var(--line); border-radius: 6px; padding: 10px 14px; outline: 0; color: var(--fg); font: 12.5px/1.55 ui-monospace, "SF Mono", Menlo, monospace; -webkit-user-select: text; }
   textarea.notes::placeholder { color: var(--dim); }
-  .md { border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; background: var(--lift); line-height: 1.55; -webkit-user-select: text; overflow-wrap: anywhere; }
+  .md { border: 1px solid var(--line); border-radius: 6px; padding: 10px 14px; background: var(--lift); line-height: 1.55; -webkit-user-select: text; overflow-wrap: anywhere; }
   .md > :first-child { margin-top: 0; } .md > :last-child { margin-bottom: 0; }
   .md p, .md ul, .md ol, .md pre { margin: 0 0 8px; } .md ul, .md ol { padding-left: 20px; }
   .md h4, .md h5, .md h6 { margin: 10px 0 4px; font-size: 13px; }
   .md code { font: 12px ui-monospace, "SF Mono", Menlo, monospace; background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
   .md pre { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; overflow: auto; } .md pre code { border: 0; padding: 0; background: none; }
-  .md a { color: var(--blue); }
+  .md a { color: var(--accent-text); }
   .md.none { color: var(--muted); }
   /* The detail pane scrolls; its sections keep their size rather than being squeezed under
      the buttons when a form is taller than the window. */
@@ -718,25 +720,25 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
   .title .acts { display: flex; gap: 4px; flex: none; }
   h3 { margin: 0; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); }
   .sec { display: flex; flex-direction: column; gap: 8px; }
-  .fields { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .fields { border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
   .field { display: grid; grid-template-columns: 96px 1fr; align-items: center; min-height: 40px; padding: 0 14px; border-bottom: 1px solid var(--line); background: var(--lift); }
   .field:last-child { border-bottom: 0; } .field label { color: var(--muted); font-size: 12.5px; }
   .field input { background: none; border: 0; outline: 0; height: 40px; padding: 0; -webkit-user-select: text; } .field input::placeholder { color: var(--dim); }
   .pw { display: flex; align-items: center; gap: 6px; min-width: 0; }
   .pw span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); letter-spacing: .12em; }
   .pw span.revealed { color: var(--fg); letter-spacing: 0; -webkit-user-select: text; }
-  .scope { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; flex: 1; min-height: 220px; }
+  .scope { border: 1px solid var(--line); border-radius: 6px; overflow: hidden; display: flex; flex-direction: column; flex: 1; min-height: 220px; }
   .row { display: flex; align-items: center; gap: 12px; padding: 0 14px; height: 40px; border-bottom: 1px solid var(--line); }
   .row:last-child { border-bottom: 0; }
   .row.every { background: var(--lift); } .row.every b { flex: 1; font-weight: 600; } .row.every small { color: var(--muted); }
   .switch { width: 34px; height: 20px; border-radius: 999px; background: var(--dim); position: relative; border: 0; padding: 0; transition: background .15s; }
   .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform .15s; }
-  .switch[aria-checked="true"] { background: var(--green); } .switch[aria-checked="true"]::after { transform: translateX(14px); }
+  .switch[aria-checked="true"] { background: var(--accent); } .switch[aria-checked="true"]::after { transform: translateX(14px); }
   .wsfilter { padding: 8px 10px; border-bottom: 1px solid var(--line); } .wsfilter input { width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: 7px; height: 26px; padding: 0 9px; outline: 0; -webkit-user-select: text; font-size: 12.5px; }
   .wslist { overflow: auto; flex: 1; }
   .ws { height: 38px; } .ws:hover { background: var(--lift); }
   .ws .disc { transition: transform .12s ease, background-color .12s ease; } .ws:hover .disc { transform: scale(1.15); }
-  .ws .disc.on { box-shadow: 0 0 0 3px var(--teal-glow); }
+  .ws .disc.on { box-shadow: 0 0 0 3px var(--accent-glow); }
   .ws .name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .ws .name small { color: var(--muted); margin-left: 8px; }
   .ws.inherit { opacity: .5; pointer-events: none; }
   .hint { color: var(--muted); font-size: 12px; margin: 0; line-height: 1.5; }
@@ -747,7 +749,7 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
   @media (prefers-reduced-motion: reduce) { .switch, .switch::after, .ws .disc { transition: none; } }
 </style>
 <header>
-  <svg viewBox="0 0 128 128" aria-hidden="true"><circle cx="46" cy="64" r="40" fill="#388bfd"/><circle cx="82" cy="64" r="40" fill="#29a891"/><path d="M64 33.4a40 40 0 0 1 0 61.2 40 40 0 0 1 0-61.2z" fill="#2fbdb9"/></svg>
+  <svg viewBox="0 0 100 100" aria-hidden="true"><rect x="12" y="12" width="52" height="52" fill="var(--fg)"/><rect x="36" y="36" width="52" height="52" fill="var(--pane)"/><rect x="36" y="36" width="28" height="28" fill="var(--accent)"/></svg>
   <h1>Vault</h1>
   <span class="kinds"><button class="quiet on" id="k-logins">Logins</button><button class="quiet" id="k-cards">Cards</button></span>
   <span class="sub" id="sub">what the agent may sign in with, and where</span>
@@ -815,9 +817,10 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
   const hostParts = (h) => { const [hostOnly, port] = h.split(':'); const p = hostOnly.split('.'); const tail = port ? ':' + port : ''; return p.length > 2 && !/^\\d+$/.test(p[0]) ? [p.slice(0, -2).join('.') + '.', p.slice(-2).join('.') + tail] : ['', h]; };
   const scopeText = (sc) => sc === 'all' ? 'everywhere' : !sc || !sc.length ? 'nowhere' : sc.length === 1 ? base(sc[0]) : sc.length + ' workspaces';
 
-  /** A stable hue per workspace on the brand arc (blue 212° → green 168°). */
-  const hue = (w) => { let h = 0; for (const ch of w) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return 168 + (h % 45); };
-  const color = (w) => 'hsl(' + hue(w) + ' 62% 56%)';
+  /** A stable shade per workspace, all of them cobalt's: hue 214–224° (never toward violet),
+   *  from deep to light. */
+  const shade = (w) => { let h = 0; for (const ch of w) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return h; };
+  const color = (w) => { const h = shade(w); return 'hsl(' + (214 + (h % 11)) + ' 100% ' + (46 + ((h >>> 5) % 4) * 6) + '%)'; };
   function disc(cls, w) { const d = el('span', 'disc' + (cls ? ' ' + cls : '')); if (w) { d.style.setProperty('--c', color(w)); d.title = base(w); } return d; }
   function discStack(sc) {
     const box = el('span', 'discs');
@@ -1184,7 +1187,7 @@ function openVaultWindow() {
   const { nativeTheme } = require('electron');
   vaultWin = new BrowserWindow({
     ...vaultWindowSize(), title: 'cobrowser vault', show: false,
-    titleBarStyle: 'hiddenInset', backgroundColor: nativeTheme.shouldUseDarkColors ? '#16181d' : '#f3f4f6',
+    titleBarStyle: 'hiddenInset', backgroundColor: nativeTheme.shouldUseDarkColors ? '#0a0a0c' : '#f4f4f5',
     webPreferences: { preload: path.join(__dirname, 'vault-preload.js'), contextIsolation: true, sandbox: true, nodeIntegration: false },
   });
   vaultWin.once('ready-to-show', () => { vaultWin.show(); vaultWin.focus(); });

@@ -27,7 +27,7 @@ ul { list-style: none; margin: 0; padding: 0; }
   padding: 7px 0; border-bottom: 1px solid rgba(128,128,128,.18);
 }
 .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; align-self: center; }
-.dot.on { background: #2d7d46; }
+.dot.on { background: #2b5bff; }
 .dot.off { background: #b3261e; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; opacity: .65;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

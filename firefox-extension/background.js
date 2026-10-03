@@ -591,14 +591,14 @@ const PAGE_SCRIPTS = {
     // underneath, and the agent's own synthetic clicks must not land on this element.
     box.style.cssText = [
       'position:fixed', 'inset:0', 'pointer-events:none', 'z-index:2147483647',
-      'border:3px solid #7c5cff', 'box-sizing:border-box',
+      'border:3px solid #2b5bff', 'box-sizing:border-box',
       'transition:opacity .4s ease', 'opacity:1',
     ].join(';');
     const tag = document.createElement('div');
     tag.textContent = 'cobrowser: ' + label;
     tag.style.cssText = [
       'position:absolute', 'top:0', 'left:50%', 'transform:translateX(-50%)',
-      'background:#7c5cff', 'color:#fff', 'font:600 12px/1.6 system-ui,sans-serif',
+      'background:#2b5bff', 'color:#fff', 'font:600 12px/1.6 system-ui,sans-serif',
       'padding:2px 10px', 'border-radius:0 0 6px 6px', 'white-space:nowrap',
     ].join(';');
     box.appendChild(tag);
@@ -1126,7 +1126,7 @@ function updateBadge() {
   const live = statusList().filter((s) => s.connected && s.container).length;
   try {
     api.browserAction.setBadgeText({ text: live ? String(live) : '' });
-    api.browserAction.setBadgeBackgroundColor({ color: '#2d7d46' });
+    api.browserAction.setBadgeBackgroundColor({ color: '#2b5bff' });
   } catch {
     // No toolbar to draw on (headless). The bridge itself is unaffected.
   }
