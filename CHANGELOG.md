@@ -2,6 +2,12 @@
 
 Release notes for earlier versions are on the [GitHub releases page](https://github.com/trevin-lee/cobrowser/releases).
 
+## 0.9.21
+
+### Changed
+
+- **The bridge's toolbar popup is redesigned**, in Chrome and Firefox: your workspaces first, each by its folder name with its container or tab group in the browser's own colour (or, in a few words, why it is not connected); the agent's request count as a meter, with Reset; the containers or tab groups you can bind to, as chips; and the bridge URL box folded away where the editor connects by itself. In cobrowser's colours, light or dark with the browser.
+
 ## 0.9.20
 
 ### Fixed
