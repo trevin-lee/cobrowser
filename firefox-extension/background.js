@@ -1152,6 +1152,7 @@ api.runtime.onMessage.addListener((msg, sender) => {
   if (msg && msg.type === 'reconcile') return reconcile().then(() => statusList());
   if (msg && msg.type === 'containers') return api.contextualIdentities.query({});
   if (msg && msg.type === 'usage') return Promise.resolve(usage());
+  if (msg && msg.type === 'accent') return Promise.resolve(markColor);
   if (msg && msg.type === 'resetCap') {
     if (!fromOptionsPage(sender)) return Promise.resolve({ error: 'refused: only the Cobrowser Bridge page can reset the request cap' });
     requestCount = 0;

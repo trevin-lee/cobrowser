@@ -3,47 +3,35 @@
 <title>Cobrowser Bridge</title>
 <link rel="stylesheet" href="options.css" />
 <body>
-  <h1>Cobrowser Bridge</h1>
+  <header>
+    <svg viewBox="0 0 100 100" aria-hidden="true"><rect x="12" y="12" width="52" height="52" fill="var(--fg)"/><rect x="36" y="36" width="52" height="52" fill="var(--pane)"/><rect x="36" y="36" width="28" height="28" fill="var(--accent)"/></svg>
+    <h1>Cobrowser Bridge</h1>
+    <span class="pill" id="summary"><i></i><span>…</span></span>
+  </header>
 
-  <section>
-    <h2>Endpoints</h2>
-    <p class="hint">
-      One per line. Get each URL from your editor: run
-      <code>Cobrowser: Copy Bridge URL</code> in the workspace you want to connect.
-      The URL never changes for that workspace, so this is a one-time paste.
-      The workspace decides which tab group it may touch.
-    </p>
-    <textarea id="endpoints" spellcheck="false" rows="6"
-      placeholder="ws://127.0.0.1:39273/zen?token=…&amp;workspace=…"></textarea>
-    <div class="row">
-      <button id="save">Save</button>
-      <span id="saved" class="saved" hidden>saved</span>
+  <h2>Workspaces</h2>
+  <div class="card" id="status"></div>
+
+  <h2>Agent requests</h2>
+  <div class="card meter" id="meter">
+    <div class="top"><span class="n" id="count">0</span><span class="of" id="of">of 100 this browser session</span><button id="reset">Reset</button></div>
+    <div class="bar"><b id="fill"></b></div>
+    <span class="paused" id="paused" hidden></span>
+  </div>
+  <p class="hint">Each request waits one to three seconds. At 100 the agent stops and asks you; a site that refuses a fetch pauses it for a minute. Only you can reset the count.</p>
+
+  <h2>Tab groups</h2>
+  <div class="card"><div class="chips" id="containers"></div></div>
+  <p class="hint">Bind a workspace to a group by its name, or to <b>profile</b> for every tab, in the editor with <b>Bind Chrome Tab Group to This Workspace</b>. Name an untitled group first.</p>
+
+  <details id="manual">
+    <summary>Connect a workspace</summary>
+    <div class="body">
+      <p class="hint" style="margin-top:0">Chrome cannot be configured by the editor, so each workspace is connected here once: run <b>Copy Bridge URL</b> in it and paste the URL, one per line. It never changes for that workspace.</p>
+      <textarea id="endpoints" spellcheck="false" placeholder="ws://127.0.0.1:39273/zen?token=…&amp;workspace=…"></textarea>
+      <div class="row"><button class="primary" id="save">Save</button><span id="saved" class="saved" hidden>Saved</span></div>
     </div>
-  </section>
-
-  <section>
-    <h2>Status</h2>
-    <ul id="status" class="status"></ul>
-  </section>
-
-  <section>
-    <h2>Tab groups in this profile</h2>
-    <p class="hint">Bind a workspace to one of these by name, or to <code>profile</code> for every tab.</p>
-    <ul id="containers" class="containers"></ul>
-  </section>
-
-  <section>
-    <h2>Agent requests</h2>
-    <p class="hint">
-      Everything the agent does that reaches a site counts, paced one to three seconds apart.
-      At 100 in one browser session it stops and asks you; a site that refuses or shows a
-      challenge pauses it for a minute. Only you can reset it, here.
-    </p>
-    <div class="row">
-      <span id="usage" class="grow">…</span>
-      <button id="reset">Reset</button>
-    </div>
-  </section>
+  </details>
 
   <script src="options.js"></script>
 </body>

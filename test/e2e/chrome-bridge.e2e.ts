@@ -117,6 +117,26 @@ suite('chrome-bridge', async (r) => {
     const gv = grouped.value ?? {};
     r.check('the scopes are listed by the names the bind command takes: profile, a group\'s title, and an untitled group as none', JSON.stringify(gv.names) === JSON.stringify(['profile', 'Work', null]), grouped);
     r.check('a closed tab group lists no tabs and says why, and the next new tab starts it again under its name', gv.before === 1 && gv.goneTabs === 0 && /not open in Chrome/.test(String(gv.note)) && gv.after === 1 && gv.title === 'Work' && gv.inGroup === true, grouped);
+    // The toolbar popup's page, in Chrome itself: it loads and shows the bridge's own state.
+    await run(`chrome.tabs.create({ url: chrome.runtime.getURL('options.html') }).then(() => 1)`);
+    let popup: { webSocketDebuggerUrl: string } | undefined;
+    for (let i = 0; i < 20 && !popup; i++) {
+      await sleep(250);
+      const list = (await fetch(`http://127.0.0.1:${port}/json/list`).then((x) => x.json()).catch(() => [])) as { type: string; url: string; webSocketDebuggerUrl: string }[];
+      popup = list.find((t) => t.type === 'page' && t.url.endsWith('/options.html'));
+    }
+    let shown: Record<string, unknown> | undefined;
+    if (popup) {
+      const pw = new WebSocket(popup.webSocketDebuggerUrl);
+      await new Promise((ok) => pw.once('open', ok));
+      await sleep(800);
+      shown = await new Promise((ok) => {
+        pw.on('message', (d) => { const m = JSON.parse(String(d)); if (m.id === 1) ok(m.result?.result?.value); });
+        pw.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: { expression: `({ title: document.querySelector('h1').textContent, summary: document.getElementById('summary').textContent, groups: [...document.querySelectorAll('#containers .chip')].map((c) => c.firstChild.nextSibling.textContent), count: document.getElementById('count').textContent, accent: getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() })`, returnByValue: true } }));
+      });
+      pw.close();
+    }
+    r.check("the toolbar popup loads in Chrome and shows the bridge's state", shown?.title === 'Cobrowser Bridge' && shown?.summary === 'Not connected' && (shown?.groups as string[] | undefined)?.[0] === 'profile' && /^\d+$/.test(String(shown?.count)) && shown?.accent === '#2b5bff', shown);
     ws.close();
   } finally {
     chrome.kill('SIGKILL');
