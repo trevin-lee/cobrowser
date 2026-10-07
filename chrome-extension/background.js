@@ -95,6 +95,8 @@ function noteRefusal(status, bodyText) {
 
 /** Fields the agent must never populate, even when asked. */
 const CREDENTIAL = /\b(password|passcode|pin|otp|one[-\s]?time|2fa|mfa|security\s+code|verification\s+code|cvv|cvc|card\s+number|ssn|social\s+security)\b/i;
+/** Autocomplete tokens that mark a field as a secret whatever it is called (src/browser/guards.ts). */
+const SECRET_AUTOCOMPLETE = ['current-password', 'new-password', 'one-time-code', 'cc-number', 'cc-csc', 'cc-exp'];
 /** Buttons that move money or place an order. */
 const COMMITTING = /\b(pay\s+now|confirm\s+(payment|order|purchase)|place\s+order|submit\s+payment|send\s+money|transfer\s+now|buy\s+now)\b/i;
 
@@ -452,7 +454,7 @@ async function dispatch(conn, method, params) {
     case 'fill': {
       await assertInScope(conn, params.tabId);
       await pace();
-      const filled = await runInTab(params.tabId, PAGE_SCRIPTS.fill, [params.fields ?? [], params.allowCredentials === true]);
+      const filled = await runInTab(params.tabId, PAGE_SCRIPTS.fill, [params.fields ?? [], params.allowCredentials === true, CREDENTIAL.source, SECRET_AUTOCOMPLETE]);
       if (filled && filled.refused && filled.refused.length) {
         return { ...filled, needsUserAction: `the human should type ${filled.refused.join(', ')} themselves`, why: 'Passwords, one-time codes and card numbers are never filled by the agent.' };
       }
@@ -915,7 +917,7 @@ const PAGE_SCRIPTS = {
     return { clicked: ref || selector, url: location.href };
   },
 
-  fill: (fields, allowCredentials) => {
+  fill: (fields, allowCredentials, credentialSource, secretAutocomplete) => {
     const setValue = (el, value) => {
       const proto =
         el.tagName === 'TEXTAREA'
@@ -932,7 +934,9 @@ const PAGE_SCRIPTS = {
       el.dispatchEvent(new Event('change', { bubbles: true }));
     };
 
-    const CREDENTIAL = /\b(password|passcode|pin|otp|one[-\s]?time|2fa|mfa|security\s+code|verification\s+code|cvv|cvc|card\s+number|ssn|social\s+security)\b/i;
+    // The shared patterns arrive as arguments (credentialSource, secretAutocomplete): this
+    // function runs in the page, so it cannot see the copies at the top of this file.
+    const CREDENTIAL = new RegExp(credentialSource, 'i');
     const describes = (el) =>
       [
         el.getAttribute('aria-label'),
@@ -954,7 +958,8 @@ const PAGE_SCRIPTS = {
       // The human owns their secrets. type="password" covers most of it; the rest is caught
       // by what the field calls itself, since OTP boxes are usually type="text".
       const isSecret =
-        el.type === 'password' || CREDENTIAL.test(describes(el)) || el.autocomplete === 'one-time-code';
+        el.type === 'password' || CREDENTIAL.test(describes(el)) ||
+        String(el.getAttribute('autocomplete') || '').toLowerCase().split(/\s+/).some((t) => secretAutocomplete.includes(t));
       if (isSecret && !allowCredentials) {
         refused.push((el.getAttribute('name') || el.getAttribute('id') || el.type || 'field').slice(0, 40));
         continue;

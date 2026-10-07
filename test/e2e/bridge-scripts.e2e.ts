@@ -25,6 +25,11 @@ suite('bridge-scripts', async (r) => {
         if (res.exceptionDetails) throw new Error(res.exceptionDetails.exception?.description ?? 'evaluate failed');
         return res.result.value as T;
       };
+      // fill: a field marked only by its autocomplete token (a card number) is the human's, as in the panel.
+      await run('document.body.insertAdjacentHTML("beforeend", "<input id=ccx autocomplete=cc-number><input id=plainx>"); true');
+      const fillRes = await run<{ refused?: string[] }>('PAGE_SCRIPTS.fill([{ selector: "#ccx", value: "4242424242424242" }, { selector: "#plainx", value: "hello" }], false, CREDENTIAL.source, SECRET_AUTOCOMPLETE)');
+      const fieldValues = await run<string>('document.getElementById("ccx").value + "|" + document.getElementById("plainx").value');
+      r.check(`[${ext}] fill refuses a card-number field marked only by autocomplete, and fills the rest`, JSON.stringify(fillRes?.refused) === '["ccx"]' && fieldValues === '|hello', { fillRes, fieldValues });
       await run('document.getElementById("pw").value = "hunter2"; true');
       const snap = await run<{ elements: Item[] }>('PAGE_SCRIPTS.snapshot({})');
       const byLabel = (t: string) => snap.elements.find((e) => e.label.includes(t));

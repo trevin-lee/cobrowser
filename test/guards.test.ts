@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { COMMITTING as SHARED_COMMITTING, CREDENTIAL as SHARED_CREDENTIAL } from '../src/browser/guards';
+import { COMMITTING as SHARED_COMMITTING, CREDENTIAL as SHARED_CREDENTIAL, SECRET_AUTOCOMPLETE as SHARED_SECRET_AUTOCOMPLETE } from '../src/browser/guards';
 
 /**
  * One rule for both browsers the agent drives (src/browser/guards.ts): no clicking a button
@@ -32,6 +32,11 @@ test('both extensions carry exactly the shared patterns', () => {
   for (const { dir, src: source } of EXTENSIONS) {
     assert.equal(patternIn(source, 'COMMITTING').source, SHARED_COMMITTING.source, `${dir}: COMMITTING`);
     assert.equal(patternIn(source, 'CREDENTIAL').source, SHARED_CREDENTIAL.source, `${dir}: CREDENTIAL`);
+    const list = /^const SECRET_AUTOCOMPLETE = (\[.*\]);$/m.exec(source);
+    assert.ok(list, `${dir}: SECRET_AUTOCOMPLETE not found`);
+    assert.deepEqual(JSON.parse(list![1].replace(/'/g, '"')), SHARED_SECRET_AUTOCOMPLETE, `${dir}: SECRET_AUTOCOMPLETE`);
+    // The page-side fill uses the copies passed in, never a pattern of its own.
+    assert.ok(!/^ {4}const CREDENTIAL = \//m.test(source), `${dir}: the page-side fill carries its own CREDENTIAL`);
   }
 });
 
