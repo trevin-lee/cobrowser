@@ -15,7 +15,7 @@ a workspace is bound to; the differences are listed below.
 3. Run **Cobrowser: Bind Chrome Tab Group to This Workspace** and give a group name (or
    `profile` for every tab).
 4. Run **Cobrowser: Copy Bridge URL**, open the extension's toolbar popup, paste the URL under
-   *Endpoints*, save. The URL never changes for that workspace, so this is a one-time step.
+   *Connect a workspace*, save. The URL never changes for that workspace, so this is a one-time step.
 
 Chrome has no writable managed-storage manifest outside enterprise policy, which is why step 4
 is by hand here and automatic in Firefox. The extension carries cobrowser's version; after an

@@ -57,7 +57,7 @@ workspaces, each bound to its own container, share the one add-on. The toolbar b
 many are connected.
 
 If a workspace does not connect, run **Cobrowser: Copy Bridge URL** and paste it into the
-add-on's toolbar popup under *Endpoints*.
+add-on's toolbar popup under *Connect a workspace by hand*.
 
 A workspace drives one browser at a time: binding a Firefox container replaces a Chrome tab
 group binding, and the other way round. Run the command again and choose **Unbind** to stop the
