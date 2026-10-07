@@ -681,11 +681,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return;
       }
       const del = await vscode.window.showInformationMessage(
-        `Cobrowser: imported ${r.count} login${r.count === 1 ? '' : 's'} (${r.added} new, ${r.replaced} replaced), usable in this workspace. The CSV holds the passwords in plain text — delete it?`,
-        'Delete the CSV',
+        `Cobrowser: imported ${r.count} login${r.count === 1 ? '' : 's'} (${r.added} new, ${r.replaced} replaced), usable in this workspace. The CSV holds the passwords in plain text — move it to the Trash?`,
+        'Move the CSV to the Trash',
         'Keep',
       );
-      if (del === 'Delete the CSV') await vscode.workspace.fs.delete(picked[0]);
+      if (del === 'Move the CSV to the Trash') await vscode.workspace.fs.delete(picked[0], { useTrash: true });
     }),
     vscode.commands.registerCommand('cobrowser.disablePasskeys', async () => {
       const exe = electronExecutable({ cacheDir: path.join(context.globalStorageUri.fsPath, 'electron') });

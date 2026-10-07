@@ -1331,8 +1331,7 @@ ipcMain.handle('vault:importCsv', async (_e, { scope } = {}) => {
   if (r.canceled || !r.filePaths[0]) return null;
   await confirmFresh('import logins from a CSV file');
   const res = importCsv(fs.readFileSync(r.filePaths[0], 'utf8'), scope); saveVault();
-  const del = await dialog.showMessageBox(vaultWin, { message: `Imported ${res.count} login${res.count === 1 ? '' : 's'} (${res.added} new, ${res.replaced} replaced).`, detail: 'The CSV holds the passwords in plain text. Delete it now?', buttons: ['Delete the CSV', 'Keep'], defaultId: 0 });
-  if (del.response === 0) fs.rmSync(r.filePaths[0], { force: true });
+  await offerToTrashCsv(r.filePaths[0], `Imported ${res.count} login${res.count === 1 ? '' : 's'} (${res.added} new, ${res.replaced} replaced).`, 'The CSV holds the passwords in plain text. Move it to the Trash?');
   return res;
 });
 ipcMain.handle('vault:exportCsv', () => exportVault(vaultWin));
@@ -1348,8 +1347,7 @@ ipcMain.handle('vault:importCards', async () => {
   const res = store.importCards(vault, fs.readFileSync(file, 'utf8')); saveVault();
   log(`vault: imported ${res.count} card(s) (${res.added} new, ${res.replaced} replaced, ${res.skipped} skipped)`);
   if (!SKIP_BIOMETRICS) {
-    const del = await dialog.showMessageBox(vaultWin, { message: `Imported ${res.count} card${res.count === 1 ? '' : 's'} (${res.added} new, ${res.replaced} updated${res.skipped ? `, ${res.skipped} not valid cards, skipped` : ''}).`, detail: 'The CSV holds the card numbers and codes in plain text. Delete it now?', buttons: ['Delete the CSV', 'Keep'], defaultId: 0 });
-    if (del.response === 0) fs.rmSync(file, { force: true });
+    await offerToTrashCsv(file, `Imported ${res.count} card${res.count === 1 ? '' : 's'} (${res.added} new, ${res.replaced} updated${res.skipped ? `, ${res.skipped} not valid cards, skipped` : ''}).`, 'The CSV holds the card numbers and codes in plain text. Move it to the Trash?');
   }
   return res;
 });
