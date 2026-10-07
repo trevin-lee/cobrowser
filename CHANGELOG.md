@@ -2,6 +2,16 @@
 
 Release notes for earlier versions are on the [GitHub releases page](https://github.com/trevin-lee/cobrowser/releases).
 
+## 0.9.23
+
+### Fixed
+
+- **A crash or a full disk while the vault was being saved could leave it unreadable**, losing every login and card. The vault is now written whole to a temporary file and renamed into place, so the previous vault survives any failed save.
+- **Pressing Escape after an import deleted the CSV.** The vault window's prompt now defaults to Keep, so Escape and Return keep the file, and choosing to remove it moves it to the Trash instead of deleting it outright. The editor's import command moves it to the Trash too.
+- **`upload_file` could click a button that pays or places an order**, the one click the agent leaves to you. It now refuses such a button, as `click` does.
+- **Uploads Without Asking was not read from a folder's own settings in a multi-root window**, and a value in User settings was ignored without a word. The first folder's settings now count, and a value in User settings brings a warning that says where to set it.
+- **The agent was told that you always confirm uploads**, which is not so while Uploads Without Asking is on. It is now told both cases.
+
 ## 0.9.22
 
 ### Added
