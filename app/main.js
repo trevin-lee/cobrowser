@@ -27,6 +27,7 @@ const { parseSite, siteMatches, siteLabel, isIp } = require('./site.js');
 const identity = require('./identity.js');
 const { TabLog } = require('./capture.js');
 const { checkParams } = require('./protocolGuard.js');
+const uploads = require('./uploads.js');
 
 // Overridable so tests can run a second instance beside the real one without clobbering its state.
 const STATE_DIR = process.env.COBROWSER_STATE_DIR || path.join(os.homedir(), '.cobrowser');
@@ -410,6 +411,51 @@ The agent never sees the password. Workspace: ${workspaceId}`,
   log(`vault: request from ${name} for ${entry.username} on ${label}: ${mode}`);
   if (mode === 'denied') return { granted: 'denied', error: `no login for ${label} was granted` };
   return { granted: mode, host: label, username: entry.username };
+}
+
+/** How long confirmed files wait for the picker the agent's click opens. */
+const UPLOAD_ARM_MS = 15000;
+// Test-only: 'accept' or 'deny' answers the upload confirmation. Never set in normal use.
+const TEST_UPLOAD_CONFIRM = SKIP_BIOMETRICS ? process.env.COBROWSER_TEST_UPLOAD_CONFIRM : undefined;
+
+/**
+ * The agent asks to upload files from this Mac to the page (upload_file). The paths are
+ * checked (uploads.js), the human confirms them in a dialog naming the site, and the tab is
+ * armed: the next file picker it opens takes these files instead of asking.
+ */
+async function confirmUpload(tab, paths, workspaceName, ask = true) {
+  const checked = uploads.checkPaths(paths, { home: os.homedir(), refused: [DATA_DIR, STATE_DIR] });
+  if (checked.error) return { error: checked.error };
+  const host = hostOf(tab.win.webContents.getURL());
+  const list = checked.files.map((f) => `${f.shown} (${uploads.formatSize(f.size)})`).join('\n');
+  let ok;
+  if (!ask) {
+    ok = true; // the workspace's cobrowser.uploadsWithoutAsking: the human is told afterwards instead
+  } else if (TEST_UPLOAD_CONFIRM !== undefined) {
+    log(`upload: TEST MODE — upload to ${host} auto-answered "${TEST_UPLOAD_CONFIRM}"`);
+    ok = TEST_UPLOAD_CONFIRM === 'accept';
+  } else {
+    tab.pendingDialogs++;
+    try {
+      focusApp();
+      const { response } = await dialog.showMessageBox({
+        type: 'question',
+        message: `The agent in "${workspaceName}" asks to upload ${checked.files.length === 1 ? 'a file' : `${checked.files.length} files`} to ${host}`,
+        detail: `${list}\n\nAllow only files you mean to send to this site.`,
+        buttons: ['Upload', 'Cancel'], defaultId: 1, cancelId: 1,
+      });
+      ok = response === 0;
+    } finally {
+      tab.pendingDialogs--;
+    }
+  }
+  log(`upload: ${checked.files.length} file(s) to ${host} from ${workspaceName}: ${!ask ? 'allowed without asking' : ok ? 'allowed' : 'declined'}`);
+  if (!ok) return { declined: true, error: 'the human declined the upload' };
+  // The human allowed this site; a page that moved to another while they read does not get them.
+  const now = hostOf(tab.win.webContents.getURL());
+  if (now !== host) return { error: `the page moved from ${host} to ${now} while the human was asked: call upload_file again` };
+  tab.armUpload(checked.files.map((f) => f.path), ask ? undefined : workspaceName);
+  return { armed: checked.files.map((f) => f.name) };
 }
 
 
@@ -1495,6 +1541,8 @@ class Tab {
     this.hoverSession = undefined;
     /** Page dialogs and file pickers shown to the human right now (the page waits on them). */
     this.pendingDialogs = 0;
+    /** Files the human allowed the agent to upload, for the next file picker (armUpload). */
+    this.armedUpload = null;
     /** Recent renderer crashes, so a page that keeps crashing is not reloaded forever. */
     this.crashes = [];
     /** CSS size the panel wants, the render scale (device pixels per CSS px), and the
@@ -1646,6 +1694,28 @@ class Tab {
    * shows the picker itself and hands the files to the <input>.
    */
   async chooseFiles({ mode, backendNodeId }, sessionId) {
+    // The agent's upload_file, already confirmed by the human: those files, no picker.
+    const armed = this.armedUpload;
+    if (armed && !armed.taken && Date.now() < armed.until) {
+      armed.taken = true;
+      if (mode !== 'selectMultiple' && armed.files.length > 1) {
+        return void armed.settle({ error: `this file picker takes one file and ${armed.files.length} were given: upload them one at a time, or find the input that takes several` });
+      }
+      try {
+        await this.win.webContents.debugger.sendCommand('DOM.setFileInputFiles', { files: armed.files, backendNodeId }, sessionId);
+        const names = armed.files.map((f) => path.basename(f));
+        const host = hostOf(this.win.webContents.getURL());
+        // Nobody was asked: say what went where, so no upload happens unseen.
+        if (armed.notifyFor !== undefined && Notification.isSupported()) {
+          new Notification({ title: `Uploaded to ${host}`, body: `${names.join(', ')}, by the agent in "${armed.notifyFor}"`, silent: true }).show();
+        }
+        armed.settle({ uploaded: names, host });
+      } catch (e) {
+        log(`tab ${this.id}: upload: ${e.message}`);
+        armed.settle({ error: `the page's file input did not take the files: ${e.message}` });
+      }
+      return;
+    }
     let files;
     const test = SKIP_BIOMETRICS ? process.env.COBROWSER_TEST_UPLOAD : undefined;
     if (test !== undefined) {
@@ -1663,6 +1733,26 @@ class Tab {
     }
     if (!files.length) return;
     await this.win.webContents.debugger.sendCommand('DOM.setFileInputFiles', { files, backendNodeId }, sessionId).catch((e) => log(`tab ${this.id}: upload: ${e.message}`));
+  }
+
+  /** Hold confirmed files for the next file picker this tab opens. They lapse after a few
+   *  seconds, so a picker the human opens later asks them as always. */
+  armUpload(files, notifyFor) {
+    this.armedUpload?.settle({ error: 'replaced by a newer upload' });
+    let settle;
+    const done = new Promise((resolve) => { settle = resolve; });
+    this.armedUpload = { files, until: Date.now() + UPLOAD_ARM_MS, taken: false, notifyFor, settle, done };
+  }
+
+  /** What became of the armed files: given to a picker, refused by it, or no picker opened. */
+  async uploadOutcome(waitMs) {
+    const armed = this.armedUpload;
+    if (!armed) return { error: 'no upload is waiting on this tab' };
+    let timer;
+    const r = await Promise.race([armed.done, new Promise((resolve) => { timer = setTimeout(() => resolve({ error: 'no file picker opened', noPicker: true }), waitMs); })]);
+    clearTimeout(timer);
+    if (this.armedUpload === armed) this.armedUpload = null;
+    return r;
   }
 
   /** Attach the in-process debugger and put every per-session override in place: identity,
@@ -2393,6 +2483,9 @@ async function handle(ws, state, m) {
       // protocolGuard.js), so the hot-path commands are type-checked here first.
       const bad = checkParams(m.method, m.params);
       if (bad) { log(`tab ${t.id}: refused ${bad}`); return reply({ error: bad }); }
+      // Files reach a page only through a picker: the human's, or upload_file after the human
+      // confirmed the paths (upload.arm). Never straight from the editor.
+      if (m.method === 'DOM.setFileInputFiles') return reply({ error: 'DOM.setFileInputFiles is refused: upload files with upload_file' });
       t.boost();
       // The human's input is routed into out-of-process frames and native <select>s, in
       // order, without waiting on each dispatch (see Tab.queueHuman).
@@ -2420,6 +2513,18 @@ async function handle(ws, state, m) {
       // reattaches a fresh one.
       if (timedOut && !t.win.isDestroyed()) { try { t.win.webContents.debugger.detach(); } catch { /* already gone */ } }
       return;
+    }
+    case 'upload.arm': {
+      const t = w.tabs.get(m.tabId);
+      const reply = (obj) => ws.send(JSON.stringify({ ...obj, requestId: m.requestId }));
+      if (!t || t.win.isDestroyed()) return reply({ error: 'no such tab in this workspace' });
+      try { return reply(await confirmUpload(t, m.files, path.basename(w.id) || w.id, m.ask !== false)); } catch (e) { return reply({ error: e.message || String(e) }); }
+    }
+    case 'upload.outcome': {
+      const t = w.tabs.get(m.tabId);
+      const reply = (obj) => ws.send(JSON.stringify({ ...obj, requestId: m.requestId }));
+      if (!t || t.win.isDestroyed()) return reply({ error: 'no such tab in this workspace' });
+      return reply(await t.uploadOutcome(Math.min(Math.max(Number(m.wait ?? 5000) || 0, 0), 30000)));
     }
     case 'navigate': {
       const t = w.tabs.get(m.tabId);

@@ -18,6 +18,17 @@ const pageId = z
   );
 
 /**
+ * cobrowser.uploadsWithoutAsking, from Workspace settings only: a value in the human's user
+ * settings would turn it on in every workspace at once. Restricted in package.json, so VS Code
+ * also ignores it in a workspace the human has not trusted.
+ */
+function uploadsWithoutAsking(): boolean {
+  if (!vscode.workspace.isTrusted) return false;
+  const v = vscode.workspace.getConfiguration('cobrowser').inspect<boolean>('uploadsWithoutAsking');
+  return (v?.workspaceFolderValue ?? v?.workspaceValue) === true;
+}
+
+/**
  * Register the cobrowser tool surface onto a fresh McpServer. Tool names/params mirror
  * chrome-devtools-mcp so the agent experience is consistent. Every handler routes through
  * `session.run()` so agent actions serialize against human (webview) actions.
@@ -185,7 +196,7 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'click',
     {
       description:
-        'Click an element by uid (from take_snapshot; valid while the element exists) OR a CSS selector. A real input click (the cursor moves there, presses, releases) that frameworks (React etc.) accept as genuine — unlike element.click() from evaluate_script, which fires untrusted events sites may ignore. Check the outcome with read_page, not a fresh full snapshot. If the click opens a page dialog (confirm, prompt) or a file picker, it is shown to the human and the click waits for their answer. REFUSES buttons that pay or place an order (it reports the button instead of clicking), since the human owns that click; pass allowPayment only if they asked you to complete that payment.',
+        'Click an element by uid (from take_snapshot; valid while the element exists) OR a CSS selector. A real input click (the cursor moves there, presses, releases) that frameworks (React etc.) accept as genuine — unlike element.click() from evaluate_script, which fires untrusted events sites may ignore. Check the outcome with read_page, not a fresh full snapshot. If the click opens a page dialog (confirm, prompt) or a file picker, it is shown to the human and the click waits for their answer (to attach files yourself, use upload_file). REFUSES buttons that pay or place an order (it reports the button instead of clicking), since the human owns that click; pass allowPayment only if they asked you to complete that payment.',
       inputSchema: { uid: z.string().optional(), selector: z.string().optional(), dblClick: z.boolean().optional(), allowPayment: z.boolean().optional(), pageId },
     },
     async ({ uid, selector, dblClick, allowPayment, pageId: id }) => {
@@ -197,6 +208,25 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
           ? `clicked ${JSON.stringify(r.clicked)}, but nothing on the page changed within half a second — it may have missed its target or the page may still be working. Check with read_page or take_snapshot before repeating it.`
           : `clicked ${JSON.stringify(r.clicked)}`,
       );
+    },
+  );
+
+  server.registerTool(
+    'upload_file',
+    {
+      description:
+        "Attach files from this Mac to the page: a résumé to a job application, a document to a form. Target the file input itself (by uid, or selector \"input[type=file]\": hidden inputs work) OR the button that opens a file picker (\"Upload\", \"Attach\", \"Choose file\"), by uid or selector. The human confirms the files and the site in the cobrowser app first, so this waits for them (unless they turned confirmation off for this workspace). filePaths are absolute (or start with ~/) and literal: no wildcards, no folders. Several files go in one call when the picker takes several; otherwise upload them one at a time. Hidden files and folders, ~/Library (apart from iCloud Drive and cloud-storage folders) and cobrowser's own data are always refused. Check the page with read_page afterwards: many sites upload on change and show the file once it is in.",
+      inputSchema: {
+        uid: z.string().optional(),
+        selector: z.string().optional(),
+        filePaths: z.array(z.string()).min(1).describe('Absolute paths of the files to attach, e.g. ["~/Documents/resume.pdf"]'),
+        pageId,
+      },
+    },
+    async ({ uid, selector, filePaths, pageId: id }) => {
+      const s = await getSession();
+      const r = await s.run(() => s.uploadFile({ uid, selector, filePaths, pageId: id, ask: !uploadsWithoutAsking() }), id);
+      return asText(r.uploaded ? `uploaded ${r.uploaded.join(', ')} to ${r.host}` : JSON.stringify(r, null, 2));
     },
   );
 

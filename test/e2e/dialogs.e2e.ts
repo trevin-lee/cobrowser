@@ -4,6 +4,7 @@
 import { suite, launch, serve, html, sleep, humanClick, humanKey, onScreenWindows, averageCpu, scratchDir, selfSignedCert, withTimeout } from './harness';
 import * as fs from 'node:fs';
 import * as https from 'node:https';
+import * as os from 'node:os';
 import * as path from 'node:path';
 
 suite('dialogs', async (r) => {
@@ -16,6 +17,12 @@ suite('dialogs', async (r) => {
     if (q.url === '/popup') p = html(`<title>popup</title><script>document.title='opener:'+!!window.opener+' cookie:'+document.cookie; if (window.opener) window.opener.postMessage('signed-in','*'); setTimeout(()=>window.close(), 1500)</script>`);
     else if (q.url === '/report.txt') p = [200, { 'content-type': 'text/plain', 'content-disposition': 'attachment; filename="report.txt"' }, 'report'];
     else if (q.url === '/frame') p = html(`<body style="margin:0;background:#eef"><input id=ff type=file style="position:absolute;left:10px;top:10px;width:200px;height:30px"><script>document.getElementById('ff').addEventListener('change',(e)=>parent.postMessage({frameFiles:[...e.target.files].map(f=>f.name)},'*'));</script></body>`);
+    else if (q.url === '/upload') p = html(`<title>upload</title><body>
+<button id=styled style="position:absolute;left:20px;top:20px;width:140px;height:30px" onclick="document.getElementById('hidden').click()">Upload new</button>
+<input id=hidden type=file multiple style="display:none">
+<input id=single type=file style="position:absolute;left:20px;top:70px;width:220px;height:30px">
+<button id=nothing style="position:absolute;left:20px;top:120px;width:140px;height:30px">Does nothing</button>
+<script>window.__up={};for(const id of ['hidden','single'])document.getElementById(id).addEventListener('change',(e)=>window.__up[id]=[...e.target.files].map(f=>f.name+':'+f.size));</script></body>`);
     else if (q.url === '/leave') p = html(`<title>leave</title><button id=b style="position:absolute;left:10px;top:10px;width:100px;height:30px">b</button><script>addEventListener('beforeunload',(e)=>{e.preventDefault();e.returnValue='x';})</script>`);
     else if (q.url === '/spin') p = html('<style>div{width:300px;height:300px;background:linear-gradient(red,blue);animation:s 1s linear infinite}@keyframes s{to{transform:rotate(360deg)}}</style><div></div>');
     else if (q.url === '/fs') p = html(`<title>fs</title><body style="margin:0"><button id=b style="position:absolute;left:10px;top:10px;width:120px;height:40px">fullscreen</button><div id=v style="position:absolute;left:0;top:60px;width:200px;height:100px;background:#36c"></div><script>window.__ev=[];document.getElementById('b').onclick=()=>{document.getElementById('v').requestFullscreen().then(()=>window.__ev.push('resolved'),(e)=>window.__ev.push('rejected:'+e.name))};document.addEventListener('fullscreenchange',()=>window.__ev.push('change:'+!!document.fullscreenElement));</script></body>`);
@@ -39,7 +46,7 @@ document.getElementById('file').addEventListener('change',(e)=>window.__files=[.
   await new Promise<void>((res) => tls.listen(0, '127.0.0.1', res));
   const tlsBase = `https://localhost:${(tls.address() as { port: number }).port}`;
 
-  const L = await launch({ env: { COBROWSER_TEST_DIALOG: 'accept', COBROWSER_TEST_UPLOAD: UP, COBROWSER_DOWNLOADS_DIR: DL, COBROWSER_TEST_CERT: 'accept', COBROWSER_TEST_LOGIN: 'alice:secret' } });
+  const L = await launch({ env: { COBROWSER_TEST_DIALOG: 'accept', COBROWSER_TEST_UPLOAD: UP, COBROWSER_TEST_UPLOAD_CONFIRM: 'deny', COBROWSER_DOWNLOADS_DIR: DL, COBROWSER_TEST_CERT: 'accept', COBROWSER_TEST_LOGIN: 'alice:secret' } });
   const { conn, session: s, app } = L;
   const pid = app.pid!;
   try {
@@ -75,6 +82,34 @@ document.getElementById('file').addEventListener('change',(e)=>window.__files=[.
     await humanClick(conn, tabId, 360, 45); await sleep(800);
     const fm = (await s.evaluateScript('() => window.__msgs', [], main.pageId)) as unknown[];
     r.check('a file input inside a cross-site iframe gets the file too', fm.some((m) => JSON.stringify(m) === '{"frameFiles":["e2e-upload.txt"]}'), fm);
+
+    // upload_file: the agent names the files, the human confirms (here: declines every time),
+    // or the workspace lets it upload without asking; the picker the target opens takes them
+    const UP2 = path.join(path.dirname(UP), 'e2e-cover.txt');
+    fs.writeFileSync(UP2, 'cover letter');
+    const upPage = await s.run(() => s.newPage(`${srv.base}/upload`));
+    const up = (o: { uid?: string; selector?: string; filePaths: string[] }, ask = false) => s.run(() => s.uploadFile({ ...o, pageId: upPage.pageId, ask }), upPage.pageId);
+    const got = async () => JSON.stringify(await s.evaluateScript('() => window.__up', [], upPage.pageId));
+    const declined = await up({ selector: '#single', filePaths: [UP] }, true);
+    r.check('an upload the human declines attaches nothing', declined.declined === true && (await got()) === '{}', { declined, page: await got() });
+    const styled = await up({ selector: '#styled', filePaths: [UP, UP2] });
+    r.check('upload_file through a styled button that opens a hidden multi-file input', JSON.stringify(styled.uploaded) === '["e2e-upload.txt","e2e-cover.txt"]' && (await got()).includes('"hidden":["e2e-upload.txt:9","e2e-cover.txt:12"]'), { styled, page: await got() });
+    const single = await up({ selector: '#single', filePaths: [UP2] });
+    r.check('upload_file straight into a file input', !!single.uploaded && (await got()).includes('"single":["e2e-cover.txt:12"]'), { single, page: await got() });
+    const two = await up({ selector: '#single', filePaths: [UP, UP2] });
+    r.check('a single-file input refuses two files before the human is asked', /takes one file/.test(two.error ?? ''), two);
+    const nothing = await up({ selector: '#nothing', filePaths: [UP] });
+    r.check('a click that opens no picker says so and points at the file inputs', /did not open a file picker.*2 file inputs/.test(nothing.error ?? ''), nothing);
+    const hidden = await up({ selector: '#single', filePaths: [path.join(os.homedir(), '.ssh', 'known_hosts')] });
+    r.check('a hidden file is refused whatever the human would say', /refused|no such file/.test(hidden.error ?? '') && !(await got()).includes('known_hosts'), hidden);
+    const raw = await conn.cdp((await conn.listTabs()).find((t) => t.url.endsWith('/upload'))!.tabId, 'DOM.setFileInputFiles', { files: [UP], backendNodeId: 1 }).then(() => 'sent', (e: Error) => e.message);
+    r.check('the editor cannot set files on an input directly', /refused/.test(raw), raw);
+    r.check('a picker the human opens later still asks them (nothing stays armed)', await (async () => {
+      await s.evaluateScript('() => { window.__up = {}; }', [], upPage.pageId);
+      await humanClick(conn, (await conn.listTabs()).find((t) => t.url.endsWith('/upload'))!.tabId, 120, 85); await sleep(600);
+      return (await got()) === '{"single":["e2e-upload.txt:9"]}'; // COBROWSER_TEST_UPLOAD, the human's picker
+    })(), await got());
+    await s.run(() => s.closePage(upPage.pageId));
 
     // downloads land in the folder without a dialog, never overwriting
     await s.run(() => s.click({ selector: '#dl', pageId: main.pageId }), main.pageId); await sleep(800);

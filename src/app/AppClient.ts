@@ -294,6 +294,18 @@ export class AppConnection {
     return r.card as PublicCard;
   }
   /** Fill a saved card into a tab's card fields, after the person confirms (every time). */
+  /** Check files for upload_file and ask the human to confirm them (or, with ask false, tell
+   *  them once the files are in); then the tab's next file picker takes them. Waits for the
+   *  human's answer. */
+  async uploadArm(tabId: string, files: string[], ask = true): Promise<{ armed?: string[]; declined?: boolean; error?: string }> {
+    return (await this.request({ type: 'upload.arm', tabId, files, ask }, 300000)) as { armed?: string[]; declined?: boolean; error?: string };
+  }
+
+  /** What became of the armed files: given to the picker the click opened, or not. */
+  async uploadOutcome(tabId: string, wait = 5000): Promise<{ uploaded?: string[]; host?: string; error?: string; noPicker?: boolean }> {
+    return (await this.request({ type: 'upload.outcome', tabId, wait }, wait + 5000)) as { uploaded?: string[]; host?: string; error?: string; noPicker?: boolean };
+  }
+
   async vaultFillCard(tabId: string, card: string | undefined, by: 'human' | 'agent'): Promise<{ filled: string[]; card?: string; last4?: string; error?: string; cards?: string[] }> {
     return (await this.request({ type: 'vault.fillCard', tabId, card, by }, 180000)) as unknown as { filled: string[]; card?: string; last4?: string; error?: string; cards?: string[] };
   }

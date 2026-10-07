@@ -213,6 +213,12 @@
           "scope": "application",
           "description": "The colour of what concerns the agent: its highlight in a browser tab, the frame it draws on tabs in your own Chrome or Firefox, and selection and the agent's switches in the vault. Cobalt (#2b5bff) by default. The logo keeps its own colours."
         },
+        "cobrowser.uploadsWithoutAsking": {
+          "type": "boolean",
+          "default": false,
+          "restricted": true,
+          "markdownDescription": "Let the agent upload files in this workspace without asking you first (`upload_file`). Read from **Workspace** settings only, so it is never on everywhere at once, and ignored in an untrusted workspace. Each upload still shows a notification naming the files and the site, and hidden files and folders, `~/Library` (apart from iCloud Drive and cloud-storage folders) and cobrowser's own data are still refused."
+        },
         "cobrowser.autoFallbackPasskeys": {
           "type": "boolean",
           "default": true,

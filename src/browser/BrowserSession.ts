@@ -6,6 +6,7 @@ import { COMMITTING, CREDENTIAL, SECRET_AUTOCOMPLETE, credentialRefusal, payment
 /** What click reports: what it clicked (and whether the page visibly reacted), or why it did
  *  not (see guards.ts). */
 export type ClickResult = { clicked: string; noVisibleEffect?: boolean } | ReturnType<typeof paymentRefusal>;
+export type UploadResult = { uploaded?: string[]; host?: string; error?: string; declined?: boolean };
 
 /** In-page: watch for DOM changes around a click, so one the page ignored is reported rather
  *  than assumed to have worked. Kept under a Symbol.for key, off the page's own names. */
@@ -647,6 +648,51 @@ export class BrowserSession {
     await delay(400);
     const effect = await p.evaluate<{ changed: boolean }>(EFFECT_READ).catch(() => ({ changed: true }));
     return { clicked: box.label || opts.selector || `uid ${opts.uid}`, ...(effect.changed ? {} : { noVisibleEffect: true }) };
+  }
+
+  /**
+   * Upload files from this Mac into a file input, or through the picker a button opens. The app
+   * checks the paths and the human confirms them (unless `ask` is false: the workspace's
+   * cobrowser.uploadsWithoutAsking, and the app then notifies them of each upload); then a file input is clicked from script (a
+   * hidden one cannot take a real click) and anything else gets a real click, and the picker
+   * that opens takes the files instead of showing.
+   */
+  async uploadFile(opts: Target & OnPage & { filePaths: string[]; ask?: boolean }): Promise<UploadResult> {
+    this.markAgent();
+    const p = this.pageFor(opts.pageId);
+    const selector = this.selectorFor(opts);
+    const el = await p.evaluate<{ count: number; fileInput: boolean; multiple: boolean; inputs: number }>(
+      `(sel) => { ${FIND_JS}
+        const hits = find(sel); const el = hits[0];
+        const fileInput = el instanceof HTMLInputElement && el.type === 'file';
+        return { count: hits.length, fileInput, multiple: fileInput && el.multiple, inputs: find('input[type=file]').length };
+      }`,
+      selector,
+    );
+    if (!el.count) await this.locate(p, opts); // throws the "uid is gone" / "no element" guidance
+    // Known before the human is asked: a single-file input cannot take several.
+    if (el.fileInput && !el.multiple && opts.filePaths.length > 1) {
+      return { error: `that file input takes one file and ${opts.filePaths.length} were given: upload them one at a time, or find the input that takes several` };
+    }
+    const armed = await this.app.uploadArm(p.tabId, opts.filePaths, opts.ask !== false);
+    if (!armed.armed) return { error: armed.error ?? 'the upload was not allowed', ...(armed.declined ? { declined: true } : {}) };
+    try {
+      if (el.fileInput) {
+        await p.cdp('Runtime.evaluate', { expression: `(() => { ${FIND_JS} find(${JSON.stringify(selector)})[0].click(); })()`, userGesture: true });
+      } else {
+        await this.pressBox(p, await this.locate(p, opts), false);
+      }
+    } catch (e) {
+      await this.app.uploadOutcome(p.tabId, 0).catch(() => undefined); // disarm: no later picker gets them
+      throw e;
+    }
+    const r = await this.app.uploadOutcome(p.tabId);
+    if (r.noPicker) {
+      return {
+        error: `clicking ${opts.uid ? `uid ${opts.uid}` : opts.selector} did not open a file picker.${el.inputs ? ` The page has ${el.inputs} file input${el.inputs === 1 ? '' : 's'}: pass one as selector "input[type=file]" (hidden ones work too).` : ''}`,
+      };
+    }
+    return r;
   }
 
   /** Move to an element and click it (the input half of click, without its rule). */
