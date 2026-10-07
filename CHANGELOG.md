@@ -2,6 +2,27 @@
 
 Release notes for earlier versions are on the [GitHub releases page](https://github.com/trevin-lee/cobrowser/releases).
 
+## 0.9.24
+
+### Changed
+
+- **Once any tab has an owner, every agent call must say which tab** (`pageId`). Before, that started at two owners, which let a main agent without an owner and one named subagent act in each other's tabs. Closing the tabs of finished tasks lifts it.
+- **A site's zoom is remembered per workspace**, like its cookies and permissions. Zoom set before this keeps applying until you zoom the site in a workspace.
+
+### Fixed
+
+- **⌘X, ⌘Z and ⌘⇧Z work in the panel**, and ⌘C copies text selected in a field, not only on the page. The right-click menu has Cut.
+- **A saved password is typed only into a password field**, never into a text field where a screenshot would show it.
+- **The bridge refuses card fields marked only by their autocomplete type**, as the panel does.
+- **A Chrome tab group that is closed when the bridge connects comes back** on the agent's next new tab, instead of the workspace refusing every call until the group is recreated.
+- **The bridges keep the agent's tabs, the request count and the one-minute pause** when Firefox updates the add-on or Chrome restarts its service worker.
+- **Bind Chrome Tab Group no longer unbinds Firefox** when its box is left empty.
+- **The vault window says what an import or export did** even with nothing selected.
+- **A mistake in a card (number, expiry, a card already saved) is reported before Touch ID**, not after.
+- **`get_activity` credits the agent** for `type_text`, `evaluate_script` and `close_page`.
+- **The extension package carries only what it uses**: 34 files instead of 72.
+- Turn Off Passkeys and the README no longer promise a password fallback while `cobrowser.autoFallbackPasskeys` is off.
+
 ## 0.9.23
 
 ### Fixed
