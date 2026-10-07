@@ -48,14 +48,15 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  */
 let restored;
 function restoreSession() {
-  restored ||= api.storage.session.get(['requestCount', 'agentTabs']).then((s) => {
+  restored ||= api.storage.session.get(['requestCount', 'agentTabs', 'backoffUntil']).then((s) => {
     requestCount = Math.max(requestCount, Number(s.requestCount) || 0);
+    backoffUntil = Math.max(backoffUntil, Number(s.backoffUntil) || 0);
     for (const id of s.agentTabs || []) agentTabs.add(id);
   }, () => undefined);
   return restored;
 }
 function persistSession() {
-  void api.storage.session.set({ requestCount, agentTabs: [...agentTabs] }).catch(() => undefined);
+  void api.storage.session.set({ requestCount, agentTabs: [...agentTabs], backoffUntil }).catch(() => undefined);
 }
 
 /** Called before anything that reaches a site. Throws rather than silently proceeding. */
@@ -89,7 +90,7 @@ function noteRefusal(status, bodyText) {
     status === 429 ||
     status === 403 ||
     /captcha|are you a robot|unusual traffic|access denied/i.test(String(bodyText || '').slice(0, 2000));
-  if (challenged) backoffUntil = Date.now() + BACKOFF_ON_REFUSAL_MS;
+  if (challenged) { backoffUntil = Date.now() + BACKOFF_ON_REFUSAL_MS; persistSession(); }
   return challenged;
 }
 
@@ -1045,10 +1046,8 @@ api.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg && msg.type === 'accent') return reply(markColor);
   if (msg && msg.type === 'resetCap') {
     if (!fromOptionsPage(_sender)) return reply({ error: 'refused: only the Cobrowser Bridge page can reset the request cap' });
-    requestCount = 0;
-    backoffUntil = 0;
-    persistSession();
-    return reply(usage());
+    // After the restore, or a restore still on its way would bring the old count back.
+    return reply(restoreSession().then(() => { requestCount = 0; backoffUntil = 0; persistSession(); return usage(); }));
   }
   return false;
 });

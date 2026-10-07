@@ -91,7 +91,8 @@ behind a login. Cross-origin is refused.
 ## Pace, and what it will not do
 
 Everything that reaches a site waits 1 to 3 seconds, stops at 100 requests in a browser
-session, and pauses for a minute when a site answers `bridge_fetch` with 429 or 403 or a challenge. Hitting
+session, and pauses for a minute when a site answers `bridge_fetch` with 429 or 403 or a challenge. The
+count, the pause and which tabs the agent opened survive the add-on updating itself. Hitting
 the cap is a stop, not a retry: the agent is told to report back. The toolbar popup shows the
 count and has a **Reset** button; only that page can reset it, not a script in a tab.
 

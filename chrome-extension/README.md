@@ -37,8 +37,8 @@ logins. The group limits what the agent can *reach*, not what the browser *knows
 
 Everything that reaches a site waits 1 to 3 seconds, stops at 100 requests in a browser
 session, and pauses for a minute when a site answers `bridge_fetch` with 429 or 403 or a
-challenge. The count survives
-Chrome stopping and restarting the extension's service worker. The toolbar popup shows it and
+challenge. The count, the pause and which tabs the agent opened survive Chrome stopping and
+restarting the extension's service worker. The toolbar popup shows it and
 has a **Reset** button; only that page can reset it, not a script in a tab.
 
 ## Differences from the Firefox add-on
