@@ -125,7 +125,7 @@ The browser runs as a menu-bar app named cobrowser, with its own icon. The Elect
 
 The menu-bar icon lists each workspace and its tab count, and quits the app. Quitting closes every workspace's tabs; the next panel or tool call starts it again, and each editor window reopens the tabs it had, each still the agent's or yours. **Cobrowser: Restart Browser** does the same for this workspace alone: its tabs close and reopen, and other workspaces are untouched.
 
-In a panel, the usual browser keys work: ⌘T new tab, ⌘W close, ⌘R reload, ⌘L the address bar, ⌘[ and ⌘] back and forward. ⌥← and ⌥→ are left to the text you are typing, as everywhere on a Mac.
+In a panel, the usual browser keys work: ⌘T new tab, ⌘W close, ⌘R reload, ⌘L the address bar, ⌘[ and ⌘] back and forward, ⌘+, ⌘− and ⌘0 zoom, and the edit keys: ⌘C, ⌘X and ⌘V (through your Mac's clipboard), ⌘A, ⌘Z and ⌘⇧Z. ⌥← and ⌥→ are left to the text you are typing, as everywhere on a Mac.
 
 Each workspace's browser keeps its own cookies, sign-ins, site data and permissions. **Cobrowser: Clear Browsing Data for This Workspace** signs it out of everything (open tabs stay open; the vault and permissions are kept). **Cobrowser: Forget Another Workspace's Browser** deletes another workspace's tabs, browsing data and permissions, for a project you are done with; its logins stay in the vault.
 

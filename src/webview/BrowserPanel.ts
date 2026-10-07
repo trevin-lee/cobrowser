@@ -6,6 +6,7 @@ import type { BrowserSession, ElementBox } from '../browser/BrowserSession';
 import type { AppConnection, ScreenInfo } from '../app/AppClient';
 import { DEFAULT_TAB_TITLE_MAX, fullTabTitle, tabLabel } from './tabTitle';
 import { resolveAddress } from '../browser/address';
+import { SELECTION_JS, pressEditKey, type Selection } from '../browser/editing';
 
 /** Default ceiling on rendered pixels per frame (cobrowser.renderBudgetMegapixels). Measured
  *  on an M4 Pro: the app's JPEG encode holds 24fps at 8.2Mpx (a full-height retina laptop
@@ -435,29 +436,35 @@ export class BrowserPanel {
               expression: `(() => {
                 const el = document.elementFromPoint(${Number(p.x) || 0}, ${Number(p.y) || 0});
                 const a = el && el.closest ? el.closest('a[href]') : null;
-                return JSON.stringify({ sel: String(window.getSelection() || ''), link: a ? a.href : null });
+                return JSON.stringify({ sel: ${SELECTION_JS}, link: a ? a.href : null });
               })()`,
               returnByValue: true,
             });
-            const info = JSON.parse(result?.value ?? '{}') as { sel?: string; link?: string | null };
+            const info = JSON.parse(result?.value ?? '{}') as { sel?: Selection; link?: string | null };
             void this.panel.webview.postMessage({
               type: 'extension.contextmenu',
               at: { clientX: p.clientX ?? 0, clientY: p.clientY ?? 0 },
-              hasSelection: !!info.sel,
+              hasSelection: !!info.sel?.text,
+              canCut: !!info.sel?.editable,
               link: info.link ?? null,
             });
             break;
           }
-          case 'extension.copy': {
-            // Copy the page's selection to the OS clipboard. The headless browser's own
-            // clipboard is sandboxed away from the OS — route through vscode.env.
-            const { result } = await this.page.cdp<{ result: { value?: string } }>('Runtime.evaluate', {
-              expression: 'String(window.getSelection() || "")',
-              returnByValue: true,
-            });
-            if (result?.value) await vscode.env.clipboard.writeText(result.value);
+          case 'extension.copy':
+          case 'extension.cut': {
+            // The page's selection (a field's included) to the OS clipboard, through the editor,
+            // which owns the clipboard the human pastes from. Cutting then removes it from the field.
+            const { result } = await this.page.cdp<{ result: { value?: Selection } }>('Runtime.evaluate', { expression: SELECTION_JS, returnByValue: true });
+            const sel = result?.value;
+            if (!sel?.text) break;
+            await vscode.env.clipboard.writeText(sel.text);
+            if (m.type === 'extension.cut' && sel.editable) await pressEditKey((method, params) => this.page.humanInput(method, params), 'cut');
             break;
           }
+          case 'extension.undo':
+          case 'extension.redo':
+            await pressEditKey((method, params) => this.page.humanInput(method, params), m.type === 'extension.undo' ? 'undo' : 'redo');
+            break;
           case 'extension.paste': {
             const text = await vscode.env.clipboard.readText();
             if (text) await this.page.cdp('Input.insertText', { text });

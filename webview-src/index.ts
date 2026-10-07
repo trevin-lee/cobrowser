@@ -94,6 +94,7 @@ window.addEventListener('message', (event: MessageEvent) => {
     showMenu(
       (m.at ?? { clientX: 0, clientY: 0 }) as { clientX: number; clientY: number },
       !!m.hasSelection,
+      !!m.canCut,
       (m.link ?? null) as string | null,
     );
     return;
@@ -265,12 +266,13 @@ window.addEventListener('keydown', (e) => {
 
 type MenuEntry = { label: string; action: () => void; enabled?: boolean } | 'sep';
 
-function showMenu(at: { clientX: number; clientY: number }, hasSelection: boolean, link: string | null): void {
+function showMenu(at: { clientX: number; clientY: number }, hasSelection: boolean, canCut: boolean, link: string | null): void {
   const items: MenuEntry[] = [
     { label: 'Back', action: () => fire('extension.back') },
     { label: 'Forward', action: () => fire('extension.forward') },
     { label: 'Reload', action: () => fire('extension.reload') },
     'sep',
+    { label: 'Cut', action: () => fire('extension.cut'), enabled: canCut },
     { label: 'Copy', action: () => fire('extension.copy'), enabled: hasSelection },
     { label: 'Paste', action: () => fire('extension.paste') },
     { label: 'Select All', action: () => fire('extension.selectall') },
@@ -340,7 +342,11 @@ stage.addEventListener('keydown', (e) => {
     if (e.key === '0') { e.preventDefault(); fire('extension.zoom', { dir: 'reset' }); return; }
     // Clipboard/selection parity: the headless browser's clipboard is sandboxed away
     // from the OS, so copy must be routed through the host (paste already is, below).
-    if (e.key === 'c') { e.preventDefault(); fire('extension.copy'); return; }
+    if (k === 'c') { e.preventDefault(); fire('extension.copy'); return; }
+    // An offscreen page has no Edit menu to turn these keystrokes into editing commands, so
+    // the host sends each with its command (src/browser/editing.ts).
+    if (k === 'x') { e.preventDefault(); fire('extension.cut'); return; }
+    if (k === 'z') { e.preventDefault(); fire(e.shiftKey ? 'extension.redo' : 'extension.undo'); return; }
     if (e.key === 'a') { e.preventDefault(); fire('extension.selectall'); return; }
   }
   e.preventDefault();
