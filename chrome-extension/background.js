@@ -274,9 +274,10 @@ async function resolveScope(name) {
   if (/^(profile|default|\*)$/i.test(wanted)) return PROFILE;
   const groups = await api.tabGroups.query({});
   const hit = groups.find((g) => (g.title || '').toLowerCase() === wanted.toLowerCase());
-  if (!hit) {
-    throw new Error(`no tab group named "${wanted}" (have: ${groups.map((g) => g.title || '(untitled)').join(', ') || 'none'} — or bind the workspace to "profile")`);
-  }
+  // Not open now (Chrome removes a group with its last tab): bound all the same, as closed, so
+  // the agent's next new tab starts it under this name. Every reconnect comes through here, so
+  // refusing would strand the workspace until someone recreated the group by hand.
+  if (!hit) return { name: wanted, groupId: -1, cookieStoreId: 'chrome-group-closed', color: null, closed: true };
   return { name: hit.title, groupId: hit.id, cookieStoreId: `chrome-group-${hit.id}`, color: hit.color };
 }
 

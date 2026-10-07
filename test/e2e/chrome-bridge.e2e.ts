@@ -112,11 +112,20 @@ suite('chrome-bridge', async (r) => {
       const fresh = await dispatch(conn, 'newTab', { url: ${JSON.stringify(srv.base + '/n')}, active: false });
       const after = await dispatch(conn, 'listTabs', {});
       const group = await chrome.tabGroups.get(conn.scope.groupId);
-      return { names, before, goneTabs: gone.tabs.length, note: gone.note, after: after.tabs.length, title: group.title, inGroup: after.tabs.some((x) => x.tabId === fresh.tabId) };
+      // A reconnect while the group is closed (a window reload, a daemon restart): bound, as closed.
+      await chrome.tabs.remove(fresh.tabId);
+      await new Promise((ok) => setTimeout(ok, 300));
+      const re = { scope: await resolveScope('Work') };
+      const reGone = await dispatch(re, 'listTabs', {});
+      const reFresh = await dispatch(re, 'newTab', { url: ${JSON.stringify(srv.base + '/r')}, active: false });
+      const reGroup = await chrome.tabGroups.get(re.scope.groupId);
+      return { names, before, goneTabs: gone.tabs.length, note: gone.note, after: after.tabs.length, title: group.title, inGroup: after.tabs.some((x) => x.tabId === fresh.tabId),
+        reTabs: reGone.tabs.length, reNote: reGone.note, reTitle: reGroup.title, reIn: (await dispatch(re, 'listTabs', {})).tabs.some((x) => x.tabId === reFresh.tabId) };
     })()`);
     const gv = grouped.value ?? {};
     r.check('the scopes are listed by the names the bind command takes: profile, a group\'s title, and an untitled group as none', JSON.stringify(gv.names) === JSON.stringify(['profile', 'Work', null]), grouped);
     r.check('a closed tab group lists no tabs and says why, and the next new tab starts it again under its name', gv.before === 1 && gv.goneTabs === 0 && /not open in Chrome/.test(String(gv.note)) && gv.after === 1 && gv.title === 'Work' && gv.inGroup === true, grouped);
+    r.check('binding to a tab group that is closed when the bridge connects works too: the next new tab starts it', gv.reTabs === 0 && /not open in Chrome/.test(String(gv.reNote)) && gv.reTitle === 'Work' && gv.reIn === true, grouped);
     // The toolbar popup's page, in Chrome itself: it loads and shows the bridge's own state.
     await run(`chrome.tabs.create({ url: chrome.runtime.getURL('options.html') }).then(() => 1)`);
     let popup: { webSocketDebuggerUrl: string } | undefined;
