@@ -55,16 +55,18 @@ function currentToken(): string | undefined {
 const registry = new Registry(
   undefined,
   () => {
-    toolCache = undefined; // membership changed: a new window may run a different build
+    toolCache.clear(); // membership changed: a new window may run a different build
   },
   // Beside the daemon token, so known workspaces survive a restart of this process; named after
   // it, so a development daemon (dev-daemon-token) keeps its own list.
   path.join(path.dirname(TOKEN_FILE), `${path.basename(TOKEN_FILE).replace(/daemon-token$/, '')}known-workspaces.json`),
 );
-/** Upstream tools are identical in every window, so fetch them once. Cleared whenever the
- *  registry changes, since a new window may be running a different build. Stored RAW: the
- *  `workspace` parameter is injected per caller, and a workspace-scoped caller never sees it. */
-let toolCache: Tool[] | undefined;
+/** Each window's tools, by workspace id. Usually identical, but not while windows run different
+ *  builds (an update that only some windows have reloaded into), and a workspace's agent must
+ *  see what ITS window serves, since every call goes there. Cleared whenever the registry
+ *  changes. Stored RAW: the `workspace` parameter is injected per caller, and a
+ *  workspace-scoped caller never sees it. */
+const toolCache = new Map<string, Tool[]>();
 let lastOccupied = Date.now();
 
 const log = (m: string): void => console.log(`[cobrowserd] ${m}`);
@@ -127,24 +129,32 @@ const INSTRUCTIONS = `cobrowser is a real browser inside the human's editor, sha
 - Sign in with fill_credentials (and request_credential when a login is not available here), pay with fill_card: you never see passwords or card numbers, and the human confirms card fills. Do not click a button that pays or places an order unless the human asked you to complete it.
 - When a page misbehaves, list_console_messages and list_network_requests show its errors.`;
 
-/** The tool surface exactly as a window publishes it (or last published it). */
-let toolsInFlight: Promise<Tool[]> | undefined;
-async function rawTools(): Promise<Tool[]> {
-  if (toolCache) return toolCache;
+/** The tool surface exactly as a window publishes it (or last published it): the caller's own
+ *  window when it is bound to one, else the first window that answers. */
+const toolsInFlight = new Map<string, Promise<Tool[]>>();
+async function rawTools(own?: Registration): Promise<Tool[]> {
+  const key = own?.id ?? '';
+  const cached = toolCache.get(key);
+  if (cached) return cached;
   // Several clients can ask for tools/list at once; without this they each hit a window.
-  if (toolsInFlight) return toolsInFlight;
-  toolsInFlight = fetchRawTools().finally(() => (toolsInFlight = undefined));
-  return toolsInFlight;
+  const pending = toolsInFlight.get(key);
+  if (pending) return pending;
+  const p = fetchRawTools(own).finally(() => toolsInFlight.delete(key));
+  toolsInFlight.set(key, p);
+  return p;
 }
 
-async function fetchRawTools(): Promise<Tool[]> {
-  if (toolCache) return toolCache;
-  for (const reg of registry.list()) {
+async function fetchRawTools(own?: Registration): Promise<Tool[]> {
+  const key = own?.id ?? '';
+  const live = registry.list();
+  const self = own && live.find((r) => r.id === own.id);
+  for (const reg of self ? [self, ...live.filter((r) => r !== self)] : live) {
     try {
       const result = (await callUpstream(reg, 'tools/list', {}, { version: VERSION })) as { tools?: Tool[] };
-      toolCache = result.tools ?? [];
-      saveTools(toolCache);
-      return toolCache;
+      const tools = result.tools ?? [];
+      toolCache.set(key, tools);
+      saveTools(tools);
+      return tools;
     } catch (e) {
       log(`tools/list failed against ${reg.name}: ${String(e)}`);
     }
@@ -213,7 +223,7 @@ function buildServer(scope: Registration | undefined): Server {
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
-    const raw = await rawTools();
+    const raw = await rawTools(scope);
     // bridge_* tools are always listed: a client reads the list once, when it connects, so
     // tools that appeared only after binding would never reach an agent already running. A
     // call in an unbound workspace explains how the human binds one.
