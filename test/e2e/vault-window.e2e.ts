@@ -54,6 +54,10 @@ suite('vault-window', async (r) => {
     void imported;
     const after = (await L.conn.vaultWindow(`({ state: document.getElementById('state').textContent, status: document.getElementById('status')?.textContent, items: document.querySelectorAll('#list .item').length })`)).value as Record<string, unknown>;
     r.check('Import in the Cards view adds the cards a file holds and says what it did', after.state === '2 cards · unlocked' && after.items === 2 && /Imported 1 card: 1 new/.test(String(after.status)), after);
+    // With nothing selected there is no line beside an item: the message goes under the header.
+    await L.conn.vaultWindow(`document.getElementById('k-logins').click(); sel = null; mode = 'view'; render(); document.getElementById('export').click(); 1`, { wait: 800 });
+    const notice = (await L.conn.vaultWindow(`({ status: !!document.getElementById('status'), notice: document.getElementById('notice').hidden ? '' : document.getElementById('notice').textContent })`)).value as { status: boolean; notice: string };
+    r.check('with nothing selected, what Export did is still said, under the header', notice.status === false && /^Exported \d+ logins? to /.test(notice.notice), notice);
 
     // The window shows the vault as it is: a grant made elsewhere appears at once, and unticking
     // a workspace here takes off only that one.

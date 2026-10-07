@@ -821,6 +821,7 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
   .hint { color: var(--muted); font-size: 12px; margin: 0; line-height: 1.5; }
   .actions { display: flex; gap: 8px; padding-top: 2px; align-items: center; flex: none; } .actions .spacer { flex: 1; }
   #status { color: var(--muted); font-size: 12px; min-height: 17px; }
+  #notice { color: var(--muted); font-size: 12px; padding: 0 22px 10px; }
   .lockcard { margin: auto; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 12px; color: var(--muted); max-width: 320px; line-height: 1.5; }
   .lockcard svg { width: 28px; height: 28px; opacity: .6; }
   @media (prefers-reduced-motion: reduce) { .switch, .switch::after, .ws .disc { transition: none; } }
@@ -835,6 +836,7 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
   <span class="state" id="state"><i></i><span>Locked</span></span>
   <button class="quiet" id="lock">Lock</button>
 </header>
+<div id="notice" role="status" hidden></div>
 <div class="panes">
   <section class="pane">
     <div class="search"><input id="q" placeholder="Filter" autocomplete="off" spellcheck="false"></div>
@@ -890,7 +892,14 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
   const base = (p) => p.split('/').filter(Boolean).slice(-1)[0] || p;
   const dir = (p) => ('/' + p.split('/').filter(Boolean).slice(0, -1).join('/')).replace(new RegExp('^/Users/[^/]+'), '~');
-  const say = (t) => { const s = $('status'); if (s) s.textContent = t; };
+  // A message goes beside the login or card on show, or the form; with neither (nothing
+  // selected, as after an import or an export), to the line under the header, for a while.
+  let noticeTimer;
+  const say = (t) => {
+    const s = $('status'); if (s) { s.textContent = t; return; }
+    const n = $('notice'); n.textContent = t; n.hidden = !t;
+    clearTimeout(noticeTimer); noticeTimer = setTimeout(() => { n.hidden = true; }, 12000);
+  };
   const hostParts = (h) => { const [hostOnly, port] = h.split(':'); const p = hostOnly.split('.'); const tail = port ? ':' + port : ''; return p.length > 2 && !/^\\d+$/.test(p[0]) ? [p.slice(0, -2).join('.') + '.', p.slice(-2).join('.') + tail] : ['', h]; };
   const scopeText = (sc) => sc === 'all' ? 'everywhere' : !sc || !sc.length ? 'nowhere' : sc.length === 1 ? base(sc[0]) : sc.length + ' workspaces';
 
