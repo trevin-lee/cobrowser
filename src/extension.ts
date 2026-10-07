@@ -600,11 +600,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const replacing = bridgeBrowser() === 'firefox' ? bound : '';
       const next = await vscode.window.showInputBox({
         title: replacing ? `Bind this workspace to a Chrome tab group (replaces the Firefox container "${replacing}")` : 'Bind this workspace to a Chrome tab group',
-        prompt: 'The tab group\'s name as shown in Chrome\'s tab strip, or "profile" for every tab. Empty unbinds.',
+        prompt: replacing
+          ? 'The tab group\'s name as shown in Chrome\'s tab strip, or "profile" for every tab. Empty keeps the Firefox container.'
+          : 'The tab group\'s name as shown in Chrome\'s tab strip, or "profile" for every tab. Empty unbinds.',
         value: current,
         placeHolder: 'profile',
       });
       if (next === undefined) return;
+      // Return on an empty box, as if the placeholder were a default, must not end a Firefox
+      // binding: the Firefox command's own Unbind does that.
+      if (!next.trim() && replacing) {
+        void vscode.window.showInformationMessage(`Cobrowser: nothing changed; this workspace stays bound to the Firefox container "${replacing}".`);
+        return;
+      }
       await context.workspaceState.update(FIREFOX_CONTAINER_KEY, next.trim());
       if (next.trim()) await context.workspaceState.update(BRIDGE_BROWSER_KEY, 'chrome');
       syncBridge();
