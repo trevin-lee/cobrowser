@@ -1,5 +1,5 @@
 /* request_credential: a login scoped to one workspace, asked for by another; grant, once, deny. */
-import { suite, launch, serve, html, sleep, AppConnection, readAppState } from './harness';
+import { suite, launch, serve, html, sleep, AppConnection, readAppState, SCRATCH } from './harness';
 import * as path from 'node:path';
 
 suite('credentials', async (r) => {
@@ -131,6 +131,8 @@ suite('credentials', async (r) => {
       const again = await L.conn.vaultExport();
       const csv2 = fsm.readFileSync(exportPath, 'utf8');
       r.check('[export] importing the file back changes nothing: same logins, same workspaces, no duplicates', again.count === ex.count && JSON.stringify(rows(csv2)) === JSON.stringify(rows(csv)), { first: rows(csv), second: rows(csv2) });
+      const dataFiles = fsm.readdirSync(path.join(SCRATCH, 'data'));
+      r.check('[save] the vault is saved whole, with no temporary file left beside it', dataFiles.includes('vault.bin') && !dataFiles.some((f) => f.startsWith('vault.bin.')), dataFiles);
     } finally {
       await L.stop();
     }

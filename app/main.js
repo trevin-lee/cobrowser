@@ -293,9 +293,31 @@ async function unlockVault(reason) {
   log(`vault: unlocked (${vault.entries.length} logins)`);
   return vault;
 }
+/** Written whole to a temporary file and renamed over the vault, so a crash, a power cut or a
+ *  full disk mid-write leaves the previous vault intact rather than a truncated one. */
 function saveVault() {
-  fs.writeFileSync(VAULT_FILE, safeStorage.encryptString(JSON.stringify(vault)), { mode: 0o600 });
+  const tmp = `${VAULT_FILE}.${process.pid}.tmp`;
+  try {
+    const fd = fs.openSync(tmp, 'w', 0o600);
+    try {
+      fs.writeSync(fd, safeStorage.encryptString(JSON.stringify(vault)));
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(tmp, VAULT_FILE);
+  } catch (e) {
+    fs.rmSync(tmp, { force: true });
+    throw e;
+  }
   vaultChanged();
+}
+
+/** After an import: offer to move the plaintext CSV to the Trash. Keep is the default, so Esc
+ *  or Return never removes what may be the person's only copy. */
+async function offerToTrashCsv(file, message, detail) {
+  const { response } = await dialog.showMessageBox(vaultWin, { message, detail, buttons: ['Move the CSV to the Trash', 'Keep'], defaultId: 1, cancelId: 1 });
+  if (response === 0) await shell.trashItem(file).catch((e) => log(`vault: could not move ${file} to the Trash: ${e.message}`));
 }
 function lockVault() {
   vault = null;
