@@ -116,7 +116,6 @@ function passkeyFallback(): boolean {
   return vscode.workspace.getConfiguration('cobrowser').get<boolean>('autoFallbackPasskeys') ?? true;
 }
 
-/** The running build's version, so the daemon and the app can be restarted when stale. */
 /** cobrowser.uploadsWithoutAsking is read from Workspace settings only (src/mcp/tools.ts). A
  *  value in User settings would otherwise do nothing without a word. */
 function warnUserUploadSetting(): void {
@@ -126,6 +125,7 @@ function warnUserUploadSetting(): void {
   );
 }
 
+/** The running build's version, so the daemon and the app can be restarted when stale. */
 function extensionVersion(context: vscode.ExtensionContext): string {
   return (context.extension?.packageJSON as { version?: string } | undefined)?.version ?? '0.0.0';
 }
@@ -706,7 +706,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
       const ok = await vscode.window.showWarningMessage(
         'Turn passkeys off?',
-        { modal: true, detail: 'The browser quits, closing every workspace\'s tabs (they reopen when a panel next opens), and is signed again as it was downloaded; passkey prompts fall back to passwords. Passkeys already saved stay in your keychain, and work again if you enable passkeys with the same team and identifier.' },
+        { modal: true, detail: 'The browser quits, closing every workspace\'s tabs (they reopen when a panel next opens), and is signed again as it was downloaded; passkey prompts then fall back to passwords while "Auto Fallback Passkeys" is on (the default). Passkeys already saved stay in your keychain, and work again if you enable passkeys with the same team and identifier.' },
         'Turn Off',
       );
       if (ok !== 'Turn Off') return;
