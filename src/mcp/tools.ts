@@ -24,7 +24,10 @@ const pageId = z
  */
 function uploadsWithoutAsking(): boolean {
   if (!vscode.workspace.isTrusted) return false;
-  const v = vscode.workspace.getConfiguration('cobrowser').inspect<boolean>('uploadsWithoutAsking');
+  // The first folder is the workspace cobrowser serves, so its own .vscode/settings.json counts
+  // in a multi-root window too.
+  const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
+  const v = vscode.workspace.getConfiguration('cobrowser', folder).inspect<boolean>('uploadsWithoutAsking');
   return (v?.workspaceFolderValue ?? v?.workspaceValue) === true;
 }
 

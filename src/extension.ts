@@ -117,6 +117,15 @@ function passkeyFallback(): boolean {
 }
 
 /** The running build's version, so the daemon and the app can be restarted when stale. */
+/** cobrowser.uploadsWithoutAsking is read from Workspace settings only (src/mcp/tools.ts). A
+ *  value in User settings would otherwise do nothing without a word. */
+function warnUserUploadSetting(): void {
+  if (vscode.workspace.getConfiguration('cobrowser').inspect<boolean>('uploadsWithoutAsking')?.globalValue !== true) return;
+  void vscode.window.showWarningMessage(
+    'Cobrowser: "Uploads Without Asking" is on in your User settings, where it does nothing: it is read from Workspace settings only, so it is never on in every workspace at once. Turn it on in the Workspace settings of the workspace that should upload without asking.',
+  );
+}
+
 function extensionVersion(context: vscode.ExtensionContext): string {
   return (context.extension?.packageJSON as { version?: string } | undefined)?.version ?? '0.0.0';
 }
@@ -202,8 +211,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         readRender(vscode.workspace.getConfiguration('cobrowser'));
         BrowserPanel.refreshTitles();
       }
+      if (e.affectsConfiguration('cobrowser.uploadsWithoutAsking')) warnUserUploadSetting();
     }),
   );
+  warnUserUploadSetting();
 
   // Activity Bar sidebar: profile(s) + their open tabs. Created before getSession
   // so its `() => session` closure is always initialized when first read.

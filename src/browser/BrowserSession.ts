@@ -674,6 +674,11 @@ export class BrowserSession {
     if (el.fileInput && !el.multiple && opts.filePaths.length > 1) {
       return { error: `that file input takes one file and ${opts.filePaths.length} were given: upload them one at a time, or find the input that takes several` };
     }
+    // The click rule holds here too: a button that pays or places an order is the human's.
+    if (!el.fileInput) {
+      const { label } = await this.locate(p, opts);
+      if (COMMITTING.test(label)) return { error: `"${label}" pays or places an order, so upload_file will not click it. Target the file input or the upload button itself.` };
+    }
     const armed = await this.app.uploadArm(p.tabId, opts.filePaths, opts.ask !== false);
     if (!armed.armed) return { error: armed.error ?? 'the upload was not allowed', ...(armed.declined ? { declined: true } : {}) };
     try {
