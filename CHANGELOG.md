@@ -2,6 +2,17 @@
 
 Release notes for earlier versions are on the [GitHub releases page](https://github.com/trevin-lee/cobrowser/releases).
 
+## 0.9.22
+
+### Added
+
+- **`upload_file`: the agent can attach files to a page**, such as a résumé and a cover letter to a job application. It names the files and either the file input (hidden ones too) or the button that opens the file picker, as on sites that hide the input behind an "Upload" button. You confirm the files and the site in a dialog first. Several files go in at once where the picker takes several. Paths are literal (no wildcards, no folders), and hidden files and folders, `~/Library` (apart from iCloud Drive and cloud-storage folders) and cobrowser's own data are refused whatever you answer. Files reach a page only through a picker: yours, or one whose files you confirmed.
+- **`cobrowser.uploadsWithoutAsking`**: lets the agent upload in one workspace without the dialog. It is read from Workspace settings only, so it is never on everywhere at once, and ignored in an untrusted workspace. Each upload then shows a notification naming the files and the site, and the refused places stay refused.
+
+### Fixed
+
+- **An agent could see an older window's tools.** With several editor windows open, the daemon handed every agent the tool list of the first window, which after an update could still be running the previous build: new tools were missing, and parameters such as `pageId` on `click` could be too. Each agent now gets its own window's tools.
+
 ## 0.9.21
 
 ### Changed

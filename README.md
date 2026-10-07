@@ -108,7 +108,7 @@ Tabs are hidden offscreen windows, so everything a page would normally show in a
 
 - **Sign-in and payment popups** (`window.open` with a size, as "Sign in with Google" uses) open as a real small window on your desktop, as in Chrome, keep `window.opener` so they can report back, and close themselves. Links that open a new tab stay editor tabs.
 - **alert, confirm and prompt** show as app dialogs; the page waits for your answer, as it would in Chrome. **"Leave this site?"** prompts are asked the same way.
-- **File uploads** use the app's file picker, including inside cross-site iframes.
+- **File uploads** use the app's file picker, including inside cross-site iframes. The agent can attach files itself with `upload_file` (a résumé to a job application): it names the files and the button or file input, and you confirm them in a dialog naming the site before anything is attached. To skip the dialog in one workspace, turn on **Cobrowser: Uploads Without Asking** in that workspace's settings (Workspace settings only, never User; ignored in an untrusted workspace); each upload then shows a notification naming the files and the site instead. Hidden files and folders, `~/Library` (apart from iCloud Drive and cloud-storage folders) and cobrowser's own data are refused whatever you answer.
 - **Dropdowns, date, time and color fields** open their picker as a macOS menu or a small window of the app's own at the cursor, and your choice goes back into the page. The agent's `fill` sets them directly.
 - **Downloads** save straight to your Downloads folder (never overwriting), with a notification that opens the file in Finder.
 - **Fullscreen** (a video player's button) fills the tab, with the panel's toolbar hidden; Escape leaves it. Nothing takes over your display.
@@ -117,7 +117,7 @@ Tabs are hidden offscreen windows, so everything a page would normally show in a
 - **A crashed page** reloads by itself, up to three times in a minute; a fourth crash leaves it as it is, for you to reload (⌘R).
 - **Tabs no panel is showing** draw 4 times a second instead of 60, and at full rate again the moment anything acts on them.
 
-If the agent's action opens a dialog or a file picker, it is shown to you, and the agent's action waits for your answer.
+If the agent's action opens a dialog or a file picker, it is shown to you, and the agent's action waits for your answer (unless it is `upload_file`'s own picker, whose files you already confirmed).
 
 ### The app
 
@@ -183,7 +183,7 @@ release cannot drag everyone backwards.
 
 ## MCP tools
 
-`list_pages`, `new_page`, `select_page`, `close_page`, `navigate_page`, `read_page`, `take_snapshot`, `take_screenshot`, `click`, `fill`, `fill_form`, `type_text`, `wait_for`, `evaluate_script`, `list_console_messages`, `list_network_requests`, `list_credentials`, `fill_credentials`, `fill_card`, `request_credential`, `get_activity`, `get_editor_layout`, `list_workspaces` (the open workspaces, or the one a scoped session is bound to), and the `bridge_*` tools for your own browser ([above](#your-own-chrome-or-firefox)).
+`list_pages`, `new_page`, `select_page`, `close_page`, `navigate_page`, `read_page`, `take_snapshot`, `take_screenshot`, `click`, `fill`, `fill_form`, `type_text`, `upload_file`, `wait_for`, `evaluate_script`, `list_console_messages`, `list_network_requests`, `list_credentials`, `fill_credentials`, `fill_card`, `request_credential`, `get_activity`, `get_editor_layout`, `list_workspaces` (the open workspaces, or the one a scoped session is bound to), and the `bridge_*` tools for your own browser ([above](#your-own-chrome-or-firefox)).
 
 **Agents in parallel.** Several agents, or one agent's subagents, can work in the same workspace's browser at once: actions on different tabs run in parallel. Each opens its own tab with `new_page` and an `owner` name for its task, then passes that tab's `pageId` to every tool. Once tabs have more than one owner, a call without `pageId` is refused instead of landing in whichever tab is current, `close_page` refuses another owner's tab, and a popup from an agent's tab belongs to that agent. A `pageId` is never reused in a workspace, even after a reload or **Restart Browser**, so an old one gets "no such page" rather than someone else's tab, and restored tabs keep their owners. Every agent is told this, and the rest of cobrowser's house rules, when it connects (the MCP server's instructions). Owners are names the agents agree to use, not identities: MCP does not say which agent is calling, so this keeps cooperating agents out of each other's tabs, and does not fence off one that ignores the rules.
 
