@@ -842,6 +842,7 @@ export class BrowserSession {
 
   /** Type into the focused element with real key events — unless it is a secret field. */
   async typeText(text: string, submitKey = false, pageId?: string, allowCredentials = false): Promise<FillResult> {
+    this.markAgent();
     const p = this.pageFor(pageId);
     const info = await p.evaluate<{ secret: boolean; name: string } | null>(
       `(credSrc, auto) => { ${SECRET_JS} const el = document.activeElement; return el && el !== document.body ? secretInfo(el, credSrc, auto) : null; }`,
@@ -986,6 +987,7 @@ export class BrowserSession {
   }
 
   async evaluateScript(fn: string, args: unknown[] = [], pageId?: string): Promise<unknown> {
+    this.markAgent(); // a navigation the script causes is the agent's
     // The function expression is evaluated in the page's global scope with the JSON args.
     return this.pageFor(pageId).evaluate(fn, ...args);
   }

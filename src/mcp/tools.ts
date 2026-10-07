@@ -114,6 +114,7 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
       if (pages.length <= 1) {
         return asText('refused: cannot close the last remaining tab (open another first)');
       }
+      s.markAgent(); // closePage is the human's too (the panel's ×); this one is the agent's
       await s.run(() => s.closePage(id), id);
       return asText(`closed page ${id}`);
     },
