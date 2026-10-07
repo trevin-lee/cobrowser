@@ -399,16 +399,19 @@ export class BrowserPanel {
     this.panel.dispose();
   }
 
+  /** A site's zoom, per workspace: each workspace is its own browser, as with its cookies and
+   *  site permissions. Zoom set before it was per workspace (the shared map) still applies
+   *  until the site is zoomed here. */
   private zoomMap(): Record<string, number> {
-    return this.context.globalState.get<Record<string, number>>('cobrowser.zoom') ?? {};
+    return this.context.workspaceState.get<Record<string, number>>('cobrowser.zoom') ?? {};
   }
   private getZoom(): number {
-    return this.zoomMap()[this.origin] ?? 1;
+    return this.zoomMap()[this.origin] ?? this.context.globalState.get<Record<string, number>>('cobrowser.zoom')?.[this.origin] ?? 1;
   }
   private async setZoom(z: number): Promise<void> {
     const map = this.zoomMap();
     map[this.origin] = z;
-    await this.context.globalState.update('cobrowser.zoom', map);
+    await this.context.workspaceState.update('cobrowser.zoom', map);
   }
 
   private async onMessage(m: {
