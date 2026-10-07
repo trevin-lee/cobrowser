@@ -1365,12 +1365,16 @@ ipcMain.handle('vault:importCards', async () => {
 });
 ipcMain.handle('vault:lock', () => lockVault());
 ipcMain.handle('vault:cards', async () => ((await unlockVault('show the cards in the cobrowser vault')).cards || []).map(store.publicCard));
+// Each card change is first tried on a copy, so a mistyped number, a bad expiry or a card
+// already saved is said before Touch ID is asked for, not after.
 ipcMain.handle('vault:addCard', async (_e, fields) => {
+  if (vault) store.addCard(structuredClone(vault), fields || {});
   await confirmFresh('add a card to the cobrowser vault');
   const c = store.addCard(vault, fields || {}); saveVault();
   return store.publicCard(c);
 });
 ipcMain.handle('vault:updateCard', async (_e, { id, ...fields }) => {
+  if (vault) store.updateCard(structuredClone(vault), id, fields);
   await confirmFresh('change a card in the cobrowser vault');
   const c = store.updateCard(vault, id, fields); saveVault();
   return store.publicCard(c);
@@ -2425,6 +2429,7 @@ async function handle(ws, state, m) {
           return reply({ value, width, height, png });
         }
         case 'vault.addCard': {
+          if (vault) store.addCard(structuredClone(vault), m.card || {}); // mistakes before Touch ID
           await confirmFresh('add a card to the cobrowser vault');
           const c = store.addCard(vault, m.card || {}); saveVault();
           return reply({ card: store.publicCard(c) });
