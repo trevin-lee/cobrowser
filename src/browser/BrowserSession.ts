@@ -312,12 +312,14 @@ export class BrowserSession {
   /** The agent's current tab. Throws a clear error when the workspace has none. */
   private current(): AppPage {
     // Agents working in parallel share one browser, and so one "current tab": a call that
-    // relies on it could land in another agent's tab. Once tabs belong to more than one
-    // owner, every call must say which tab.
+    // relies on it could land in another agent's tab. A call does not say which agent sent
+    // it, so a main agent without an owner and one named subagent look like a single owner,
+    // and the subagent's new_page would move the main agent's current tab under it. So once
+    // any tab has an owner, every call must say which tab.
     const owners = this.ownersInUse();
-    if (owners.length > 1) {
+    if (owners.length > 0) {
       const tabs = [...this.pages.values()].filter((p) => !p.isClosed() && this.owners.has(p)).map((p) => `${p.id} (${this.owners.get(p)})`);
-      throw new Error(`Several agents are working in this browser (${owners.join(', ')}), so pass pageId: the tab you opened for your task. Their tabs: ${tabs.join(', ')}.`);
+      throw new Error(`Agents are working in parallel in this browser (${owners.join(', ')}), so pass pageId: the tab you opened for your task, or the tab you are working in. Their tabs: ${tabs.join(', ')}. Close tabs whose task is done (close_page) to work without pageId again.`);
     }
     if (!this.agentActive || this.agentActive.isClosed()) throw new Error('no open page — call new_page first');
     return this.agentActive;

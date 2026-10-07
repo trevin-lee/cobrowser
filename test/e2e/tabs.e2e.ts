@@ -86,11 +86,11 @@ suite('tabs', async (r) => {
     const one = await g.run(() => g.newPage(srv.base + '/one', { background: true, owner: 'research-1' }));
     let solo = '';
     try { await g.run(() => g.readPage({})); } catch (e) { solo = (e as Error).message; }
-    r.check('one named agent works as before: no pageId needed', solo === '', solo);
+    r.check('once one tab has an owner, a call without pageId is refused (another agent may have no owner)', /working in parallel.*research-1.*pass pageId/s.test(solo), solo);
     const two = await g.run(() => g.newPage(srv.base + '/two', { background: true, owner: 'research-2' }));
     let refused = '';
     try { await g.run(() => g.readPage({})); } catch (e) { refused = (e as Error).message; }
-    r.check('with two owners, a call without pageId is refused, naming the tabs', /Several agents.*research-1.*research-2.*pass pageId/s.test(refused) && refused.includes(`${one.pageId} (research-1)`), refused);
+    r.check('with two owners, a call without pageId is refused, naming the tabs', /working in parallel.*research-1, research-2.*pass pageId/s.test(refused) && refused.includes(`${one.pageId} (research-1)`), refused);
     const read = await g.run(() => g.readPage({ pageId: two.pageId }), two.pageId);
     const owners = (await g.listPages()).filter((p) => p.owner).map((p) => `${p.pageId}:${p.owner}`);
     r.check('with pageId it works, and list_pages shows each tab\'s owner', read.text.includes('page two') && owners.join() === `${one.pageId}:research-1,${two.pageId}:research-2`, { owners, text: read.text.slice(0, 40) });
