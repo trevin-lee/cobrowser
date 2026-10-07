@@ -27,6 +27,12 @@ suite('credentials', async (r) => {
         const typed = (await b.cdp<{ result: { value: string } }>(t.tabId, 'Runtime.evaluate', { expression: 'document.getElementById("u").value + "/" + document.getElementById("p").value.length', returnByValue: true })).result.value;
         if (mode === 'workspace') r.check('[workspace] a grant for the workspace fills now and later, and the login is listed', req.granted === 'workspace' && first.filled.length === 2 && second.filled.length === 2 && listed === 1 && typed === 'alice/13', { req, first, second, listed, typed });
         if (mode === 'once') r.check('[once] a one-time grant fills exactly once and is never listed', req.granted === 'once' && first.filled.length === 2 && second.filled.length === 0 && listed === 0 && typed === 'alice/13', { req, first, second, listed, typed });
+        if (mode === 'workspace') {
+          const before2 = (await b.cdp<{ result: { value: string } }>(t.tabId, 'Runtime.evaluate', { expression: 'document.getElementById("u").value' })).result.value;
+          const wrong = await b.vaultFill(t.tabId, { passwordUid: '1' });
+          const after2 = (await b.cdp<{ result: { value: string } }>(t.tabId, 'Runtime.evaluate', { expression: 'document.getElementById("u").value' })).result.value;
+          r.check('[workspace] a password is never typed into a field that is not a password field', wrong.filled.length === 0 && /not a password field/.test(wrong.error ?? '') && after2 === before2, { wrong, before2, after2 });
+        }
         if (mode === 'once') {
           // A two-step sign-in: the email on one page, the password on the next. The grant
           // outlives the username and is spent by the password.

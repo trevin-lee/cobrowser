@@ -548,11 +548,14 @@ async function fillCredentials(tab, { usernameUid, passwordUid, username }) {
   const filled = [];
   for (const [uid, value, label] of [[usernameUid, entry.username, 'username'], [passwordUid, entry.password, 'password']]) {
     if (!uid || !value) continue;
+    // A password goes only into a password field, which the page draws as dots: typed into a
+    // text field it would be on screen, in the agent's next screenshot.
     const { result } = await dbg.sendCommand('Runtime.evaluate', {
-      expression: `(() => { const sel = '[data-cobrowser-uid=${JSON.stringify(String(uid))}]'; let el = document.querySelector(sel); const visit = (root, d) => { for (const n of root.querySelectorAll('*')) { if (el) return; if (n.shadowRoot) { el = n.shadowRoot.querySelector(sel); if (!el && d < 8) visit(n.shadowRoot, d + 1); } } }; if (!el) visit(document, 0); if (!el) return false; el.focus(); if (el.select) el.select(); return true; })()`,
+      expression: `(() => { const sel = '[data-cobrowser-uid=${JSON.stringify(String(uid))}]'; let el = document.querySelector(sel); const visit = (root, d) => { for (const n of root.querySelectorAll('*')) { if (el) return; if (n.shadowRoot) { el = n.shadowRoot.querySelector(sel); if (!el && d < 8) visit(n.shadowRoot, d + 1); } } }; if (!el) visit(document, 0); if (!el) return 'missing'; if (${label === 'password'} && !(el instanceof HTMLInputElement && el.type === 'password')) return 'not-password'; el.focus(); if (el.select) el.select(); return 'ok'; })()`,
       returnByValue: true,
     });
-    if (!result.value) return { filled, error: `uid ${uid} not found — take a fresh snapshot` };
+    if (result.value === 'not-password') return { filled, error: `uid ${uid} is not a password field: the password goes only into one (an input of type password). Pass the password field's uid.` };
+    if (result.value !== 'ok') return { filled, error: `uid ${uid} not found — take a fresh snapshot` };
     await dbg.sendCommand('Input.insertText', { text: value }); // trusted keystrokes, never page JS
     filled.push(label);
   }
