@@ -38,3 +38,53 @@ jobs:
           name: cobrowser-vsix
           path: '*.vsix'
           if-no-files-found: error
+
+  e2e:
+    # The end-to-end suites (test/e2e): each starts an isolated cobrowser app, with scratch
+    # data and state dirs and no biometrics, and drives it through the real client and session
+    # code; the Chrome add-on's suite runs it in Chrome for Testing. macOS runners have a
+    # logged-in desktop, which the on-screen window checks need.
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            app/package-lock.json
+
+      - run: npm ci
+
+      - name: The app's Electron
+        # Electron 44's package has no install hook: its binary is fetched by install.js.
+        run: |
+          npm ci --prefix app
+          node app/node_modules/electron/install.js
+          test -x app/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron
+
+      - name: Chrome for Testing, for the Chrome add-on's suite
+        run: npx --yes playwright@1 install chromium
+
+      - run: npm run build
+
+      - name: End-to-end suites
+        run: npm run test:e2e
+        env:
+          # A runner has no GPU, so hidden tabs cost more to draw than on a Mac (12% there).
+          COBROWSER_E2E_CPU_LIMIT: '30'
+
+      - name: Collect the scratch dirs (app logs, screenshots) of a failed run
+        if: failure()
+        run: cp -R "${TMPDIR:-/tmp}/cobrowser-e2e" e2e-scratch || true
+
+      - name: Upload them
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-scratch
+          path: e2e-scratch
+          if-no-files-found: ignore

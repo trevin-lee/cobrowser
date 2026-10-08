@@ -157,7 +157,9 @@ document.getElementById('file').addEventListener('change',(e)=>window.__files=[.
     for (let i = 0; i < 3; i++) await s.run(() => s.newPage(`${srv.base}/spin`, { background: true }));
     await sleep(3500); // past the activity boost
     const cpu = await averageCpu(pid);
-    r.check('three hidden animated tabs cost little CPU', cpu < 12, { cpuPercentOfOneCore: cpu });
+    // 12% of one core on a Mac with a GPU; a CI runner renders without one and sets its own.
+    const cpuLimit = Number(process.env.COBROWSER_E2E_CPU_LIMIT) || 12;
+    r.check('three hidden animated tabs cost little CPU', cpu < cpuLimit, { cpuPercentOfOneCore: cpu, limit: cpuLimit });
     const spin = (await s.listPages()).find((p) => p.url.endsWith('/spin'))!;
     const t0 = Date.now(); const shot = await s.run(() => s.screenshot({ format: 'png', pageId: spin.pageId }), spin.pageId); const shotMs = Date.now() - t0;
     // The first command to an idle hidden tab waits for its next frame (at most 250 ms at 4 fps).

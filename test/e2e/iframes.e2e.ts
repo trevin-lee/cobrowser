@@ -1,19 +1,23 @@
 /* Cross-origin (out-of-process) iframes get the human's clicks, typing and focus; native video works. */
-import { suite, launch, serve, html, sleep, humanClick, humanKey } from './harness';
+import { suite, launch, serve, html, sleep, humanClick, humanKey, ROOT } from './harness';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 
 suite('iframes', async (r) => {
   let port = 0;
   const srv = await serve((q, res) => {
     let page: [number, Record<string, string>, string];
+    // A real clip, checked in: recording one in the page needs it to paint frames, which a
+    // hidden tab on a machine without a GPU (a CI runner) did too slowly.
+    if (q.url === '/clip.webm') { res.writeHead(200, { 'content-type': 'video/webm' }); res.end(fs.readFileSync(path.join(ROOT, 'test', 'e2e', 'clip.webm'))); return; }
     if (q.url === '/child') page = html(`<!doctype html><body style="margin:0;background:#dfd"><button id=b style="position:absolute;left:10px;top:10px;width:120px;height:40px">child btn</button><input id=i style="position:absolute;left:10px;top:55px;width:120px;height:20px"><script>document.getElementById('i').addEventListener('input',(e)=>parent.postMessage({typed:e.target.value},'*'));document.getElementById('b').addEventListener('click',(e)=>{parent.postMessage({childClick:true,trusted:e.isTrusted},'*')});document.addEventListener('mousedown',()=>parent.postMessage({childDown:true},'*'));</script></body>`);
     else page = html(`<!doctype html><title>iframe host</title><body style="margin:0">
 <iframe id=same src="http://127.0.0.1:${port}/child" style="position:absolute;left:0;top:0;width:200px;height:80px;border:0"></iframe>
 <iframe id=cross src="http://localhost:${port}/child" style="position:absolute;left:0;top:120px;width:200px;height:80px;border:0"></iframe>
-<video id=v controls muted playsinline loop style="position:absolute;left:0;top:240px;width:320px;height:180px;background:#000"></video>
+<video id=v src="/clip.webm" controls muted playsinline loop style="position:absolute;left:0;top:240px;width:320px;height:180px;background:#000"></video>
 <script>
 window.__msgs=[]; addEventListener('message',(e)=>window.__msgs.push([e.origin,e.data]));
-(async()=>{const c=document.createElement('canvas');c.width=64;c.height=36;const ctx=c.getContext('2d');let f=0;const draw=()=>{ctx.fillStyle=f++%2?'#f00':'#00f';ctx.fillRect(0,0,64,36);};const iv=setInterval(draw,50);
-const rec=new MediaRecorder(c.captureStream(20),{mimeType:'video/webm'});const chunks=[];rec.ondataavailable=(e)=>chunks.push(e.data);rec.onstop=()=>{clearInterval(iv);const v=document.getElementById('v');v.src=URL.createObjectURL(new Blob(chunks,{type:'video/webm'}));v.onloadedmetadata=()=>{window.__videoReady=true;};};rec.start();setTimeout(()=>rec.stop(),700);})();
+const v=document.getElementById('v'); if (v.readyState >= 1) window.__videoReady=true; else v.onloadedmetadata=()=>{window.__videoReady=true;};
 </script></body>`);
     res.writeHead(page[0], page[1]); res.end(page[2]);
   });
