@@ -95,8 +95,10 @@ let registeredWith: { port: number; id: string; dev: boolean } | undefined;
  *  binding from before (stored under the pre-rename key, or the retired
  *  cobrowser.firefoxContainer setting) is carried over once. */
 function firefoxContainerFor(context: vscode.ExtensionContext): string {
-  const bound = context.workspaceState.get<string>(FIREFOX_CONTAINER_KEY)?.trim();
-  if (bound) return bound;
+  // Stored once, even as '' (unbound), the binding is the workspace's own: the old key and the
+  // retired setting are never read again, or unbinding would bring them straight back.
+  const bound = context.workspaceState.get<string>(FIREFOX_CONTAINER_KEY);
+  if (bound !== undefined) return bound.trim();
   const legacy =
     context.workspaceState.get<string>(LEGACY_CONTAINER_KEY)?.trim() ||
     vscode.workspace.getConfiguration('cobrowser').get<string>('firefoxContainer', '').trim();
