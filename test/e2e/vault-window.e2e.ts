@@ -21,6 +21,12 @@ suite('vault-window', async (r) => {
     await L.conn.vaultAdd('https://login.microsoftonline.com', 'ada@example.com', 'pw-1', 'all', ['live.com'], '# Work account\nUse **this** one, not the personal.\n- 2FA: `ask Trevin`\n- help: https://example.com/help');
     await L.conn.vaultAdd('costco.com', 'ada', 'pw-2');
     await L.conn.vaultAddCard({ number: '4242424242424242', exp: '03/29', cvc: '123', name: 'Ada Lovelace', label: 'Personal' });
+    // A mistake is said before the person is asked to confirm: no confirmation is reached.
+    const asked = () => fs.readFileSync(path.join(SCRATCH, 'data', 'app.log'), 'utf8').split('confirmation skipped for: add a card').length - 1;
+    const askedBefore = asked();
+    const bad = await L.conn.vaultAddCard({ number: '1234', exp: '03/29' }).then(() => 'saved', (e: Error) => e.message);
+    const dup = await L.conn.vaultAddCard({ number: '4242424242424242', exp: '03/29' }).then(() => 'saved', (e: Error) => e.message);
+    r.check('a card mistake (a bad number, a card already saved) is refused before any confirmation is asked', /not a valid card number/.test(bad) && /already saved/.test(dup) && asked() === askedBefore, { bad, dup, askedBefore, after: asked() });
 
     const opened = await snap('1-list', `document.querySelector('.item') ? 1 : 0`, 800);
     r.check('the window opens large enough to see a login and its workspaces', opened.width >= 860 && opened.height >= 560, { width: opened.width, height: opened.height });
