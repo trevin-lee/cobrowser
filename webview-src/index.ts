@@ -377,6 +377,16 @@ stage.addEventListener('keyup', (e) => {
   });
 });
 
+// VS Code answers ⌘A and ⌘C in a webview with its own Select All and Copy, run in this
+// document: they selected the panel's toolbar and put the address on the clipboard, over the
+// page's text. The page's selection lives in the page (extension.selectall, extension.copy);
+// outside the address bar the panel has nothing to select, so a selection here is dropped.
+document.addEventListener('selectionchange', () => {
+  if (document.activeElement === urlInput) return;
+  const sel = window.getSelection();
+  if (sel && !sel.isCollapsed) sel.removeAllRanges();
+});
+
 // Paste (⌘V/Ctrl+V): the canvas isn't a real input, and a headless browser has no system
 // clipboard, so forward the clipboard text and inject it into the page's focused field.
 window.addEventListener('paste', (e: ClipboardEvent) => {

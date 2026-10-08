@@ -12,6 +12,7 @@ Release notes for earlier versions are on the [GitHub releases page](https://git
 ### Fixed
 
 - **⌘X, ⌘Z and ⌘⇧Z work in the panel**, and ⌘C copies text selected in a field, not only on the page. The right-click menu has Cut.
+- **⌘A then ⌘C copied the panel's address bar** instead of the page's text: VS Code's own Select All selected the panel itself. The panel now keeps no selection of its own outside the address bar.
 - **A saved password is typed only into a password field**, never into a text field where a screenshot would show it.
 - **The bridge refuses card fields marked only by their autocomplete type**, as the panel does.
 - **A Chrome tab group that is closed when the bridge connects comes back** on the agent's next new tab, instead of the workspace refusing every call until the group is recreated.
