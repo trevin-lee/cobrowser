@@ -389,7 +389,7 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'fill_card',
     {
       description:
-        "Fill one of the human's saved cards (list_credentials shows them: label, brand, last four digits) into the card fields of your current tab (or pageId), including fields inside a payment provider's frames. The human confirms every fill in the cobrowser app (Touch ID or their Mac password), so this waits for them; you never see the number or the security code. Pass `card` (its label or last four digits) when several are saved. Filling is not paying: do not click the pay or place-order button unless the human asked you to complete the purchase (click refuses it without allowPayment).",
+        "Fill one of the human's saved cards (list_credentials shows them: label, brand, last four digits) into the card fields of your current tab (or pageId), including fields inside a payment provider's frames. The human confirms every fill in the cobrowser app (Touch ID or their Mac password), so this waits for them. You never see the number: it is masked in everything returned to you, and card fields read as (filled) in snapshots. Pass `card` (its label or last four digits) when several are saved. Filling is not paying: do not click the pay or place-order button unless the human asked you to complete the purchase (click refuses it without allowPayment).",
       inputSchema: { card: z.string().optional(), pageId },
     },
     async (opts) => {

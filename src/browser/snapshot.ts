@@ -25,6 +25,10 @@ export interface SnapshotOptions {
   limit?: number;
   /** The first uid to mint on a fresh document, so uids never repeat within a tab. */
   seqStart?: number;
+  /** The secret-field rule (guards.ts CREDENTIAL source, SECRET_AUTOCOMPLETE), passed in
+   *  because this runs in the page: a secret field's value is never printed. */
+  secretSrc?: string;
+  secretAuto?: string[];
 }
 
 export interface SnapshotResult {
@@ -135,6 +139,17 @@ export function snapshotScript(opts: SnapshotOptions): SnapshotResult {
     return tag;
   }
 
+  // A password, card number, security code or one-time code: what fill refuses to type, and
+  // what fill_card types without the agent seeing it. Its value is never printed.
+  const secretRe = opts.secretSrc ? new RegExp(opts.secretSrc, 'i') : null;
+  const secretAuto = opts.secretAuto ?? [];
+  function isSecret(el: HTMLInputElement): boolean {
+    if (el.type === 'password') return true;
+    if (String(el.getAttribute('autocomplete') || '').toLowerCase().split(/\s+/).some((t) => secretAuto.includes(t))) return true;
+    const describes = [el.getAttribute('aria-label'), el.getAttribute('name'), el.id, el.getAttribute('placeholder'), el.labels && el.labels[0] ? el.labels[0].innerText : ''].join(' ');
+    return !!secretRe && secretRe.test(describes);
+  }
+
   const origin = location.origin;
   function extras(el: Element): string {
     const parts: string[] = [];
@@ -148,7 +163,7 @@ export function snapshotScript(opts: SnapshotOptions): SnapshotResult {
     }
     if (el instanceof HTMLInputElement) {
       if (el.type === 'checkbox' || el.type === 'radio') parts.push(el.checked ? '[checked]' : '[unchecked]');
-      else if (el.type === 'password') { if (el.value) parts.push('(filled)'); }
+      else if (isSecret(el)) { if (el.value) parts.push('(filled)'); }
       else if (!/^(submit|button|reset|image|file|hidden)$/.test(el.type) && el.value) parts.push('value="' + clip(el.value, 60) + '"');
     }
     if (el instanceof HTMLTextAreaElement && el.value) parts.push('value="' + clip(el.value.replace(/\s+/g, ' '), 60) + '"');

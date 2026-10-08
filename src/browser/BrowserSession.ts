@@ -589,7 +589,7 @@ export class BrowserSession {
     const { pageId, ...filters } = opts;
     const p = this.pageFor(pageId);
     const start = this.uidSeq.get(p) ?? 0;
-    const r = await p.evaluate<SnapshotResult>(snapshotScript, { ...filters, seqStart: start });
+    const r = await p.evaluate<SnapshotResult>(snapshotScript, { ...filters, seqStart: start, secretSrc: CREDENTIAL.source, secretAuto: SECRET_AUTOCOMPLETE });
     this.uidSeq.set(p, Math.max(start, r.seq));
     return r.text;
   }

@@ -521,13 +521,21 @@ async function exportCards(parent) {
 }
 
 
-/** Replace any unlocked password that appears in `text` — what keeps evaluate_script and
- *  snapshots from carrying a filled value back to the agent. */
+/** Replace any unlocked password or saved card number that appears in `text` — what keeps
+ *  evaluate_script, page text and snapshots from carrying a filled value back to the agent.
+ *  A card number is found however a page groups it (4242 4242 4242 4242, 4242-4242-…). A
+ *  security code is not scrubbed from free text: three digits would take every such number
+ *  with it; snapshots never print a code field's value instead. */
 function scrubSecrets(text) {
   if (!vault || typeof text !== 'string') return text;
   let out = text;
   for (const e of vault.entries) {
     if (e.password && e.password.length >= 4 && out.includes(e.password)) out = out.split(e.password).join('••••••••');
+  }
+  for (const c of vault.cards || []) {
+    if (!c.number) continue;
+    const grouped = new RegExp('(?<!\\d)' + c.number.split('').join('[ -]?') + '(?!\\d)', 'g');
+    out = out.replace(grouped, '•••• •••• •••• ' + c.number.slice(-4));
   }
   return out;
 }

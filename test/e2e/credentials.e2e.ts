@@ -105,6 +105,15 @@ suite('credentials', async (r) => {
         const got = (await L3.conn.cdp<{ result: { value: Record<string, unknown> } }>(t.tabId, 'Runtime.evaluate', { expression: '({ num: num.value, name: document.getElementById("name").value, mm: mm.value, yy: yy.value, cvc: cvc.value, trap: trap.value, frame: window.__frame })', returnByValue: true })).result.value;
         r.check('[cards] the card fills the page: number, name, month and year menus, code', got.num === '4242424242424242' && got.name === 'Ada Lovelace' && got.mm === '03' && got.yy === '2029' && got.cvc === '123', { res, got });
         r.check('[cards] a hidden card field is left empty', got.trap === '', got);
+        // What the agent reads back after a fill, as the tools hand it over (scrubbed by the app).
+        const mine = await L3.session.run(() => L3.session.newPage(shop.base + '/'));
+        await sleep(1200);
+        const mineTab = (await L3.conn.listTabs()).filter((x) => x.url === shop.base + '/' && x.tabId !== t.tabId)[0].tabId;
+        await L3.conn.vaultFillCard(mineTab, undefined, 'agent');
+        await sleep(500);
+        const snap = await L3.session.scrub(await L3.session.run(() => L3.session.takeSnapshot({ pageId: mine.pageId }), mine.pageId));
+        const read = await L3.session.scrub(JSON.stringify(await L3.session.evaluateScript('() => [document.getElementById("num").value, document.getElementById("cvc").value]', [], mine.pageId)));
+        r.check('[cards] the agent never reads the number or the code back: snapshots show (filled), script results are masked', !snap.includes('4242424242424242') && !/value="123"/.test(snap) && /\(filled\)/.test(snap) && !read.includes('4242424242424242') && read.includes('•••• •••• •••• 4242'), { snap: snap.split('\n').filter((l) => /input/.test(l)), read });
         const fr = got.frame as Record<string, string>;
         r.check("[cards] and the fields in another site's frame are filled too", fr.fnum === '4242424242424242' && /^03 ?\/ ?29$/.test(fr.fexp ?? '') && fr.fcvc === '123', { res, frame: fr });
         const none = await L3.conn.vaultFillCard((await L3.conn.openTab(shop.base + '/frame', 400, 300)).tabId, 'no such card', 'agent');
