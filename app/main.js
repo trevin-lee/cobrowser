@@ -1176,7 +1176,7 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
   }
   async function refresh() {
     if (unlocking) return; unlocking = true; render();
-    try { rows = await vault.list(); cards = await vault.cards(); unlocked = true; lastError = ''; } catch (e) { unlocked = false; rows = []; cards = []; lastError = e.message; } finally { unlocking = false; }
+    try { rows = await vault.list(); cards = await vault.cards(); unlocked = true; lastError = ''; } catch (e) { unlocked = false; rows = []; cards = []; lastError = String(e && e.message || e).includes('cancelled') ? '' : failed(e); } finally { unlocking = false; }
     known = await vault.workspaces();
     if (sel) sel = rows.find((r) => r.host === sel.host && r.username === sel.username) || null;
     render();
