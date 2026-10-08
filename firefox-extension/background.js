@@ -32,6 +32,8 @@ const SESSION_REQUEST_CAP = 100;
 /** How long to wait out a server that has started pushing back. */
 const BACKOFF_ON_REFUSAL_MS = 60000;
 
+// The background page is persistent, so these last as long as the add-on runs: until the
+// browser quits, or Firefox updates or reloads the add-on.
 let requestCount = 0;
 let lastRequestAt = 0;
 let backoffUntil = 0;
@@ -39,26 +41,6 @@ let backoffUntil = 0;
 const agentTabs = new Set();
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-/**
- * The count, the pause and the agent's tabs live in session storage. The background page is
- * persistent, but the add-on reloads when it updates itself, which would otherwise reset the
- * cap and turn the agent's own tabs into the human's. Session storage lasts until the
- * browser quits, the same "session" the cap means.
- */
-let restored;
-function restoreSession() {
-  // Through a promise, so a missing storage.session (it needs Firefox 115) costs only persistence.
-  restored ||= Promise.resolve().then(() => api.storage.session.get(['requestCount', 'agentTabs', 'backoffUntil'])).then((s) => {
-    requestCount = Math.max(requestCount, Number(s.requestCount) || 0);
-    backoffUntil = Math.max(backoffUntil, Number(s.backoffUntil) || 0);
-    for (const id of s.agentTabs || []) agentTabs.add(id);
-  }, () => undefined);
-  return restored;
-}
-function persistSession() {
-  void Promise.resolve().then(() => api.storage.session.set({ requestCount, agentTabs: [...agentTabs], backoffUntil })).catch(() => undefined);
-}
 
 /** Called before anything that reaches a site. Throws rather than silently proceeding. */
 async function pace() {
@@ -81,7 +63,6 @@ async function pace() {
   if (since < jitter) await sleep(jitter - since);
   lastRequestAt = Date.now();
   requestCount += 1;
-  persistSession();
 }
 
 /** A refusal or challenge means stop, not retry harder. */
@@ -90,7 +71,7 @@ function noteRefusal(status, bodyText) {
     status === 429 ||
     status === 403 ||
     /captcha|are you a robot|unusual traffic|access denied/i.test(String(bodyText || '').slice(0, 2000));
-  if (challenged) { backoffUntil = Date.now() + BACKOFF_ON_REFUSAL_MS; persistSession(); }
+  if (challenged) backoffUntil = Date.now() + BACKOFF_ON_REFUSAL_MS;
   return challenged;
 }
 
@@ -324,7 +305,6 @@ const publicTab = (t) => ({
 // ------------------------------------------------------------------ methods
 
 async function dispatch(conn, method, params) {
-  await restoreSession();
   switch (method) {
     case 'listContainers': {
       // Deliberately NOT scoped — this is setup metadata (names only, no tab access) so
@@ -366,7 +346,6 @@ async function dispatch(conn, method, params) {
         active: params.active !== false,
       });
       agentTabs.add(tab.id);
-      persistSession();
       return publicTab(tab);
     }
 
@@ -1180,17 +1159,18 @@ api.runtime.onMessage.addListener((msg, sender) => {
   if (msg && msg.type === 'status') return Promise.resolve(statusList());
   if (msg && msg.type === 'reconcile') return reconcile().then(() => statusList());
   if (msg && msg.type === 'containers') return api.contextualIdentities.query({});
-  if (msg && msg.type === 'usage') return restoreSession().then(usage);
+  if (msg && msg.type === 'usage') return Promise.resolve(usage());
   if (msg && msg.type === 'accent') return Promise.resolve(markColor);
   if (msg && msg.type === 'resetCap') {
     if (!fromOptionsPage(sender)) return Promise.resolve({ error: 'refused: only the Cobrowser Bridge page can reset the request cap' });
-    // After the restore, or a restore still on its way would bring the old count back.
-    return restoreSession().then(() => { requestCount = 0; backoffUntil = 0; persistSession(); return usage(); });
+    requestCount = 0;
+    backoffUntil = 0;
+    return Promise.resolve(usage());
   }
   return undefined;
 });
 
-api.tabs.onRemoved.addListener((tabId) => { if (agentTabs.delete(tabId)) persistSession(); });
+api.tabs.onRemoved.addListener((tabId) => { agentTabs.delete(tabId); });
 
 api.storage.onChanged.addListener((changes, area) => {
   // BOTH areas matter. Cobrowser writes the managed manifest when a workspace activates,
