@@ -82,7 +82,7 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'select_page',
     {
       description:
-        "Make a tab your current tab: the one tools act on when not given a pageId. It does NOT move the human's view unless bringToFront: true (they may be reading another tab — only bring it to the front when you want them to look). For a single action in another tab, pass pageId to that tool instead. Once several agents (owners) have tabs here, tools refuse calls without pageId, so the current tab no longer matters: use it only to bring a tab to the human's attention.",
+        "Make a tab your current tab: the one tools act on when not given a pageId. It does NOT move the human's view unless bringToFront: true (they may be reading another tab — only bring it to the front when you want them to look). For a single action in another tab, pass pageId to that tool instead. Once any tab here has an owner (agents working in parallel), tools refuse calls without pageId, so the current tab no longer matters: use it only to bring a tab to the human's attention.",
       inputSchema: { pageId: z.string(), bringToFront: z.boolean().optional() },
     },
     async ({ pageId: id, bringToFront }) => {
