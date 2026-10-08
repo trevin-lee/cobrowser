@@ -2,6 +2,22 @@
 
 Release notes for earlier versions are on the [GitHub releases page](https://github.com/trevin-lee/cobrowser/releases).
 
+## 0.9.25
+
+### Changed
+
+- **In Chrome, only `profile` binds the whole profile.** `default` used to mean it too, though in Firefox `default` is the tabs in no container, the narrowest scope. A Chrome workspace bound as `default` now gets a tab group of that name.
+
+### Fixed
+
+- **`bridge_fetch` works in Chrome again.** Since 0.9.11 every call failed, after counting against the request cap, so a site's refusal could never start the minute's pause in Chrome.
+- **The agent cannot read a card number back after `fill_card`.** A number filled into a checkout form on the page itself showed in the agent's next snapshot or script result. Saved card numbers are now masked in everything the agent reads, and snapshots show card, code and one-time-code fields as (filled).
+- **The bridge popups no longer show an unbound workspace as "Bound to Chrome" or "Bound to Firefox".**
+- **Unbinding sticks** for a workspace whose binding once came from the retired `cobrowser.firefoxContainer` setting, which kept binding it again.
+- **Firefox's bridge does not claim to keep its count, pause and agent tabs across an update**, which 0.9.24 said but could not do; they start over when the add-on updates. Chrome keeps them across its service-worker restarts.
+- Cancelling the vault window's Unlock no longer shows a raw error.
+- The README and tool descriptions now match the product: the bridge tools' parameters, the shared request cap, the menu-bar menu, the vault's one change without a second Touch ID, the three-login limit of a request, no find bar, and how to replace the daemon-wide token or start the vault over.
+
 ## 0.9.24
 
 ### Changed
