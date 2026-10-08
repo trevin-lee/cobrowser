@@ -110,8 +110,9 @@ marks them `openedBy: "agent"`.
 
 Every action that reaches a tab draws a marker on it: a frame with a label ("cobrowser:
 clicked") and a ● before the tab title, so a tab driven in the background shows in the tab
-strip too. Both clear after a couple of seconds, never intercept clicks, and never appear in
-the agent's screenshots.
+strip too. Both clear after a couple of seconds and never intercept clicks. A screenshot's own
+marker is drawn after the capture, but one left by an action in the couple of seconds before it
+can show in the image.
 
 ## Scoping is enforced here, not by the browser
 

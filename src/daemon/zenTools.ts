@@ -125,7 +125,7 @@ export const ZEN_TOOLS: Tool[] = [
   {
     name: 'bridge_fill',
     description:
-      "Set form values. For a <select>, pass the OPTION'S VISIBLE TEXT — it is chosen and driven with the focus/input/change/blur sequence frameworks listen for, because setting the value alone leaves React lists unrefreshed. REFUSES passwords, one-time codes, CVVs and card numbers, returning `needsUserAction`: the human types those. Never automate login or MFA. Values are set, not typed: a search-as-you-type field that waits for keystrokes (a picker whose results appear as you type) may not react — use the panel's fill or type_text for those, which type real keys.",
+      "Set form values. For a <select>, pass the OPTION'S VISIBLE TEXT — it is chosen and driven with the focus/input/change/blur sequence frameworks listen for, because setting the value alone leaves React lists unrefreshed. REFUSES passwords, one-time codes, CVVs and card numbers, returning `needsUserAction`: the human types those. Pass allowCredentials only for a value the human gave you for that field; never sign in or pass MFA on your own. Values are set, not typed: a search-as-you-type field that waits for keystrokes (a picker whose results appear as you type) may not react — use the panel's fill or type_text for those, which type real keys.",
     inputSchema: {
       type: 'object',
       properties: {
