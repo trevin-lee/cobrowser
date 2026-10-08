@@ -274,7 +274,9 @@ async function listScopes() {
 async function resolveScope(name) {
   const wanted = String(name ?? '').trim();
   if (!wanted) throw new Error('no tab group configured for this workspace');
-  if (/^(profile|default|\*)$/i.test(wanted)) return PROFILE;
+  // Only "profile" means every tab. "default" is Firefox's word for the tabs in no container,
+  // the narrowest scope, so it must not quietly mean the widest one here.
+  if (/^profile$/i.test(wanted)) return PROFILE;
   const groups = await api.tabGroups.query({});
   const hit = groups.find((g) => (g.title || '').toLowerCase() === wanted.toLowerCase());
   // Not open now (Chrome removes a group with its last tab): bound all the same, as closed, so
