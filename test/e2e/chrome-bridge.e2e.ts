@@ -33,7 +33,11 @@ suite('chrome-bridge', async (r) => {
     r.note('skipped', 'no Chrome for Testing: set COBROWSER_E2E_CHROME, or run `npx playwright install chromium`');
     return;
   }
-  const srv = await serve((_q, res) => { const [st, h, b] = html(PAGE); res.writeHead(st, h); res.end(b); });
+  const srv = await serve((q, res) => {
+    if (q.url === '/api/orders') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ orders: [1, 2, 3] })); return; }
+    if (q.url === '/api/limited') { res.writeHead(429, { 'content-type': 'text/plain' }); res.end('slow down'); return; }
+    const [st, h, b] = html(PAGE); res.writeHead(st, h); res.end(b);
+  });
   const port = 9400 + Math.floor(Math.random() * 400);
   const ext = path.join(ROOT, 'chrome-extension');
   const chrome = spawn(exe, ['--headless=new', `--user-data-dir=${scratchDir('chrome-profile')}`, '--no-first-run', '--no-default-browser-check', `--remote-debugging-port=${port}`, `--load-extension=${ext}`, `--disable-extensions-except=${ext}`, srv.base + '/'], { stdio: 'ignore' });
@@ -87,6 +91,15 @@ suite('chrome-bridge', async (r) => {
 
     const ev = await call('evaluate', { expression: 'document.title' });
     r.check('evaluate is refused plainly, pointing to bridge_query', /not available in Chrome: use bridge_query/.test(ev.error ?? ''), ev);
+
+    // bridge_fetch: a same-origin request with the tab's session; a 429 starts the minute's pause.
+    const fetched = await call('fetchUrl', { url: srv.base + '/api/orders' });
+    const fv = fetched.value as { status?: number; json?: { orders?: number[] } } | undefined;
+    r.check('bridge_fetch returns a same-origin JSON answer in real Chrome', fv?.status === 200 && JSON.stringify(fv.json?.orders) === '[1,2,3]', fetched);
+    const limited = await call('fetchUrl', { url: srv.base + '/api/limited' });
+    const after = await call('fetchUrl', { url: srv.base + '/api/orders' });
+    r.check('a 429 from the site pauses the bridge rather than retrying', /answered 429/.test(limited.error ?? '') && /backing off/.test(after.error ?? ''), { limited, after });
+    await run('backoffUntil = 0; persistSession(); 1'); // as the popup's Reset does, so the suite goes on
 
     const read = await call('readPage', {});
     const page = read.value as { title: string; text: string };

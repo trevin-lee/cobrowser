@@ -564,6 +564,45 @@ async function markTabActivity(tabId, label) {
 // Arrow functions, not method shorthand: runInTab injects `(${fn.toString()})(...)`, and a
 // shorthand method stringifies to "name() { … }", which is a syntax error in that position.
 const PAGE_SCRIPTS = {
+  // bridge_fetch: a same-origin request with the tab's own session (its cookies).
+  fetchUrl: async (url, method, headers, body, tabUrl) => {
+    try {
+      const target = new URL(url, location.href);
+      const here = new URL(tabUrl || location.href);
+      if (target.origin !== here.origin) {
+        return {
+          __cobrowserError:
+            `refusing a cross-origin fetch: tab is ${here.origin}, requested ${target.origin}. ` +
+            'Navigate a tab to that origin first, so the request carries the right session.',
+        };
+      }
+      const res = await fetch(target.href, {
+        method: method || 'GET',
+        headers: headers || undefined,
+        body: body ?? undefined,
+        credentials: 'include',
+        redirect: 'follow',
+      });
+      const text = await res.text();
+      let json;
+      try {
+        json = JSON.parse(text);
+      } catch {
+        /* not JSON; text is returned instead */
+      }
+      const MAX = 400000;
+      return {
+        status: res.status,
+        url: res.url,
+        contentType: res.headers.get('content-type') || '',
+        json: json ?? undefined,
+        body: json ? undefined : text.slice(0, MAX),
+        truncated: !json && text.length > MAX,
+      };
+    } catch (e) {
+      return { __cobrowserError: `fetch failed: ${e && e.message ? e.message : e}` };
+    }
+  },
   /** Draw a non-interactive frame + label, prefix the tab title, then undo both. */
   markActivity: (label, ms, color = '#2b5bff') => {
     const ID = '__cobrowser_activity__';
