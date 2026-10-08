@@ -59,7 +59,7 @@ async function refreshStatus() {
       state.append(chip(s.container === 'This Chrome profile' ? 'profile' : s.container, known && known.color));
     } else {
       // A few words here; the whole message on hover.
-      state.textContent = !s.connected ? 'Not running' : /bound to Chrome/i.test(s.error || '') ? 'Bound to Chrome' : /bound to Firefox/i.test(s.error || '') ? 'Bound to Firefox' : /not bound/i.test(s.error || '') || !s.error ? 'Not bound' : 'Error';
+      state.textContent = stateWords(s.connected, s.error);
       state.title = !s.connected ? 'Not connected. Is its editor window open?' : s.error || 'Not bound to a scope yet.';
       if (s.connected && s.error && state.textContent === 'Error') row.className = 'ws err';
     }
@@ -113,3 +113,14 @@ void refreshGroups().then(refreshStatus);
 setInterval(() => void refreshGroups(), 5000);
 void refreshUsage();
 setInterval(() => { void refreshStatus(); void refreshUsage(); }, 3000);
+
+/** A workspace's state in a few words. "Not bound" first: the unbound message, "this workspace
+ *  is not bound to Chrome", also contains "bound to Chrome". */
+function stateWords(connected, error) {
+  const e = error || '';
+  if (!connected) return 'Not running';
+  if (!e || /not bound/i.test(e)) return 'Not bound';
+  if (/bound to Firefox/i.test(e)) return 'Bound to Firefox';
+  if (/bound to Chrome/i.test(e)) return 'Bound to Chrome';
+  return 'Error';
+}
