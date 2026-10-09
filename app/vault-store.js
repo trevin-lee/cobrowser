@@ -45,6 +45,33 @@ function loginMatches(e, page) {
   return sitesOf(e).some((s) => siteMatches(s, page));
 }
 
+/** How closely a login fits a page, by its closest site: 3 the page's own host, 2 a domain the
+ *  page is under (facebook.com on www.facebook.com), 1 only the same site (a sibling, such as
+ *  accountscenter.facebook.com on www.facebook.com), 0 none. */
+function matchRank(e, page) {
+  let best = 0;
+  for (const s of sitesOf(e)) {
+    if (!siteMatches(s, page)) continue;
+    best = Math.max(best, s.host === page.host ? 3 : page.host.endsWith('.' + s.host) ? 2 : 1);
+  }
+  return best;
+}
+
+/**
+ * The logins that fit a page, one per username. One account saved for several of a site's
+ * hosts (facebook.com and accountscenter.facebook.com, the same username) is one choice, not
+ * two: the login whose site fits the page closest, then the most recently saved. Only
+ * different usernames are left for someone to choose between.
+ */
+function closestPerUsername(matches, page) {
+  const best = new Map();
+  for (const e of matches) {
+    const cur = best.get(e.username);
+    if (!cur || matchRank(e, page) > matchRank(cur, page) || (matchRank(e, page) === matchRank(cur, page) && (e.updatedAt || 0) > (cur.updatedAt || 0))) best.set(e.username, e);
+  }
+  return [...best.values()];
+}
+
 function normalizeScope(scope) {
   if (scope === 'all') return 'all';
   if (Array.isArray(scope)) return [...new Set(scope.filter((w) => typeof w === 'string' && w))];
@@ -385,6 +412,6 @@ function importCards(vault, text) {
 module.exports = {
   cardBrand, publicCard, addCard, findCard, updateCard, removeCard, exportCards, importCards,
   normalizeScope, allowed, mergeScope, applyScopeChange, publicEntry, findEntry, upsertLogin, updateLogin, setScope, removeLogin,
-  normalizeSites, sitesOf, loginMatches,
+  normalizeSites, sitesOf, loginMatches, matchRank, closestPerUsername,
   parseCsv, importCsv, exportCsv, splitNote,
 };

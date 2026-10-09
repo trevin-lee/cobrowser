@@ -20,6 +20,7 @@ const store = require('../app/vault-store.js') as {
   exportCsv: (v: Vault) => string;
   applyScopeChange: (current: Scope, before: Scope, after: Scope) => Scope;
   splitNote: (note: string) => { notes: string; workspaces?: Scope; sites?: string[] };
+  closestPerUsername: (matches: Entry[], page: Page) => Entry[];
 };
 
 const empty = (): Vault => ({ entries: [] });
@@ -186,4 +187,34 @@ test('a change to the workspaces someone was looking at never undoes a grant mad
   // Everywhere, on or off, is a choice of the whole scope.
   assert.equal(store.applyScopeChange(['/a', '/b'], ['/a'], 'all'), 'all');
   assert.deepEqual(store.applyScopeChange('all', 'all', ['/a']), ['/a']);
+});
+
+test('one account saved for two of a site\'s hosts is one login, the closest fit, on every page of the site', () => {
+  const v = empty();
+  const center = store.upsertLogin(v, 'accountscenter.facebook.com', 'trevin@example.com', 'pw', 'all').entry;
+  const main = store.upsertLogin(v, 'facebook.com', 'trevin@example.com', 'pw', 'all').entry;
+  const pick = (url: string) => store.closestPerUsername(v.entries.filter((e) => store.loginMatches(e, page(url))), page(url));
+  assert.deepEqual(pick('https://www.facebook.com/login').map((e) => e.id), [main.id], 'a domain the page is under beats a sibling');
+  assert.deepEqual(pick('https://facebook.com/').map((e) => e.id), [main.id], 'the page\'s own host');
+  assert.deepEqual(pick('https://accountscenter.facebook.com/password').map((e) => e.id), [center.id], 'the page\'s own host beats its parent');
+  assert.deepEqual(pick('https://m.facebook.com/').map((e) => e.id), [main.id]);
+});
+
+test('different accounts on one site are still a choice, each offered once', () => {
+  const v = empty();
+  store.upsertLogin(v, 'facebook.com', 'me@example.com', 'pw', 'all');
+  store.upsertLogin(v, 'accountscenter.facebook.com', 'me@example.com', 'pw', 'all');
+  store.upsertLogin(v, 'facebook.com', 'work@example.com', 'pw', 'all');
+  const p = page('https://www.facebook.com/');
+  const left = store.closestPerUsername(v.entries.filter((e) => store.loginMatches(e, p)), p);
+  assert.deepEqual(left.map((e) => e.username).sort(), ['me@example.com', 'work@example.com']);
+});
+
+test('between equally close logins of one account, the most recently saved wins', () => {
+  const v = empty();
+  const older = store.upsertLogin(v, 'a.example.com', 'u', 'old', 'all').entry;
+  const newer = store.upsertLogin(v, 'b.example.com', 'u', 'new', 'all').entry;
+  older.updatedAt = 1; newer.updatedAt = 2;
+  const p = page('https://www.example.com/');
+  assert.deepEqual(store.closestPerUsername([older, newer], p).map((e) => e.id), [newer.id]);
 });

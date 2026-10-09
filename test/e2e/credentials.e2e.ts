@@ -75,6 +75,21 @@ suite('credentials', async (r) => {
         const elsewhere = await fillOn(other.cross + '/');
         other.close();
         r.check('[sites] and on no site it was not given', elsewhere.filled.length === 0, elsewhere);
+        // One account saved under two hosts of one site, as facebook.com and accountscenter.facebook.com
+        // (*.localhost is loopback): one login, the closest fit, filled without a username.
+        const port = new URL(two.base).port;
+        await L2.conn.vaultAdd(`http://accounts.app.localhost:${port}`, 'dana', 'center-pw', 'all');
+        await L2.conn.vaultAdd(`http://app.localhost:${port}`, 'dana', 'main-pw', 'all');
+        const fillNoName = async (url: string) => {
+          const t = await L2.conn.openTab(url, 800, 600); await sleep(600);
+          await L2.conn.cdp(t.tabId, 'Runtime.evaluate', { expression: 'document.getElementById("u").setAttribute("data-cobrowser-uid","1"); document.getElementById("p").setAttribute("data-cobrowser-uid","2"); 1' });
+          const res = await L2.conn.vaultFill(t.tabId, { usernameUid: '1', passwordUid: '2' });
+          const pw = (await L2.conn.cdp<{ result: { value: string } }>(t.tabId, 'Runtime.evaluate', { expression: 'document.getElementById("p").value' })).result.value;
+          return { res, pw };
+        };
+        const onWww = await fillNoName(`http://www.app.localhost:${port}/`);
+        const onCenter = await fillNoName(`http://accounts.app.localhost:${port}/`);
+        r.check('[sites] one account saved under two hosts of a site fills without a choice, the closest login on each page', onWww.res.filled.length === 2 && onWww.pw === 'main-pw' && onCenter.res.filled.length === 2 && onCenter.pw === 'center-pw', { onWww, onCenter });
       } finally {
         await L2.stop();
         two.close();

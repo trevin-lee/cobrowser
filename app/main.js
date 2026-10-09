@@ -388,6 +388,8 @@ async function requestCredential(workspaceId, { site, username, reason }) {
   // Asked again before using an "Allow once": that grant still stands, no second dialog.
   const pending = matches.find((e) => hasGrant(e, workspaceId));
   if (pending) return { granted: 'once', host: label, username: pending.username };
+  // The same account saved for several of the site's hosts is offered once.
+  matches = store.closestPerUsername(matches, page);
   if (matches.length === 0) return { granted: 'denied', error: `no login for ${label} was granted` };
   const name = path.basename(workspaceId) || workspaceId;
   const why = reason ? `Reason given: ${String(reason).slice(0, 300)}` : 'No reason given.';
@@ -549,6 +551,8 @@ async function fillCredentials(tab, { usernameUid, passwordUid, username }) {
   // Scope first: a login outside this workspace's scope does not exist as far as it knows.
   let matches = v.entries.filter((e) => usable(e, tab.workspace.id) && store.loginMatches(e, page));
   if (username) matches = matches.filter((e) => e.username === username);
+  // The same account saved for several of the site's hosts is one login here.
+  matches = store.closestPerUsername(matches, page);
   if (matches.length === 0) return { filled: [], error: `no saved login for ${host}` };
   if (matches.length > 1) return { filled: [], error: 'several logins match — pass username', candidates: matches.map((e) => e.username) };
   const entry = matches[0];
