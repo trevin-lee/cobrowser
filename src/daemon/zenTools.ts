@@ -1,5 +1,4 @@
 import type { Tool } from './toolSchema';
-import { COMMITTING, paymentRefusal } from '../browser/guards';
 import type { ZenHub } from './zenHub';
 
 /**
@@ -9,8 +8,7 @@ import type { ZenHub } from './zenHub';
  * plain JSON because the daemon speaks the low-level MCP server, not the zod-based one.
  *
  * The parameters use the panel tools' words (uid, function/args, timeout, elements, navigate
- * type), so an agent that learned one family knows the other. The add-on's older names (ref,
- * expression, timeoutMs, fields) are still accepted.
+ * type); the add-on's own names (ref, expression, timeoutMs, fields) stay inside this file.
  */
 
 const num = { type: 'number' } as const;
@@ -158,9 +156,7 @@ type Content = { type: 'text'; text: string } | { type: 'image'; data: string; m
 /** The Firefox add-on already installed predates the rename of these tools and still names
  *  them firefox_* in its messages; re-signing it is a separate step, so the names are fixed
  *  on the way through. */
-const currentNames = (text: string): string => text.replace(/\bfirefox_([a-z_]+)/g, 'bridge_$1');
-
-const asJson = (v: unknown): { content: Content[] } => ({ content: [{ type: 'text', text: currentNames(JSON.stringify(v, null, 2)) }] });
+const asJson = (v: unknown): { content: Content[] } => ({ content: [{ type: 'text', text: JSON.stringify(v, null, 2) }] });
 
 /** When the add-on is older than this editor, what to tell the human. A newer one needs nothing. */
 function staleNote(hub: ZenHub, workspace: string): string | undefined {
@@ -183,7 +179,7 @@ export async function callZenTool(
     return await runZenTool(hub, workspace, name, args);
   } catch (e) {
     const note = staleNote(hub, workspace);
-    throw new Error(currentNames((e as Error).message ?? String(e)) + (note ? ` (${note})` : ''));
+    throw new Error(((e as Error).message ?? String(e)) + (note ? ` (${note})` : ''));
   }
 }
 
@@ -193,7 +189,6 @@ const withUids = (snap: unknown): unknown => {
   if (!s || !Array.isArray(s.elements)) return snap;
   return { ...s, elements: s.elements.map(({ ref, ...rest }) => (ref === undefined ? rest : { uid: ref, ...rest })) };
 };
-const refOf = (o: Record<string, unknown>): unknown => o.uid ?? o.ref;
 
 async function runZenTool(
   hub: ZenHub,
@@ -209,21 +204,16 @@ async function runZenTool(
       if (hub.addon?.(workspace)?.browser === 'chrome') {
         throw new Error('bridge_evaluate_script is not available in Chrome: use bridge_query to read many elements at once (a CSS selector and the fields you want), or do the step in the cobrowser panel, whose evaluate_script runs anything.');
       }
-      let expression = args.expression;
-      if (typeof args.function === 'string' && args.function.trim()) {
-        const fnArgs = Array.isArray(args.args) ? args.args : [];
-        expression = `(${args.function})(...${JSON.stringify(fnArgs)})`;
-      }
-      if (typeof expression !== 'string' || !expression.trim()) throw new Error('bridge_evaluate_script needs a function, e.g. "() => document.title"');
+      if (typeof args.function !== 'string' || !args.function.trim()) throw new Error('bridge_evaluate_script needs a function, e.g. "() => document.title"');
+      const expression = `(${args.function})(...${JSON.stringify(Array.isArray(args.args) ? args.args : [])})`;
       return asJson(await hub.call(workspace, 'evaluate', { tabId, expression, world: args.world }));
     }
     case 'bridge_fetch':
       return asJson(await hub.call(workspace, 'fetchUrl', { tabId, url: args.url, method: args.method, headers: args.headers, body: args.body }));
     case 'bridge_wait_for': {
       const texts = Array.isArray(args.text) ? args.text.map(String) : typeof args.text === 'string' ? [args.text] : [];
-      // An add-on older than several-texts support reads one string.
-      const text = texts.length === 0 ? undefined : texts.length === 1 || hub.addon?.(workspace)?.stale ? texts[0] : texts;
-      return asJson(await hub.call(workspace, 'waitFor', { tabId, text, selector: args.selector, settle: args.settle, quietMs: args.quietMs, timeoutMs: args.timeout ?? args.timeoutMs }));
+      const text = texts.length === 0 ? undefined : texts.length === 1 ? texts[0] : texts;
+      return asJson(await hub.call(workspace, 'waitFor', { tabId, text, selector: args.selector, settle: args.settle, quietMs: args.quietMs, timeoutMs: args.timeout }));
     }
     case 'bridge_list_tabs': {
       const listed = await hub.call<Record<string, unknown>>(workspace, 'listTabs');
@@ -254,24 +244,15 @@ async function runZenTool(
     }
     case 'bridge_click': {
       const { tabId: _t, allowPayment, uid: _u, ...others } = args;
-      const rest = { ...others, ref: refOf(args) };
-      const pay = allowPayment === true;
-      // allowDestructive is the add-on's old name for the same override.
-      const click = (override: boolean) => hub.call<{ refused?: string; label?: string }>(workspace, 'click', { tabId, ...rest, allowPayment: override, allowDestructive: override });
-      let result = await click(pay) as { refused?: string; label?: string; noVisibleEffect?: boolean; hint?: string };
-      // An add-on from before the rule changed still refuses sign-out and delete-account
-      // controls. That guard is gone, so go past it — but never past a payment button.
-      if (result && result.refused === 'destructive') {
-        result = COMMITTING.test(result.label ?? '') && !pay ? paymentRefusal(result.label ?? '') : await click(true);
-      }
+      const result = await hub.call<{ refused?: string; label?: string; noVisibleEffect?: boolean; hint?: string }>(workspace, 'click', { tabId, ...others, ref: args.uid, allowPayment: allowPayment === true });
       if (result && result.noVisibleEffect) {
         result.hint = 'Nothing on the page changed after this click. The site may ignore synthetic input, which is all these tools can send. Do this step in the cobrowser panel (new_page, then click there), where input is real, or hand it to the human.';
       }
       return asJson(result);
     }
     case 'bridge_fill': {
-      const list = (Array.isArray(args.elements) ? args.elements : Array.isArray(args.fields) ? args.fields : []) as Record<string, unknown>[];
-      const fields = list.map((f) => ({ ref: refOf(f), selector: f.selector, value: f.value }));
+      const list = (Array.isArray(args.elements) ? args.elements : []) as Record<string, unknown>[];
+      const fields = list.map((f) => ({ ref: f.uid, selector: f.selector, value: f.value }));
       return asJson(await hub.call(workspace, 'fill', { tabId, fields, allowCredentials: args.allowCredentials }));
     }
     case 'bridge_screenshot': {

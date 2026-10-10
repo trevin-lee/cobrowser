@@ -36,26 +36,19 @@ test('a uid reaches the add-on as its ref, and the add-on\'s refs come back as u
   assert.equal(calls[1].params.ref, 'cb1');
   await callZenTool(hub, '/ws', 'bridge_fill', { tabId: 1, elements: [{ uid: 'cb2', value: 'a' }] });
   assert.deepEqual(calls[2].params.fields, [{ ref: 'cb2', selector: undefined, value: 'a' }]);
-  await callZenTool(hub, '/ws', 'bridge_fill', { tabId: 1, fields: [{ ref: 'cb3', value: 'b' }] });
-  assert.deepEqual(calls[3].params.fields, [{ ref: 'cb3', selector: undefined, value: 'b' }], 'the old names still work');
 });
 
-test('a function with args is run as a call; an expression still works; neither is an error', async () => {
+test('a function with args is run as a call; without a function it is an error', async () => {
   const { hub, calls } = fakeHub(() => 1);
   await callZenTool(hub, '/ws', 'bridge_evaluate_script', { tabId: 1, function: '(sel, n) => document.querySelectorAll(sel).length > n', args: ['a', 2] });
   assert.equal(calls[0].params.expression, '((sel, n) => document.querySelectorAll(sel).length > n)(...["a",2])');
-  await callZenTool(hub, '/ws', 'bridge_evaluate_script', { tabId: 1, expression: 'document.title' });
-  assert.equal(calls[1].params.expression, 'document.title');
   await assert.rejects(callZenTool(hub, '/ws', 'bridge_evaluate_script', { tabId: 1 }), /needs a function/);
 });
 
-test('wait_for takes several texts and timeout; an old add-on gets the first text it can read', async () => {
+test('wait_for takes several texts and timeout', async () => {
   const { hub, calls } = fakeHub(() => ({ found: true }));
   await callZenTool(hub, '/ws', 'bridge_wait_for', { tabId: 1, text: ['Done', 'Failed'], timeout: 5000 });
   assert.deepEqual([calls[0].params.text, calls[0].params.timeoutMs], [['Done', 'Failed'], 5000]);
-  const old = fakeHub(() => ({ found: true }), OLD);
-  await callZenTool(old.hub, '/ws', 'bridge_wait_for', { tabId: 1, text: ['Done', 'Failed'] });
-  assert.equal(old.calls[0].params.text, 'Done');
 });
 
 test('navigate goes back, forward and reloads; an old add-on is told why it cannot', async () => {
