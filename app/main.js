@@ -2486,21 +2486,6 @@ async function handle(ws, state, m) {
     ws.send(JSON.stringify({ type: 'hello', version: VERSION, tabs, ...(forgotten ? { forgotten: true } : {}) }));
     return;
   }
-  if (m.type === 'importCookies') {
-    // Migration from the pre-app releases: cookies read out of an old Chrome profile, written
-    // into the named workspace's partition. Addressed explicitly so one window can import
-    // for every workspace at once.
-    const target = workspaceFor(String(m.workspace || ''));
-    const ses = session.fromPartition(target.partition);
-    let imported = 0, failed = 0;
-    for (const c of m.cookies || []) {
-      try { await ses.cookies.set(c); imported++; } catch (e) { failed++; if (failed <= 3) log('importCookies', c.name, e.message); }
-    }
-    await ses.cookies.flushStore().catch(() => undefined);
-    log(`importCookies ${target.id}: ${imported} imported, ${failed} failed`);
-    ws.send(JSON.stringify({ type: 'imported', imported, failed, requestId: m.requestId }));
-    return;
-  }
   if (typeof m.type === 'string' && m.type.startsWith('vault.')) {
     const reply = (obj) => ws.send(JSON.stringify({ ...obj, requestId: m.requestId }));
     try {

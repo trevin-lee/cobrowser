@@ -238,12 +238,6 @@ export class AppConnection {
     return (await this.request({ type: 'network', tabId, since, ...opts })) as unknown as { entries: RequestEntry[]; latest: number; pending: number };
   }
 
-  /** Write cookies into a workspace's partition (any workspace — used by the migration). */
-  async importCookies(workspace: string, cookies: Record<string, unknown>[]): Promise<{ imported: number; failed: number }> {
-    const r = await this.request({ type: 'importCookies', workspace, cookies });
-    return { imported: Number(r.imported) || 0, failed: Number(r.failed) || 0 };
-  }
-
   // --- vault: the agent can use logins without seeing them; passwords never cross this socket
   //     outbound except INTO the app (add/import), and never come back.
   /** `scope` defaults to this connection's workspace inside the app. */
