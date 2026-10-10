@@ -57,6 +57,9 @@ export class ZenHub {
     private readonly log: (message: string) => void,
     /** The add-on version this editor ships (they are released together). */
     private readonly expectedVersion?: string,
+    /** Whether a workspace's editor window is open: an unbound workspace whose window is closed
+     *  is told so, so the add-on's popup does not call it unbound. */
+    private readonly windowOpen?: (workspace: string) => boolean,
   ) {}
 
   attach(httpServer: http.Server): void {
@@ -98,6 +101,12 @@ export class ZenHub {
       c.container = undefined;
       this.sendHello(workspace, c);
     }
+  }
+
+  /** Every connected add-on is told its binding again: windows came or went, and one that
+   *  crashed is only noticed when the registry prunes it, with no deregistration to say so. */
+  rebindAll(): void {
+    for (const workspace of new Set([...this.conns.keys()].map((k) => k.split('\u0000')[1]))) this.rebind(workspace);
   }
 
   status(workspace: string): { connected: boolean; browser?: BridgeBrowser; container?: FirefoxContainer; error?: string; version?: string; stale?: boolean } {
@@ -217,7 +226,8 @@ export class ZenHub {
     // saying which browser it is bound to instead, if any.
     const here = b && (b.browser ?? 'firefox') === c.browser;
     const container = here ? b.container : '';
-    c.ws.send(JSON.stringify({ type: 'hello', container, workspace, accent: accentOrDefault(b?.accent), ...(!here && b?.container ? { boundTo: b.browser } : {}) }));
+    const closed = !b && this.windowOpen ? !this.windowOpen(workspace) : false;
+    c.ws.send(JSON.stringify({ type: 'hello', container, workspace, accent: accentOrDefault(b?.accent), ...(!here && b?.container ? { boundTo: b.browser } : {}), ...(closed ? { windowClosed: true } : {}) }));
   }
 
   private handle(workspace: string, c: Conn, msg: Record<string, unknown>): void {

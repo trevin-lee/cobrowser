@@ -55,7 +55,7 @@ async function refreshStatus() {
     } else {
       // A few words here; the whole message on hover.
       state.textContent = stateWords(s.connected, s.error);
-      state.title = !s.connected ? 'Not connected. Is its editor window open?' : s.error || 'Not bound to a scope yet.';
+      state.title = !s.connected ? 'Not connected: cobrowser is not running (no editor window has it open), or this URL is out of date.' : s.error || 'Not bound to a scope yet.';
       if (s.connected && s.error && state.textContent === 'Error') row.className = 'ws err';
     }
     row.append(el('span', 'mark'), who, state);
@@ -112,6 +112,7 @@ setInterval(() => { void refreshStatus(); void refreshUsage(); }, 3000);
 function stateWords(connected, error) {
   const e = error || '';
   if (!connected) return 'Not running';
+  if (/window is closed/i.test(e)) return 'Window closed';
   if (!e || /not bound/i.test(e)) return 'Not bound';
   if (/bound to Firefox/i.test(e)) return 'Bound to Firefox';
   if (/bound to Chrome/i.test(e)) return 'Bound to Chrome';

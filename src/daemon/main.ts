@@ -56,6 +56,7 @@ const registry = new Registry(
   undefined,
   () => {
     toolCache.clear(); // membership changed: a new window may run a different build
+    zen?.rebindAll(); // the add-ons learn which workspaces' windows are open
   },
   // Beside the daemon token, so known workspaces survive a restart of this process; named after
   // it, so a development daemon (dev-daemon-token) keeps its own list.
@@ -80,6 +81,7 @@ const zen = new ZenHub(
   },
   log,
   VERSION,
+  (workspace) => registry.list().some((x) => x.id === workspace),
 );
 
 // ---------------------------------------------------------------------------------------

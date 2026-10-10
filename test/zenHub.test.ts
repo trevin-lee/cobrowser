@@ -8,9 +8,9 @@ import { accentOrDefault } from '../src/daemon/protocol';
 /** A daemon-shaped server with a hub on it, plus a fake add-on that dials in. */
 type Binding = { browser: 'firefox' | 'chrome'; container: string; accent?: string } | undefined;
 const fx = (container: string): Binding => ({ browser: 'firefox', container });
-async function setup(bindings: Record<string, Binding>) {
+async function setup(bindings: Record<string, Binding>, open?: Set<string>) {
   const server = http.createServer((_q, r) => r.writeHead(404).end());
-  const hub = new ZenHub(() => 'admin-token', (ws) => bindings[ws], () => undefined);
+  const hub = new ZenHub(() => 'admin-token', (ws) => bindings[ws], () => undefined, undefined, open ? (ws) => open.has(ws) : undefined);
   hub.attach(server);
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   const port = (server.address() as { port: number }).port;
@@ -113,4 +113,19 @@ test("the add-on is told the accent colour for the frame it draws, cobalt unless
   assert.equal((b.hellos[0] as { accent: string }).accent, '#2b5bff');
   assert.deepEqual(['#FF5C1A', ' #00aa11 ', 'red', '#abc', undefined].map(accentOrDefault), ['#ff5c1a', '#00aa11', '#2b5bff', '#2b5bff', '#2b5bff']);
   a.ws.close(); b.ws.close(); await s.stop();
+});
+
+test('an unbound workspace whose editor window is closed is told so; one whose window is open is just unbound', async () => {
+  const open = new Set<string>(['/w/open']);
+  const s = await setup({}, open);
+  const closed = await s.dial('/w/closed');
+  const opened = await s.dial('/w/open');
+  assert.equal((closed.hellos[0] as { windowClosed?: boolean }).windowClosed, true);
+  assert.equal((opened.hellos[0] as { windowClosed?: boolean }).windowClosed, undefined);
+  open.add('/w/closed');
+  s.hub.rebindAll();
+  await new Promise((r) => setTimeout(r, 80));
+  assert.equal((closed.hellos.at(-1) as { windowClosed?: boolean }).windowClosed, undefined, 'its window opened: told again, no longer closed');
+  closed.ws.close(); opened.ws.close();
+  await s.stop();
 });

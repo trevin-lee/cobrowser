@@ -226,6 +226,8 @@ async function handleMessage(conn, msg) {
       if (typeof msg.accent === 'string' && /^#[0-9a-f]{6}$/i.test(msg.accent)) markColor = msg.accent;
       // Unbound here: say why, and which browser the workspace uses instead, if any.
       if (!msg.container) {
+        // Its editor window is closed: nothing to bind until the folder is open again.
+        if (msg.windowClosed) throw new Error('this workspace\'s editor window is closed: open its folder in the editor');
         throw new Error(msg.boundTo ? `this workspace is bound to ${msg.boundTo === 'firefox' ? 'Firefox' : 'Chrome'}, not Chrome` : 'this workspace is not bound to Chrome: run "Cobrowser: Bind Chrome Tab Group to This Workspace" in its editor window');
       }
       conn.scope = await resolveScope(msg.container);
