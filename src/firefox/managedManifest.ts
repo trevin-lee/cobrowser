@@ -21,8 +21,7 @@ interface ManagedManifest {
  * Firefox's managed-storage manifest directory. Verified against Zen 1.21 (Gecko 154): it
  * reads the shared "Mozilla" directory, NOT one named after the fork.
  */
-function manifestDir(): string | undefined {
-  const home = os.homedir();
+function manifestDir(home = os.homedir()): string | undefined {
   if (process.platform === 'darwin') {
     return path.join(home, 'Library', 'Application Support', 'Mozilla', 'ManagedStorage');
   }
@@ -32,8 +31,8 @@ function manifestDir(): string | undefined {
   return undefined; // Windows keeps these in the registry — configure the bridge by hand.
 }
 
-export function manifestPath(): string | undefined {
-  const dir = manifestDir();
+export function manifestPath(home?: string): string | undefined {
+  const dir = manifestDir(home);
   return dir ? path.join(dir, `${BRIDGE_EXTENSION_ID}.json`) : undefined;
 }
 
@@ -105,12 +104,20 @@ export function registerEndpoint(workspace: string, url: string, log: (m: string
 
   for (const key of Object.keys(workspaces)) {
     if (key === workspace) continue;
-    // A deleted checkout, or an entry from before the bridge moved to the daemon (those URLs
-    // pointed at per-window ports that no longer exist): either way, the add-on would sit
-    // retrying a dead port forever.
-    if (!fs.existsSync(key) || !workspaces[key].includes('workspace=')) delete workspaces[key];
+    // A deleted checkout: the add-on would sit retrying a dead port forever.
+    if (!fs.existsSync(key)) delete workspaces[key];
   }
   write(file, workspaces, log);
+}
+
+/** Keep only the endpoints `keep` accepts (src/migrations.ts drops outdated ones). */
+export function pruneEndpoints(keep: (workspace: string, url: string) => boolean, log: (m: string) => void, home?: string): void {
+  const file = manifestPath(home);
+  if (!file) return;
+  const existing = read(file);
+  if (!existing) return;
+  const workspaces = Object.fromEntries(Object.entries(existing.data.workspaces).filter(([w, u]) => keep(w, u)));
+  if (Object.keys(workspaces).length !== Object.keys(existing.data.workspaces).length) write(file, workspaces, log);
 }
 
 /** The machine-wide token was replaced: every workspace's endpoint gets the new one, so the

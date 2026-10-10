@@ -16,6 +16,7 @@ import { AppConnection, readAppState, type AppState } from './app/AppClient';
 import { ensureApp, electronExecutable } from './app/ensureApp';
 import { APP_BUNDLE_ID, listSigningIdentities, readSignedMarker, signElectronForPasskeys, unsignForPasskeys } from './app/signApp';
 import { registerEndpoint, replaceTokenInEndpoints, unregisterEndpoint } from './firefox/managedManifest';
+import { runMigrations } from './migrations';
 import { listFirefoxContainers } from './firefox/containers';
 
 // Bearer token for the local MCP endpoint. Stored in workspaceState (NOT globalState): each
@@ -41,9 +42,6 @@ const TABS_KEY = 'cobrowser.openTabs';
 // setting so the binding is per-workspace WITHOUT a .vscode/settings.json in the repo; the
 // setting still works and acts as the fallback.
 const FIREFOX_CONTAINER_KEY = 'cobrowser.firefoxContainerBinding';
-/** Pre-rename key. Read (and migrated forward) so a binding made before the Zen->Firefox
- *  rename is not silently lost, which would present as "I bound it and nothing happened". */
-const LEGACY_CONTAINER_KEY = 'cobrowser.zenContainerBinding';
 /** Which browser the binding above is for: 'firefox' (container) or 'chrome' (tab group). */
 const BRIDGE_BROWSER_KEY = 'cobrowser.bridgeBrowser';
 interface SavedTab {
@@ -91,24 +89,9 @@ let extensionContext: vscode.ExtensionContext | undefined;
 let registeredWith: { port: number; id: string; dev: boolean } | undefined;
 
 /** The scope this workspace's bridge is bound to (a Firefox container or a Chrome tab group),
- *  set by the Bind commands and kept per workspace without writing a file into the repo. A
- *  binding from before (stored under the pre-rename key, or the retired
- *  cobrowser.firefoxContainer setting) is carried over once. */
+ *  set by the Bind commands and kept per workspace without writing a file into the repo. */
 function firefoxContainerFor(context: vscode.ExtensionContext): string {
-  // Stored once, even as '' (unbound), the binding is the workspace's own: the old key and the
-  // retired setting are never read again, or unbinding would bring them straight back.
-  const bound = context.workspaceState.get<string>(FIREFOX_CONTAINER_KEY);
-  if (bound !== undefined) return bound.trim();
-  const legacy =
-    context.workspaceState.get<string>(LEGACY_CONTAINER_KEY)?.trim() ||
-    vscode.workspace.getConfiguration('cobrowser').get<string>('firefoxContainer', '').trim();
-  if (legacy) {
-    void context.workspaceState.update(FIREFOX_CONTAINER_KEY, legacy);
-    void context.workspaceState.update(BRIDGE_BROWSER_KEY, 'firefox');
-    void context.workspaceState.update(LEGACY_CONTAINER_KEY, undefined);
-    return legacy;
-  }
-  return '';
+  return context.workspaceState.get<string>(FIREFOX_CONTAINER_KEY)?.trim() ?? '';
 }
 
 /** Whether to install the virtual WebAuthn authenticator, which makes passkey ceremonies
@@ -166,6 +149,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // daemon the user's real windows are registered with, which knocks their agents offline
   // mid-task — the whole reason iterating on this was disruptive.
   const dev = context.extensionMode === vscode.ExtensionMode.Development;
+  // What older versions left behind, converted once, before anything reads it
+  // (src/migrations.ts). A development host converts nothing: those files are the installed
+  // extension's.
+  if (!dev) {
+    const ran = await runMigrations({
+      machine: context.globalState,
+      workspace: context.workspaceState,
+      workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+      home: os.homedir(),
+      setting: (name) => vscode.workspace.getConfiguration('cobrowser').get(name),
+      log,
+    });
+    if (ran.length) log(`Converted what an older version left: ${ran.join(', ')}.`);
+  }
   const daemonPort = dev ? DEV_DAEMON_PORT : cfg.get<number>('port', 0) || DEFAULT_DAEMON_PORT;
   if (dev) {
     // Its own browser app too: own state (so each build never restarts the other's app) and
@@ -337,8 +334,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       sessionPromise = (async () => {
         // Snapshot OUR saved tab list first: wire() fires pagesChanged, which overwrites
         // TABS_KEY before restore could read it.
-        let savedTabs = (context.workspaceState.get<Array<string | SavedTab>>(TABS_KEY) ?? [])
-          .map((t) => (typeof t === 'string' ? { url: t } : t)); // pre-0.1.25 saves were bare URLs
+        let savedTabs = context.workspaceState.get<SavedTab[]>(TABS_KEY) ?? [];
         BrowserPanel.planColumns(savedTabs.map((t) => t.col));
 
         const state = await startApp();
@@ -383,7 +379,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // the add-on dials for this workspace never changes across reloads. This window only tells
   // the daemon which container the workspace is bound to, and keeps the managed-storage
   // manifest — which Firefox reads to configure the add-on — pointing at that stable URL.
-  const bridgeUrl = (): string => bridgeEndpointUrl(daemonPort, daemonToken(undefined, dev), workspaceId);
+  const bridgeUrl = (): string => bridgeEndpointUrl(daemonPort, daemonToken(dev), workspaceId);
   /** (Re)register this window with the daemon, carrying the current Firefox container binding. */
   let registerWithDaemon: () => Promise<void> = async () => undefined;
   const bridgeBrowser = (): 'firefox' | 'chrome' => (context.workspaceState.get<string>(BRIDGE_BROWSER_KEY) === 'chrome' ? 'chrome' : 'firefox');
@@ -518,7 +514,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       );
       if (ok !== 'Replace') return;
       try {
-        const old = daemonToken(undefined, dev);
+        const old = daemonToken(dev);
         const fresh = replaceDaemonToken(dev);
         replaceTokenInEndpoints(old, fresh, log);
         await tokenReplaced(daemonPort, dev);
@@ -758,7 +754,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // MCP clients cobrowser cannot register through an interface of theirs: show the entry
     // for the human to add. It is the daemon's, unscoped, so its tools name a workspace.
     vscode.commands.registerCommand('cobrowser.connectAgent', async () => {
-      const ep = { name: dev ? 'cobrowser-dev' : 'cobrowser', url: `http://127.0.0.1:${daemonPort}/mcp`, token: daemonToken(undefined, dev) };
+      const ep = { name: dev ? 'cobrowser-dev' : 'cobrowser', url: `http://127.0.0.1:${daemonPort}/mcp`, token: daemonToken(dev) };
       const clients: OtherClient[] = ['claude-desktop', 'codex', 'windsurf', 'other'];
       const pick = await vscode.window.showQuickPick(
         clients.map((c) => {

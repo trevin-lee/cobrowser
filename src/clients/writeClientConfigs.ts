@@ -18,8 +18,6 @@ const CLAUDE_JSON = path.join(os.homedir(), '.claude.json');
 /** Cursor's global server list, for a Cursor without its MCP extension API. */
 const CURSOR_MCP = path.join(os.homedir(), '.cursor', 'mcp.json');
 
-/** Files older versions wrote INTO the repo. Removed on sight now. */
-const LEGACY_REPO_FILES = ['.mcp.json', path.join('.cursor', 'mcp.json')];
 
 /**
  * Register the cobrowser daemon with the MCP clients that can be registered for you, each
@@ -64,7 +62,7 @@ export async function writeClientConfigs(
   }
 
   // --- Cursor: its own extension API, or its file where that API is missing ---------------
-  const admin = { name: entry, url, token: daemonToken(undefined, dev) };
+  const admin = { name: entry, url, token: daemonToken(dev) };
   const cursorApi = (vscode as unknown as { cursor?: { mcp?: { registerServer?: (c: unknown) => void } } }).cursor?.mcp;
   if (cursorApi?.registerServer) {
     try {
@@ -81,16 +79,14 @@ export async function writeClientConfigs(
       }
     } catch (e) {
       log(`Cursor's MCP API refused the registration (${(e as Error).message}); writing ${CURSOR_MCP} instead.`);
-      writeCursorFile(admin, dev, log);
+      writeCursorFile(admin, log);
       said.push('Cursor (~/.cursor/mcp.json)');
     }
   } else if (vscode.env.appName.toLowerCase().includes('cursor') && fs.existsSync(path.dirname(CURSOR_MCP))) {
-    writeCursorFile(admin, dev, log);
+    writeCursorFile(admin, log);
     said.push('Cursor (~/.cursor/mcp.json)');
   }
 
-  // --- Clean up what older versions left in the repo ------------------------------------
-  if (!dev) await removeRepoConfigs(log);
 
   log(`Registered the cobrowser daemon at ${url} with ${said.filter(Boolean).join(' and ') || 'no file-based client'}.`);
 }
@@ -165,19 +161,11 @@ function sameEntry(has: unknown, want: Record<string, unknown>): boolean {
 }
 
 /** For a Cursor without its extension API: one unscoped entry in its global file. */
-function writeCursorFile(ep: Endpoint, dev: boolean, log: Log): void {
+function writeCursorFile(ep: Endpoint, log: Log): void {
   updateJson(
     CURSOR_MCP,
     (json) => {
       const servers = (json.mcpServers ??= {}) as Record<string, unknown>;
-      // Migration: `cobrowser-<folder>` entries each pointed at a window-lifetime port that
-      // is now dead. Only the production entry prunes them; a dev run must not touch the
-      // installed extension's entry at all.
-      if (!dev) {
-        for (const key of Object.keys(servers)) {
-          if (key.startsWith('cobrowser-') && key !== 'cobrowser-dev') delete servers[key];
-        }
-      }
       servers[ep.name] = { type: 'http', url: ep.url, headers: { Authorization: `Bearer ${ep.token}` } };
       return json;
     },
@@ -185,56 +173,3 @@ function writeCursorFile(ep: Endpoint, dev: boolean, log: Log): void {
   );
 }
 
-/**
- * Delete the `.mcp.json` / `.cursor/mcp.json` that older versions wrote into the repo,
- * plus the `.git/info/exclude` lines added to hide them. Only OUR entry is removed: a
- * file that also holds the user's own servers keeps them and stays.
- */
-async function removeRepoConfigs(log: Log): Promise<void> {
-  const root = vscode.workspace.workspaceFolders?.[0];
-  if (!root) return;
-  for (const rel of LEGACY_REPO_FILES) {
-    const file = path.join(root.uri.fsPath, rel);
-    let raw: string;
-    try {
-      raw = fs.readFileSync(file, 'utf8');
-    } catch {
-      continue; // not there — nothing to clean
-    }
-    let json: JsonObject;
-    try {
-      json = JSON.parse(raw) as JsonObject;
-    } catch {
-      log(`Leaving unparseable ${rel} alone — remove it by hand if it is ours.`);
-      continue;
-    }
-    const servers = json.mcpServers as Record<string, unknown> | undefined;
-    if (!servers || !('cobrowser' in servers)) continue;
-    delete servers.cobrowser;
-    // Only ours was in there → the whole file is ours to remove.
-    const empty = Object.keys(servers).length === 0 && Object.keys(json).length === 1;
-    try {
-      if (empty) {
-        fs.rmSync(file);
-        log(`Removed ${rel} (now registered in $HOME instead).`);
-      } else {
-        fs.writeFileSync(file, JSON.stringify(json, null, 2) + '\n', 'utf8');
-        log(`Removed the cobrowser entry from ${rel}; your other servers were left in place.`);
-      }
-    } catch (e) {
-      log(`Could not clean ${rel}: ${(e as Error).message}`);
-    }
-  }
-  // Drop the exclude lines we added; leave anything else in the file untouched.
-  const excludeFile = path.join(root.uri.fsPath, '.git', 'info', 'exclude');
-  try {
-    const lines = fs.readFileSync(excludeFile, 'utf8').split('\n');
-    const drop = new Set(['# added by cobrowser', '.mcp.json', '.cursor/mcp.json']);
-    const kept = lines.filter((l) => !drop.has(l.trim()));
-    if (kept.length !== lines.length) {
-      fs.writeFileSync(excludeFile, kept.join('\n'), 'utf8');
-    }
-  } catch {
-    /* not a git repo, or no info/exclude — nothing to do */
-  }
-}
