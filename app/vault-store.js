@@ -4,7 +4,8 @@
  * Pure functions over the decrypted vault object ({ entries: [...] }); the app does the
  * unlocking, the asking and the saving around them.
  *
- * A login: { id, host, port, username, password, scope, also, notes, updatedAt }, where scope is 'all'
+ * A login: { id, host, port, username, password, scope, also, notes, updatedAt }, where password
+ * is '' for an account that signs in with an emailed link or a one-time code, and scope is 'all'
  * or a list of workspace paths (a workspace can only list and fill logins in its scope), and
  * `also` lists other websites the same account signs in on ({ host, port }), such as a
  * Microsoft account's password page on live.com for a login saved from microsoftonline.com.
@@ -89,7 +90,7 @@ function mergeScope(a, b) {
 }
 
 function publicEntry(e) {
-  return { host: siteLabel(e), also: (e.also || []).map(siteLabel), username: e.username, scope: e.scope, notes: e.notes || '' };
+  return { host: siteLabel(e), also: (e.also || []).map(siteLabel), username: e.username, scope: e.scope, notes: e.notes || '', hasPassword: !!e.password };
 }
 
 function findEntry(vault, label, username) {
@@ -108,7 +109,8 @@ function upsertLogin(vault, site, username, password, scope, { mergeScope: merge
   if (!host) throw new Error('site is required');
   const existing = vault.entries.find((e) => e.host === host && (e.port || '') === port && e.username === username);
   if (existing) {
-    existing.password = password;
+    // An empty password is "none given", never "erase it": only an edit removes a saved one.
+    if (password) existing.password = password;
     existing.updatedAt = Date.now();
     if (scope !== undefined) existing.scope = merge ? mergeScope(existing.scope, normalizeScope(scope)) : normalizeScope(scope);
     // Other websites are only ever added here, like workspaces from a command or an import.
@@ -117,7 +119,7 @@ function upsertLogin(vault, site, username, password, scope, { mergeScope: merge
     if (notes !== undefined && normalizeNotes(notes)) existing.notes = normalizeNotes(notes);
     return { entry: existing, replaced: true };
   }
-  const entry = { id: crypto.randomBytes(6).toString('hex'), host, port, username, password, scope: normalizeScope(scope), updatedAt: Date.now() };
+  const entry = { id: crypto.randomBytes(6).toString('hex'), host, port, username, password: password || '', scope: normalizeScope(scope), updatedAt: Date.now() };
   if (normalizeNotes(notes)) entry.notes = normalizeNotes(notes);
   const others = normalizeSites(also, entry);
   if (others.length) entry.also = others;
@@ -126,8 +128,8 @@ function upsertLogin(vault, site, username, password, scope, { mergeScope: merge
 }
 
 /**
- * Edit a login in place: its site, username, password (kept when not given) and scope (kept
- * when not given). Refuses to become a duplicate of another login.
+ * Edit a login in place: its site, username, password (kept when not given, removed when null)
+ * and scope (kept when not given). Refuses to become a duplicate of another login.
  */
 function updateLogin(vault, from, fields) {
   const entry = findEntry(vault, from.host, from.username);
@@ -140,7 +142,8 @@ function updateLogin(vault, from, fields) {
   entry.host = site.host;
   entry.port = site.port;
   entry.username = username;
-  if (fields.password) entry.password = fields.password;
+  if (fields.password === null) entry.password = ''; // now signs in with a link or a code
+  else if (fields.password) entry.password = fields.password;
   if (fields.scope !== undefined) entry.scope = normalizeScope(fields.scope);
   if (fields.also !== undefined) entry.also = normalizeSites(fields.also, entry);
   if (fields.notes !== undefined) { const n = normalizeNotes(fields.notes); if (n) entry.notes = n; else delete entry.notes; }
@@ -243,7 +246,9 @@ function importCsv(vault, text, scope) {
   if (iu < 0 || in_ < 0 || ip < 0) throw new Error(`CSV needs url/username/password columns; found: ${header.join(', ')}`);
   for (const r of rows.slice(1)) {
     const url = r[iu], user = r[in_], pass = r[ip];
-    if (!url || !pass) continue;
+    // A row without a password is an account that signs in with a link or a code; a row with
+    // neither a username nor a password says nothing to keep.
+    if (!url || (!pass && !user)) continue;
     const { workspaces, sites, notes } = inote >= 0 ? splitNote(r[inote]) : {};
     const { replaced } = upsertLogin(vault, url, user || '', pass, workspaces === undefined ? scope : workspaces, { mergeScope: true, also: sites, notes });
     result.count++;

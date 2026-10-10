@@ -357,7 +357,7 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'list_credentials',
     {
       description:
-        "Logins THIS workspace may use, from the human's cobrowser vault — sites and usernames only, never passwords, plus the saved cards (label, brand, last four digits) that fill_card can fill. A login or card can carry notes: the human's Markdown for you (which account to use, how 2FA works, what a card is for). Read them before you sign in or pay. alsoOn lists other websites the same login fills on (one account, several sign-in sites). Logins scoped to other workspaces are not listed and cannot be filled from here; if the site you need is missing, request_credential asks the human to grant one.",
+        "Logins THIS workspace may use, from the human's cobrowser vault — sites and usernames only, never passwords, plus the saved cards (label, brand, last four digits) that fill_card can fill. A login or card can carry notes: the human's Markdown for you (which account to use, how 2FA works, what a card is for). Read them before you sign in or pay. alsoOn lists other websites the same login fills on (one account, several sign-in sites). noPassword marks an account that signs in with an emailed link or a one-time code: fill_credentials fills its username, and the human finishes. Logins scoped to other workspaces are not listed and cannot be filled from here; if the site you need is missing, request_credential asks the human to grant one.",
       inputSchema: {},
     },
     async () => {
@@ -371,7 +371,7 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'fill_credentials',
     {
       description:
-        'Fill the saved login for the CURRENT site into fields you choose: pass the username and/or password field uids from take_snapshot. The password never enters your context — the app types it in directly and reports what it filled. Refused unless the page is on the login\'s site. Pass `username` when the site has more than one saved login. If it answers "no saved login", call request_credential — the human may hold one scoped to another workspace. Do NOT submit payment or MFA steps for the human.',
+        'Fill the saved login for the CURRENT site into fields you choose: pass the username and/or password field uids from take_snapshot. The password never enters your context — the app types it in directly and reports what it filled. A login with no password (noPassword: it signs in with a link or a code) fills only the username; submit it, then leave the link or the code to the human. Refused unless the page is on the login\'s site. Pass `username` when the site has more than one saved login. If it answers "no saved login", call request_credential — the human may hold one scoped to another workspace. Do NOT submit payment or MFA steps for the human.',
       inputSchema: {
         usernameUid: z.string().optional(),
         passwordUid: z.string().optional(),

@@ -571,8 +571,10 @@ async function fillCredentials(tab, { usernameUid, passwordUid, username }) {
     await dbg.sendCommand('Input.insertText', { text: value }); // trusted keystrokes, never page JS
     filled.push(label);
   }
-  if (filled.includes('password')) oneTimeGrants.delete(grantKey(entry, tab.workspace.id)); // a one-time grant is spent
-  log(`vault: filled ${filled.join('+')} for ${entry.username} on ${host}`);
+  // A one-time grant is spent by the password, or, for a login with none, by its username.
+  if (filled.includes('password') || (!entry.password && filled.includes('username'))) oneTimeGrants.delete(grantKey(entry, tab.workspace.id));
+  log(`vault: filled ${filled.join('+') || 'nothing'} for ${entry.username} on ${host}`);
+  if (!entry.password) return { filled, username: entry.username, noPassword: true, note: 'This login has no password: the site signs in with an emailed link or a one-time code. Fill the username, submit, and leave the link or the code to the human.' };
   return { filled, username: entry.username };
 }
 
@@ -863,8 +865,9 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
   let known = [], rows = [], unlocked = false, unlocking = false, lastError = '', sel = null, mode = 'view';
   // scopeFrom: the workspaces the form started from, for a login already saved, so saving
   // applies what changed here to the login as it is then (another grant may land meanwhile).
-  const draft = { sites: [''], user: '', pass: '', notes: '', scope: [], scopeFrom: undefined, from: null, matched: null };
-  const resetDraft = () => Object.assign(draft, { sites: [''], user: '', pass: '', notes: '', scope: [], scopeFrom: undefined, from: null, matched: null });
+  // hadPass: the login being edited has a password; dropPass: the person chose to remove it.
+  const draft = { sites: [''], user: '', pass: '', notes: '', scope: [], scopeFrom: undefined, from: null, matched: null, hadPass: false, dropPass: false };
+  const resetDraft = () => Object.assign(draft, { sites: [''], user: '', pass: '', notes: '', scope: [], scopeFrom: undefined, from: null, matched: null, hadPass: false, dropPass: false });
   const cleanSites = () => draft.sites.map((x) => x.trim()).filter(Boolean);
   // A login's websites, one row each: every site it fills on, matched as strictly as any other.
   function sitesEditor(onEnter) {
@@ -1005,13 +1008,21 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
       else {
         const go = () => { if (canSave()) (editing ? saveEdit : save)(); };
         const f = el('div', 'fields');
-        for (const [key, label, ph, type] of [['user', 'Username', 'you@example.com', 'text'], ['pass', 'Password', editing ? 'unchanged' : '', 'password']]) {
+        const passHint = editing ? (draft.dropPass ? 'removed' : draft.hadPass ? 'unchanged' : 'none: signs in with a link or a code') : 'none if it signs in with a link or a code';
+        for (const [key, label, ph, type] of [['user', 'Username', 'you@example.com', 'text'], ['pass', 'Password', passHint, 'password']]) {
           const row = el('div', 'field'); const inp = el('input', key === 'pass' ? '' : 'mono'); inp.type = type; inp.placeholder = ph; inp.value = draft[key]; inp.autocomplete = 'off'; inp.spellcheck = false;
-          inp.oninput = () => { draft[key] = inp.value; sync(); }; inp.onkeydown = (e) => { if (e.key === 'Enter') go(); };
+          inp.oninput = () => { draft[key] = inp.value; if (key === 'pass' && inp.value) draft.dropPass = false; sync(); }; inp.onkeydown = (e) => { if (e.key === 'Enter') go(); };
           row.append(el('label', null, label), inp); f.append(row);
         }
         wrap.append(section('Websites', sitesEditor(go)));
         wrap.append(section('Login', f));
+        // A saved password can be taken off: the account signs in with a link or a code from then on.
+        if (editing && draft.hadPass) {
+          const drop = el('button', 'quiet', draft.dropPass ? 'The saved password will be removed · Keep it' : 'Remove the saved password');
+          drop.onclick = () => { draft.dropPass = !draft.dropPass; if (draft.dropPass) draft.pass = ''; render(); };
+          // Not an 'actions' row: the form's own buttons (Cancel, Save) are the one row of those.
+          const line = el('div'); line.style.display = 'flex'; line.append(drop); wrap.append(line);
+        }
         wrap.append(section('Notes', notesEditor(() => draft.notes, (v) => { draft.notes = v; })));
       }
       const editor = scopeEditor(() => draft.scope, (v) => { draft.scope = v; sync(); });
@@ -1030,7 +1041,7 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
     id.append(h2, el('div', 'user mono', sel.username || '(no username)'));
     t.append(id);
     const acts = el('div', 'acts');
-    const ed = el('button', 'quiet', 'Edit'); ed.onclick = () => { Object.assign(draft, { sites: [sel.host, ...(sel.also || [])], user: sel.username, pass: '', notes: sel.notes || '', scope: sel.scope, scopeFrom: sel.scope, from: { host: sel.host, username: sel.username } }); mode = 'edit'; render(); };
+    const ed = el('button', 'quiet', 'Edit'); ed.onclick = () => { Object.assign(draft, { sites: [sel.host, ...(sel.also || [])], user: sel.username, pass: '', notes: sel.notes || '', scope: sel.scope, scopeFrom: sel.scope, from: { host: sel.host, username: sel.username }, hadPass: !!sel.hasPassword, dropPass: false }); mode = 'edit'; render(); };
     // Removing asks for Touch ID or the Mac's password, which is the confirmation.
     const rm = el('button', 'quiet danger', 'Remove'); rm.onclick = async () => { try { await vault.remove(sel.host, sel.username); sel = null; await refresh(); } catch (e) { say(failed(e)); } };
     acts.append(ed, rm); t.append(acts); wrap.append(t);
@@ -1046,6 +1057,7 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
         hideTimer = setTimeout(hide, 30000); } catch (e) { say(failed(e)); }
     };
     pval.append(copyBtn, show); prow.append(pval); pw.append(prow);
+    if (!sel.hasPassword) { pw.textContent = ''; pw.append(el('div', 'hint', 'None: this account signs in with an emailed link or a one-time code. The agent can fill the username; you finish the sign-in.')); }
     wrap.append(section('Password', pw));
     const sites = el('div', 'sites');
     for (const s of [sel.host, ...(sel.also || [])]) { const row = el('div', 'site'); row.append(el('span', 'mono', s)); sites.append(row); }
@@ -1059,7 +1071,7 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
     }), true));
     const a = el('div', 'actions'); const st = el('div'); st.id = 'status'; a.append(st); wrap.append(a);
   }
-  const canSave = () => !!(cleanSites().length && (draft.pass || mode === 'edit') && (draft.scope === 'all' || draft.scope.length));
+  const canSave = () => !!(cleanSites().length && (draft.scope === 'all' || draft.scope.length));
   const sync = () => {
     const b = $('save'); if (!b) return;
     const scoped = draft.scope === 'all' || draft.scope.length > 0;
@@ -1076,7 +1088,7 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
     }
     if (mode === 'add') b.textContent = replacing ? 'Replace login' : 'Save login';
     // Say why Save is off, once the rest is filled in — the missing piece is otherwise invisible.
-    const st = $('status'); if (st && (mode !== 'add' || (cleanSites().length && draft.pass))) st.textContent = !scoped ? 'Choose a workspace, or Everywhere.' : replacing ? 'This site and username are already saved: saving replaces the password, and the workspaces shown are the ones it has now.' : '';
+    const st = $('status'); if (st && (mode !== 'add' || cleanSites().length)) st.textContent = !scoped ? 'Choose a workspace, or Everywhere.' : replacing ? 'This site and username are already saved: saving ' + (draft.pass ? 'replaces the password' : 'keeps its password') + ', and the workspaces shown are the ones it has now.' : '';
   };
   async function save() {
     try {
@@ -1088,7 +1100,7 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
   async function saveEdit() {
     try {
       const sites = cleanSites(); const u = draft.user.trim(); const k = siteKey(sites[0]);
-      await vault.update(draft.from, { site: sites[0], also: sites.slice(1), username: u, password: draft.pass || undefined, scope: draft.scope, scopeFrom: draft.scopeFrom, notes: draft.notes });
+      await vault.update(draft.from, { site: sites[0], also: sites.slice(1), username: u, password: draft.dropPass ? null : draft.pass || undefined, scope: draft.scope, scopeFrom: draft.scopeFrom, notes: draft.notes });
       resetDraft(); mode = 'view'; await refresh(); sel = rows.find((r) => siteKey(r.host) === k && r.username === u) || null; render();
     } catch (e) { say(failed(e)); }
   }
@@ -1325,16 +1337,17 @@ const scopeNow = (host, username, scopeFrom, scope) => {
   return e && scopeFrom !== undefined ? store.applyScopeChange(e.scope, scopeFrom, scope) : scope;
 };
 ipcMain.handle('vault:add', async (_e, { host, username, password, scope, scopeFrom, also, notes }) => {
-  if (!host || !password) throw new Error('site and password are required');
+  if (!host) throw new Error('a website is required');
   const exists = !!vault && !!findEntry(host, username || '');
-  await confirmFresh(exists ? `replace the saved password for ${username || 'the login'} on ${host}` : `add a login for ${host}`);
+  await confirmFresh(exists ? (password ? `replace the saved password for ${username || 'the login'} on ${host}` : `change the login for ${username || 'the login'} on ${host}`) : `add a login for ${host}`);
   // The form's scope is the one the human chose for this login, so it replaces the old one.
   const r = upsertLogin(host, username || '', password, scopeNow(host, username, scopeFrom, scope), { mergeScope: false, also, notes }); saveVault();
   return { replaced: r.replaced };
 });
 ipcMain.handle('vault:update', async (_e, { from, site, username, password, scope, scopeFrom, also, notes }) => {
   await confirmFresh(`change the login for ${from.username || 'the login'} on ${from.host}`);
-  updateLogin(from, { site, username, password: password || undefined, scope: scopeNow(from.host, from.username, scopeFrom, scope), also, notes }); saveVault();
+  // null removes a saved password (the login signs in with a link or a code); empty keeps it.
+  updateLogin(from, { site, username, password: password === null ? null : password || undefined, scope: scopeNow(from.host, from.username, scopeFrom, scope), also, notes }); saveVault();
 });
 ipcMain.handle('vault:setScope', async (_e, { host, username, before, after }) => {
   await confirmFresh(`change which workspaces may use ${username || 'the login'} on ${host}`);
@@ -1347,6 +1360,7 @@ ipcMain.handle('vault:reveal', async (_e, { host, username }) => {
   await confirmFresh(`show the password for ${username || host} on ${host}`);
   const e = findEntry(host, username);
   if (!e) throw new Error('no such login');
+  if (!e.password) throw new Error('this login has no password');
   log(`vault: revealed password for ${e.username} on ${siteLabel(e)}`);
   return e.password;
 });
@@ -2413,7 +2427,7 @@ async function handle(ws, state, m) {
         // Added over the socket, a login defaults to the calling workspace's scope.
         case 'vault.add': {
           const exists = !!vault && !!findEntry(m.host, m.username || '');
-          await confirmFresh(exists ? `replace the saved password for ${m.username || 'the login'} on ${m.host}` : `add a login for ${m.host}`);
+          await confirmFresh(exists ? (m.password ? `replace the saved password for ${m.username || 'the login'} on ${m.host}` : `change the login for ${m.username || 'the login'} on ${m.host}`) : `add a login for ${m.host}`);
           // From a command: widen the login's scope to this workspace, never narrow it.
           const r = upsertLogin(m.host, m.username || '', m.password, m.scope ?? [state.workspace?.id].filter(Boolean), { mergeScope: true, also: m.also, notes: m.notes }); saveVault();
           return reply({ ok: true, replaced: r.replaced });
@@ -2423,7 +2437,7 @@ async function handle(ws, state, m) {
         case 'vault.list': {
           const v = await unlockVault('list the logins in the cobrowser vault');
           const wsId = state.workspace?.id;
-          return reply({ logins: v.entries.filter((e) => wsId && allowed(e, wsId)).map((e) => ({ host: siteLabel(e), ...(e.also && e.also.length ? { alsoOn: e.also.map(siteLabel) } : {}), username: e.username, ...(e.notes ? { notes: e.notes } : {}) })) });
+          return reply({ logins: v.entries.filter((e) => wsId && allowed(e, wsId)).map((e) => ({ host: siteLabel(e), ...(e.also && e.also.length ? { alsoOn: e.also.map(siteLabel) } : {}), username: e.username, ...(e.password ? {} : { noPassword: true }), ...(e.notes ? { notes: e.notes } : {}) })) });
         }
         case 'vault.lock': { lockVault(); return reply({ ok: true }); }
         case 'vault.open': { focusApp(); openVaultWindow(); return reply({ ok: true }); }

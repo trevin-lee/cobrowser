@@ -13,8 +13,8 @@ const store = require('../app/vault-store.js') as {
   findEntry: (v: Vault, label: string, username: string) => Entry | undefined;
   upsertLogin: (v: Vault, site: string, username: string, password: string, scope?: Scope, opts?: { mergeScope?: boolean; also?: string | string[] }) => { entry: Entry; replaced: boolean };
   loginMatches: (e: Entry, page: Page) => boolean;
-  publicEntry: (e: Entry) => { host: string; also: string[]; username: string; scope: Scope };
-  updateLogin: (v: Vault, from: { host: string; username: string }, fields: { site?: string; username?: string; password?: string; scope?: Scope; also?: string | string[] }) => Entry;
+  publicEntry: (e: Entry) => { host: string; also: string[]; username: string; scope: Scope; hasPassword: boolean };
+  updateLogin: (v: Vault, from: { host: string; username: string }, fields: { site?: string; username?: string; password?: string | null; scope?: Scope; also?: string | string[] }) => Entry;
   removeLogin: (v: Vault, host: string, username: string) => number;
   importCsv: (v: Vault, text: string, scope: Scope) => { count: number; added: number; replaced: number };
   exportCsv: (v: Vault) => string;
@@ -112,7 +112,8 @@ test('import reports what it added and what it replaced; replaced logins keep th
   const v = empty();
   store.upsertLogin(v, 'costco.com', 'me', 'old', ['/a']);
   const csv = 'Title,URL,Username,Password\nCostco,https://costco.com/,me,new\nBank,"https://bank.co.uk/login",you,"p,w""q"\nNo password,https://x.com,z,\n';
-  assert.deepEqual(store.importCsv(v, csv, ['/b']), { count: 2, added: 1, replaced: 1 });
+  assert.deepEqual(store.importCsv(v, csv, ['/b']), { count: 3, added: 2, replaced: 1 });
+  assert.equal(store.findEntry(v, 'x.com', 'z')?.password, '', 'a row without a password is a login without one');
   const costco = store.findEntry(v, 'costco.com', 'me')!;
   assert.equal(costco.password, 'new');
   assert.deepEqual(costco.scope, ['/a', '/b']);
@@ -217,4 +218,36 @@ test('between equally close logins of one account, the most recently saved wins'
   older.updatedAt = 1; newer.updatedAt = 2;
   const p = page('https://www.example.com/');
   assert.deepEqual(store.closestPerUsername([older, newer], p).map((e) => e.id), [newer.id]);
+});
+
+test('a login can have no password: an account that signs in with a link or a code', () => {
+  const v = empty();
+  const { entry } = store.upsertLogin(v, 'magic.example', 'me@example.com', '', 'all');
+  assert.equal(entry.password, '');
+  assert.equal(store.publicEntry(entry).hasPassword, false);
+  store.upsertLogin(v, 'pw.example', 'me', 'secret', 'all');
+  assert.equal(store.publicEntry(v.entries[1]).hasPassword, true);
+});
+
+test('saving a login again without a password keeps the saved one; only an edit removes it', () => {
+  const v = empty();
+  store.upsertLogin(v, 'site.example', 'me', 'secret', 'all');
+  store.upsertLogin(v, 'site.example', 'me', '', ['/ws']);
+  assert.equal(v.entries[0].password, 'secret', 'an empty password is none given, not erase');
+  store.updateLogin(v, { host: 'site.example', username: 'me' }, { password: '' });
+  assert.equal(v.entries[0].password, 'secret', 'blank in an edit keeps it');
+  store.updateLogin(v, { host: 'site.example', username: 'me' }, { password: null });
+  assert.equal(v.entries[0].password, '', 'null removes it');
+  store.updateLogin(v, { host: 'site.example', username: 'me' }, { password: 'again' });
+  assert.equal(v.entries[0].password, 'again');
+});
+
+test('a CSV row without a password imports as a login without one, and survives the round trip', () => {
+  const v = empty();
+  const r = store.importCsv(v, 'url,username,password\nhttps://magic.example,me@example.com,\nhttps://nothing.example,,\nhttps://pw.example,u,p\n', 'all');
+  assert.equal(r.count, 2, 'a row with neither a username nor a password is skipped');
+  assert.deepEqual(v.entries.map((e) => [e.host, e.password]), [['magic.example', ''], ['pw.example', 'p']]);
+  const back = empty();
+  store.importCsv(back, store.exportCsv(v), 'all');
+  assert.deepEqual(back.entries.map((e) => [e.host, e.username, e.password]), [['magic.example', 'me@example.com', ''], ['pw.example', 'u', 'p']]);
 });

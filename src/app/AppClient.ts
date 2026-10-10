@@ -265,10 +265,10 @@ export class AppConnection {
     if (r.error) throw new Error(String(r.error));
     return { count: Number(r.count) || 0, added: Number(r.added) || 0, replaced: Number(r.replaced) || 0 };
   }
-  async vaultList(): Promise<{ host: string; alsoOn?: string[]; username: string; notes?: string }[]> {
+  async vaultList(): Promise<{ host: string; alsoOn?: string[]; username: string; noPassword?: boolean; notes?: string }[]> {
     const r = await this.request({ type: 'vault.list' }, 120000);
     if (r.error) throw new Error(String(r.error));
-    return r.logins as { host: string; alsoOn?: string[]; username: string; notes?: string }[];
+    return r.logins as { host: string; alsoOn?: string[]; username: string; noPassword?: boolean; notes?: string }[];
   }
   /** Ask the app to export every login to a CSV the human picks (Touch ID each time). The
    *  passwords are written by the app; nothing but the count and the path comes back. */

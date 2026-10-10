@@ -60,6 +60,14 @@ suite('vault-window', async (r) => {
     void imported;
     const after = (await L.conn.vaultWindow(`({ state: document.getElementById('state').textContent, status: document.getElementById('status')?.textContent, items: document.querySelectorAll('#list .item').length })`)).value as Record<string, unknown>;
     r.check('Import in the Cards view adds the cards a file holds and says what it did', after.state === '2 cards · unlocked' && after.items === 2 && /Imported 1 card: 1 new/.test(String(after.status)), after);
+    // A login without a password (it signs in with a link or a code): Save is on without one,
+    // and the login shows that it has none instead of Show and Copy.
+    await L.conn.vaultWindow(`document.getElementById('k-logins').click(); document.getElementById('new').click(); 1`, { wait: 300 });
+    const canSaveBare = (await L.conn.vaultWindow(`draft.sites = ['nopw.example']; draft.user = 'mo@example.com'; draft.pass = ''; draft.scope = 'all'; sync(); !document.getElementById('save').disabled`)).value;
+    await L.conn.vaultWindow(`save().then(() => 1)`, { wait: 800 });
+    const bare = (await L.conn.vaultWindow(`(() => { sel = rows.find((x) => x.host === 'nopw.example') || null; render(); const d = document.getElementById('detail'); return { saved: !!sel, hasPassword: sel && sel.hasPassword, none: d.textContent.includes('None: this account signs in'), show: [...d.querySelectorAll('button')].some((b) => b.textContent === 'Show') }; })()`)).value as Record<string, unknown>;
+    r.check('a login can be saved without a password, and shows it has none instead of Show and Copy', canSaveBare === true && bare.saved === true && bare.hasPassword === false && bare.none === true && bare.show === false, { canSaveBare, bare });
+
     // With nothing selected there is no line beside an item: the message goes under the header.
     await L.conn.vaultWindow(`document.getElementById('k-logins').click(); sel = null; mode = 'view'; render(); document.getElementById('export').click(); 1`, { wait: 800 });
     const notice = (await L.conn.vaultWindow(`({ status: !!document.getElementById('status'), notice: document.getElementById('notice').hidden ? '' : document.getElementById('notice').textContent })`)).value as { status: boolean; notice: string };

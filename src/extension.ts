@@ -677,14 +677,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (!site) return;
       const username = await vscode.window.showInputBox({ prompt: `Username for ${site}` });
       if (username === undefined) return;
-      const password = await vscode.window.showInputBox({ prompt: `Password for ${username || site}`, password: true });
-      if (!password) return;
+      const password = await vscode.window.showInputBox({ prompt: `Password for ${username || site}. Leave it empty for an account that signs in with an emailed link or a one-time code.`, password: true });
+      if (password === undefined) return;
       try {
         const { replaced } = await withApp((c) => c.vaultAdd(site, username, password));
         void vscode.window.showInformationMessage(
           replaced
-            ? `Cobrowser: replaced the saved password for ${username || 'the login'} on ${site}; it is now usable in this workspace too.`
-            : `Cobrowser: saved a login for ${site}, usable in this workspace. Change where it can be used with "Cobrowser: Open Vault".`,
+            ? password
+              ? `Cobrowser: replaced the saved password for ${username || 'the login'} on ${site}; it is now usable in this workspace too.`
+              : `Cobrowser: ${username || 'the login'} on ${site} is already saved, and is now usable in this workspace too; its password, if it has one, is unchanged.`
+            : `Cobrowser: saved a login for ${site}${password ? '' : ' (no password: it signs in with a link or a code)'}, usable in this workspace. Change where it can be used with "Cobrowser: Open Vault".`,
         );
       } catch (err) {
         void vscode.window.showErrorMessage(`Cobrowser: could not save the login — ${String((err as Error).message ?? err)}`);

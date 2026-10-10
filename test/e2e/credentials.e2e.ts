@@ -90,6 +90,14 @@ suite('credentials', async (r) => {
         const onWww = await fillNoName(`http://www.app.localhost:${port}/`);
         const onCenter = await fillNoName(`http://accounts.app.localhost:${port}/`);
         r.check('[sites] one account saved under two hosts of a site fills without a choice, the closest login on each page', onWww.res.filled.length === 2 && onWww.pw === 'main-pw' && onCenter.res.filled.length === 2 && onCenter.pw === 'center-pw', { onWww, onCenter });
+        // An account that signs in with an emailed link or a one-time code: saved without a password.
+        await L2.conn.vaultAdd(`http://magic.localhost:${port}`, 'mo@example.com', '', 'all');
+        const magicListed = (await L2.conn.vaultList()).find((e) => e.username === 'mo@example.com');
+        const mt = await L2.conn.openTab(`http://magic.localhost:${port}/`, 800, 600); await sleep(600);
+        await L2.conn.cdp(mt.tabId, 'Runtime.evaluate', { expression: 'document.getElementById("u").setAttribute("data-cobrowser-uid","1"); document.getElementById("p").setAttribute("data-cobrowser-uid","2"); 1' });
+        const magic = await L2.conn.vaultFill(mt.tabId, { usernameUid: '1', passwordUid: '2' }) as { filled: string[]; noPassword?: boolean; note?: string };
+        const magicFields = (await L2.conn.cdp<{ result: { value: string } }>(mt.tabId, 'Runtime.evaluate', { expression: 'document.getElementById("u").value + "|" + document.getElementById("p").value' })).result.value;
+        r.check('[no password] a login without one is listed as such, and filling it types the username and says the human finishes', magicListed?.noPassword === true && JSON.stringify(magic.filled) === '["username"]' && magic.noPassword === true && /link or a one-time code/.test(magic.note ?? '') && magicFields === 'mo@example.com|', { magicListed, magic, magicFields });
       } finally {
         await L2.stop();
         two.close();
