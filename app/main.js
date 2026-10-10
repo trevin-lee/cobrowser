@@ -28,6 +28,7 @@ const identity = require('./identity.js');
 const { TabLog } = require('./capture.js');
 const { checkParams } = require('./protocolGuard.js');
 const uploads = require('./uploads.js');
+const appMigrations = require('./migrations.js');
 
 // Overridable so tests can run a second instance beside the real one without clobbering its state.
 const STATE_DIR = process.env.COBROWSER_STATE_DIR || path.join(os.homedir(), '.cobrowser');
@@ -164,7 +165,7 @@ let permissions = null;
 function loadPermissions() {
   if (!permissions) {
     let raw = null; try { raw = JSON.parse(fs.readFileSync(PERMISSIONS_FILE, 'utf8')); } catch { /* none yet */ }
-    permissions = sitePermissions.migrate(raw, knownWorkspaces());
+    permissions = sitePermissions.load(raw);
   }
   return permissions;
 }
@@ -2749,6 +2750,9 @@ function makeTray() {
 }
 
 app.whenReady().then(async () => {
+  // What an older version left in the data folder, converted once, before it is read.
+  const migrated = appMigrations.runMigrations({ dataDir: DATA_DIR, knownWorkspaces, log });
+  if (migrated.length) log(`migrations: ${migrated.join(', ')}`);
   const token = crypto.randomBytes(24).toString('hex');
   const wss = new WebSocketServer({ host: '127.0.0.1', port: 0 });
   wss.on('connection', (ws, req) => {

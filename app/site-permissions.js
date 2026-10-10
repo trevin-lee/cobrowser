@@ -26,17 +26,9 @@ function permissionKey(origin, permission, details) {
   return `${normalizeOrigin(origin)}|${permission}${kind ? ':' + kind : ''}`;
 }
 
-/**
- * Read what was on disk. Before version 2 the file was one flat map shared by every
- * workspace; those decisions are copied to each workspace that existed then, so nothing a
- * person decided is lost or starts asking again, and from here on each changes on its own.
- */
-function migrate(raw, knownWorkspaces) {
-  if (raw && raw.version === 2 && raw.workspaces && typeof raw.workspaces === 'object') return raw;
-  const store = { version: 2, workspaces: {} };
-  const flat = raw && typeof raw === 'object' ? Object.entries(raw).filter(([k, v]) => k.includes('|') && typeof v === 'boolean') : [];
-  if (flat.length) for (const ws of knownWorkspaces) store.workspaces[ws] = Object.fromEntries(flat);
-  return store;
+/** Read what was on disk (an older form is converted at start, app/migrations.js). */
+function load(raw) {
+  return raw && raw.version === 2 && raw.workspaces && typeof raw.workspaces === 'object' ? raw : { version: 2, workspaces: {} };
 }
 
 function decision(store, workspaceId, origin, permission, details) {
@@ -73,4 +65,4 @@ function dropWorkspace(store, workspaceId) {
   delete store.workspaces[workspaceId];
 }
 
-module.exports = { permissionKey, migrate, decision, remember, list, forget, dropWorkspace };
+module.exports = { permissionKey, load, decision, remember, list, forget, dropWorkspace };
