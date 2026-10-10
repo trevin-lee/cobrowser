@@ -180,15 +180,16 @@ export class BrowserSession {
     private readonly app: AppConnection,
     /** Install a virtual WebAuthn authenticator so passkey prompts fail fast to
      *  a password fallback (an offscreen page can't show the OS fingerprint prompt). */
-    private readonly autoFallbackPasskeys: boolean,
+    /** Passkey prompts fail fast to a password: the browser is not signed for Touch ID. */
+    private readonly passkeyFallback: boolean,
   ) {}
 
   /** Offscreen tabs behave as headless did: no OS window can host a prompt. */
   readonly headless = true;
 
   /** Attach to the app: adopt the workspace's existing tabs and follow its tab events. */
-  static async connectApp(app: AppConnection, autoFallbackPasskeys = true): Promise<BrowserSession> {
-    const session = new BrowserSession(app, autoFallbackPasskeys);
+  static async connectApp(app: AppConnection, passkeyFallback = true): Promise<BrowserSession> {
+    const session = new BrowserSession(app, passkeyFallback);
 
     // A reload finds the tabs right where it left them.
     const existing = await app.listTabs().catch(() => [] as AppTabInfo[]);
@@ -353,7 +354,7 @@ export class BrowserSession {
   private async prepPage(page: AppPage): Promise<void> {
     if (this.prepped.has(page)) return;
     this.prepped.add(page);
-    if (!this.autoFallbackPasskeys) return;
+    if (!this.passkeyFallback) return;
     try {
       await page.cdp('WebAuthn.enable', {}, 3000);
       await page.cdp(

@@ -114,9 +114,7 @@ function firefoxContainerFor(context: vscode.ExtensionContext): string {
 /** Whether to install the virtual WebAuthn authenticator, which makes passkey ceremonies
  *  fail fast so sites fall back to a password. An offscreen page has no window to host the
  *  OS prompt, so a real ceremony would just hang. Read when the browser connects. */
-function passkeyFallback(): boolean {
-  return vscode.workspace.getConfiguration('cobrowser').get<boolean>('autoFallbackPasskeys') ?? true;
-}
+
 
 /** cobrowser.uploadsWithoutAsking is read from Workspace settings only (src/mcp/tools.ts). A
  *  value in User settings would otherwise do nothing without a word. */
@@ -186,12 +184,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // The app keeps one browser profile (partition) per workspace, keyed by this path, so
   // logins and tabs are isolated per project. A window with no folder shares a default.
   const workspaceId = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? path.join(context.globalStorageUri.fsPath, 'default');
-  const readRender = (c: vscode.WorkspaceConfiguration): void => {
-    BrowserPanel.renderScale = c.get<number>('renderScale', 2);
-    BrowserPanel.renderBudgetPx = Math.round(c.get<number>('renderBudgetMegapixels', 6.5) * 1_000_000);
-    BrowserPanel.tabTitleMax = c.get<number>('tabTitleMaxLength', 30);
-  };
-  readRender(cfg);
   // The accent colours what concerns the agent: its highlight in the panels, the vault (through
   // the app) and the frame the bridge draws on tabs (through the daemon).
   const readAccent = (): string => accentOrDefault(vscode.workspace.getConfiguration('cobrowser').get<string>('accentColor'));
@@ -204,14 +196,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         BrowserPanel.setAccent(color);
         BrowserPanel.app?.setAccent(color);
         void registerWithDaemon();
-      }
-      if (e.affectsConfiguration('cobrowser.renderScale') || e.affectsConfiguration('cobrowser.renderBudgetMegapixels')) {
-        readRender(vscode.workspace.getConfiguration('cobrowser'));
-        BrowserPanel.remeasureAll();
-      }
-      if (e.affectsConfiguration('cobrowser.tabTitleMaxLength')) {
-        readRender(vscode.workspace.getConfiguration('cobrowser'));
-        BrowserPanel.refreshTitles();
       }
       if (e.affectsConfiguration('cobrowser.uploadsWithoutAsking')) warnUserUploadSetting();
     }),
@@ -375,7 +359,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         conn.onClose = () => log('App connection closed.');
         // A signed app has a real Touch ID authenticator; the fail-fast virtual one would
         // replace it with a forced password fallback.
-        const s = await BrowserSession.connectApp(conn, state.webauthn ? false : passkeyFallback());
+        const s = await BrowserSession.connectApp(conn, !state.webauthn);
         log(`Connected to the cobrowser app ${state.version} (${tabs.length} tab(s) already open for this workspace).`);
         const wired = await wire(s);
         if (tabs.length) BrowserPanel.disposeUnclaimedRestored(); // pages adopted their shells in wire()
@@ -761,7 +745,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
       const ok = await vscode.window.showWarningMessage(
         'Turn passkeys off?',
-        { modal: true, detail: 'The browser quits, closing every workspace\'s tabs (they reopen when a panel next opens), and is signed again as it was downloaded; passkey prompts then fall back to passwords while "Auto Fallback Passkeys" is on (the default). Passkeys already saved stay in your keychain, and work again if you enable passkeys with the same team and identifier.' },
+        { modal: true, detail: 'The browser quits, closing every workspace\'s tabs (they reopen when a panel next opens), and is signed again as it was downloaded; passkey prompts then fall back to passwords. Passkeys already saved stay in your keychain, and work again if you enable passkeys with the same team and identifier.' },
         'Turn Off',
       );
       if (ok !== 'Turn Off') return;

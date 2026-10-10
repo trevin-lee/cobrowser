@@ -4,16 +4,19 @@ import * as fs from 'node:fs';
 import type { AppPage } from '../browser/AppPage';
 import type { BrowserSession, ElementBox } from '../browser/BrowserSession';
 import type { AppConnection, ScreenInfo } from '../app/AppClient';
-import { DEFAULT_TAB_TITLE_MAX, fullTabTitle, tabLabel } from './tabTitle';
+import { fullTabTitle, tabLabel } from './tabTitle';
 import { resolveAddress } from '../browser/address';
 import { SELECTION_JS, pressEditKey, type Selection } from '../browser/editing';
 
-/** Default ceiling on rendered pixels per frame (cobrowser.renderBudgetMegapixels). Measured
+/** Ceiling on rendered pixels per frame. Measured
  *  on an M4 Pro: the app's JPEG encode holds 24fps at 8.2Mpx (a full-height retina laptop
  *  panel at 2x) and ~30fps at 6.5Mpx, so 6.5 keeps scrolling smooth at ~1.8x there and gives
  *  true 2x on anything smaller. The old 5Mpx cap rendered that panel at 0.78x and stretched
- *  it back up, which is what "not perfectly crisp" was. Raise it for crisp over smooth. */
-const DEFAULT_RENDER_BUDGET_PX = 6_500_000;
+ *  it back up, which is what "not perfectly crisp" was. */
+const RENDER_BUDGET_PX = 6_500_000;
+/** Device pixels per CSS px to render at: native on a retina display and a 2x supersample on
+ *  a 1x one; RENDER_BUDGET_PX may pull it down. */
+const RENDER_SCALE = 2;
 
 // Every page is its own offscreen window in the app, so every visible panel gets frames
 // at full rate simultaneously — no foreground coordination, no polling for hidden panels.
@@ -80,13 +83,6 @@ export class BrowserPanel {
 
   /** The app streaming this workspace's tabs. Set by the extension once connected. */
   static app: AppConnection | undefined;
-  /** Device pixels per CSS px to render at (cobrowser.renderScale). 2 is native on a retina
-   *  display and a 2x supersample on a 1x one; the area cap above may pull it down. */
-  static renderScale = 2;
-  /** Pixel budget per frame; see DEFAULT_RENDER_BUDGET_PX. */
-  static renderBudgetPx = DEFAULT_RENDER_BUDGET_PX;
-  /** Longest tab title, in characters (cobrowser.tabTitleMaxLength); 0 = no limit. */
-  static tabTitleMax = DEFAULT_TAB_TITLE_MAX;
   /** The panel that is the active editor, for the keyboard-shortcut commands. */
   static active: BrowserPanel | undefined;
   /** The browser tab the human used last, for Open Browser. */
@@ -235,14 +231,6 @@ export class BrowserPanel {
     return true;
   }
 
-  /** Re-apply every panel's viewport (a render setting changed). */
-  static remeasureAll(): void {
-    for (const p of BrowserPanel.panels.values()) {
-      p.appliedKey = '';
-      void p.applyViewport();
-    }
-  }
-
   /** Re-read every panel's title from its page (titles change without a navigation). */
   /** The cobrowser.accentColor setting: the agent's highlight in every panel. */
   static accent = '#2b5bff';
@@ -325,7 +313,7 @@ export class BrowserPanel {
   /** Called on navigation and by the extension whenever the tab set changes (titles). The
    *  tab shows the title cut like a browser tab's; the address bar's tooltip has all of it. */
   updateTitle(): void {
-    const label = tabLabel(this.page.title(), this.page.url(), BrowserPanel.tabTitleMax);
+    const label = tabLabel(this.page.title(), this.page.url());
     if (this.panel.title !== label) this.panel.title = label;
     const full = fullTabTitle(this.page.title(), this.page.url());
     if (full !== this.fullTitle) {
@@ -382,11 +370,11 @@ export class BrowserPanel {
     const { cssW, cssH, screen } = this.metrics;
     if (cssW < 50 || cssH < 50) return;
     const zoom = this.getZoom();
-    // Render at renderScale device pixels per CSS px — native crispness on retina, a
+    // Render at RENDER_SCALE device pixels per CSS px — native crispness on retina, a
     // supersample on a 1x display — backed off only if the frame would exceed the budget.
-    let scale = Math.max(1, BrowserPanel.renderScale);
+    let scale = RENDER_SCALE;
     const area = cssW * cssH * scale * scale;
-    if (area > BrowserPanel.renderBudgetPx) scale = Math.max(1, Math.sqrt(BrowserPanel.renderBudgetPx / (cssW * cssH)));
+    if (area > RENDER_BUDGET_PX) scale = Math.max(1, Math.sqrt(RENDER_BUDGET_PX / (cssW * cssH)));
     scale = Math.round(scale * 100) / 100;
     void this.panel.webview.postMessage({ type: 'extension.zoomlabel', zoom });
     const key = `${cssW}x${cssH}@${scale}z${zoom}#${screen?.width ?? 0}x${screen?.height ?? 0}`;

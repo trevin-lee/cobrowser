@@ -233,31 +233,6 @@
           "default": false,
           "restricted": true,
           "markdownDescription": "Let the agent upload files in this workspace without asking you first (`upload_file`). Read from **Workspace** settings only, so it is never on everywhere at once, and ignored in an untrusted workspace. Each upload still shows a notification naming the files and the site, and hidden files and folders, `~/Library` (apart from iCloud Drive and cloud-storage folders) and cobrowser's own data are still refused."
-        },
-        "cobrowser.autoFallbackPasskeys": {
-          "type": "boolean",
-          "default": true,
-          "description": "Install a virtual WebAuthn authenticator so passkey prompts fail fast to a password fallback. Ignored once the browser is signed for passkeys (Cobrowser: Enable Passkeys), which gives it the real Touch ID authenticator. Takes effect the next time the browser connects (Cobrowser: Restart Browser, or reload the window)."
-        },
-        "cobrowser.renderScale": {
-          "type": "number",
-          "default": 2,
-          "minimum": 1,
-          "maximum": 3,
-          "description": "Device pixels rendered per CSS pixel. 2 is native on a Retina display and a 2x supersample on a 1x one — crisper text at the cost of larger frames. Backed off automatically on very large panels."
-        },
-        "cobrowser.renderBudgetMegapixels": {
-          "type": "number",
-          "default": 6.5,
-          "minimum": 1,
-          "maximum": 16,
-          "description": "Largest frame the app will render, in megapixels. Above it the render scale is backed off. 6.5 keeps scrolling at ~30fps on a full-height Retina panel (~1.8x); 9 gives true 2x there at ~24fps. Measured on an M4 Pro."
-        },
-        "cobrowser.tabTitleMaxLength": {
-          "type": "number",
-          "default": 30,
-          "minimum": 0,
-          "description": "Longest browser tab title, in characters. Longer titles end with …, as in a browser; hovering the address bar shows the whole title. 0 shows titles in full."
         }
       }
     },
