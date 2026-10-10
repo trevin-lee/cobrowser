@@ -1,5 +1,6 @@
 /* request_credential: a login scoped to one workspace, asked for by another; grant, once, deny. */
 import { suite, launch, serve, html, sleep, AppConnection, readAppState, SCRATCH } from './harness';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 suite('credentials', async (r) => {
@@ -139,6 +140,22 @@ suite('credentials', async (r) => {
         r.check('[cards] the agent never reads the number or the code back: snapshots show (filled), script results are masked', !snap.includes('4242424242424242') && !/value="123"/.test(snap) && /\(filled\)/.test(snap) && !read.includes('4242424242424242') && read.includes('•••• •••• •••• 4242'), { snap: snap.split('\n').filter((l) => /input/.test(l)), read });
         const fr = got.frame as Record<string, string>;
         r.check("[cards] and the fields in another site's frame are filled too", fr.fnum === '4242424242424242' && /^03 ?\/ ?29$/.test(fr.fexp ?? '') && fr.fcvc === '123', { res, frame: fr });
+        // With the vault locked, the unlock is the fill's one confirmation, for the agent and for
+        // the Fill Card command (which lists the cards first): never two prompts in a row.
+        const asks = () => fs.readFileSync(path.join(SCRATCH, 'data', 'app.log'), 'utf8').split('confirmation skipped for:').length - 1;
+        await L3.conn.vaultLock();
+        let before = asks();
+        await L3.conn.vaultFillCard(t.tabId, undefined, 'agent');
+        const agentAsks = asks() - before;
+        await L3.conn.vaultLock();
+        before = asks();
+        await L3.conn.vaultCards(true);
+        await L3.conn.vaultFillCard(t.tabId, undefined, 'human');
+        const commandAsks = asks() - before;
+        before = asks();
+        await L3.conn.vaultFillCard(t.tabId, undefined, 'agent');
+        const unlockedAsks = asks() - before;
+        r.check('[cards] a fill with the vault locked asks once, by the agent or the Fill Card command; unlocked, each fill still asks', agentAsks === 1 && commandAsks === 1 && unlockedAsks === 1, { agentAsks, commandAsks, unlockedAsks });
         const none = await L3.conn.vaultFillCard((await L3.conn.openTab(shop.base + '/frame', 400, 300)).tabId, 'no such card', 'agent');
         r.check('[cards] an unknown card is a clear error, with the cards there are', /no saved card/.test(none.error ?? '') && none.cards?.[0] === 'Personal', none);
       } finally {

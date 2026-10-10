@@ -1,6 +1,7 @@
 /* The vault window as a person sees it: its names, the Logins and Cards views, a login's websites
  * as a list, Markdown notes shown formatted, and room to see the workspaces. Screenshots of each
  * view are saved in the suite's scratch folder for a look. */
+import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { suite, launch, SCRATCH } from './harness';
@@ -10,7 +11,7 @@ suite('vault-window', async (r) => {
   const cardsOut = path.join(SCRATCH, 'cards-out.csv'), cardsIn = path.join(SCRATCH, 'cards-in.csv');
   fs.writeFileSync(cardsIn, 'Card Number,Expiration Month,Expiration Year,CVV,Cardholder Name\n5555555555554444,12,2031,999,Bo\n');
   fs.rmSync(cardsOut, { force: true });
-  const L = await launch({ workspace: path.join(SCRATCH, 'ws-V'), env: { COBROWSER_TEST_EXPORT_PATH: cardsOut, COBROWSER_TEST_IMPORT_PATH: cardsIn } });
+  const L = await launch({ workspace: path.join(SCRATCH, 'ws-V'), env: { COBROWSER_TEST_EXPORT_PATH: cardsOut, COBROWSER_TEST_IMPORT_PATH: cardsIn, COBROWSER_TEST_CLIPBOARD_MS: '1500' } });
   const shots = path.join(SCRATCH, 'vault-shots'); fs.mkdirSync(shots, { recursive: true });
   const snap = async (name: string, script?: string, wait?: number) => {
     const res = await L.conn.vaultWindow(script, { capture: true, wait });
@@ -67,6 +68,27 @@ suite('vault-window', async (r) => {
     await L.conn.vaultWindow(`save().then(() => 1)`, { wait: 800 });
     const bare = (await L.conn.vaultWindow(`(() => { sel = rows.find((x) => x.host === 'nopw.example') || null; render(); const d = document.getElementById('detail'); return { saved: !!sel, hasPassword: sel && sel.hasPassword, none: d.textContent.includes('None: this account signs in'), show: [...d.querySelectorAll('button')].some((b) => b.textContent === 'Show') }; })()`)).value as Record<string, unknown>;
     r.check('a login can be saved without a password, and shows it has none instead of Show and Copy', canSaveBare === true && bare.saved === true && bare.hasPassword === false && bare.none === true && bare.show === false, { canSaveBare, bare });
+
+    // Editing a login into a copy of another is refused before any confirmation is asked.
+    const editAsked = () => fs.readFileSync(path.join(SCRATCH, 'data', 'app.log'), 'utf8').split('confirmation skipped for: change the login').length - 1;
+    await L.conn.vaultAdd('https://dup-a.example', 'u', 'pw-a', 'all');
+    await L.conn.vaultAdd('https://dup-b.example', 'u', 'pw-b', 'all');
+    const editAskedBefore = editAsked();
+    const clash = (await L.conn.vaultWindow(`vault.update({ host: 'dup-a.example', username: 'u' }, { site: 'dup-b.example', username: 'u' }).then(() => 'saved', (e) => String(e.message || e))`)).value as string;
+    r.check('editing a login into a copy of another is refused before Touch ID is asked', /already a login/.test(clash) && editAsked() === editAskedBefore, { clash, editAskedBefore, after: editAsked() });
+
+    // A copied password leaves the clipboard after a while (90 s; 1.5 s here), unless something
+    // else was copied since, which is left alone.
+    const paste = () => execFileSync('pbpaste', { encoding: 'utf8' });
+    await L.conn.vaultWindow(`vault.copyPassword('copied-secret-1')`);
+    const onIt = paste();
+    await new Promise((res) => setTimeout(res, 2200));
+    const cleared = paste();
+    await L.conn.vaultWindow(`vault.copyPassword('copied-secret-2')`);
+    execFileSync('pbcopy', { input: 'something of mine' });
+    await new Promise((res) => setTimeout(res, 2200));
+    const kept = paste();
+    r.check('a copied password is cleared from the clipboard, and something copied since is left alone', onIt === 'copied-secret-1' && cleared === '' && kept === 'something of mine', { onIt, cleared, kept });
 
     // With nothing selected there is no line beside an item: the message goes under the header.
     await L.conn.vaultWindow(`document.getElementById('k-logins').click(); sel = null; mode = 'view'; render(); document.getElementById('export').click(); 1`, { wait: 800 });

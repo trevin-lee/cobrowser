@@ -782,7 +782,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return;
       }
       try {
-        const cards = await app.vaultCards();
+        const cards = await app.vaultCards(true);
         if (!cards.length) {
           const next = await vscode.window.showInformationMessage('Cobrowser: no card is saved yet. Add one under Cards in the vault.', 'Open Vault');
           if (next) await vscode.commands.executeCommand('cobrowser.manageLogins');

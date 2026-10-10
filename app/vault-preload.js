@@ -11,6 +11,10 @@ contextBridge.exposeInMainWorld('vault', {
   workspaces: () => ipcRenderer.invoke('vault:workspaces'),
   remove: (host, username) => ipcRenderer.invoke('vault:remove', { host, username }),
   reveal: (host, username) => ipcRenderer.invoke('vault:reveal', { host, username }),
+  // A password the person revealed, onto the clipboard; the app clears it again after a while.
+  copyPassword: (secret) => ipcRenderer.invoke('vault:copyPassword', { secret }),
+  // Only for a vault file this Mac's keychain key cannot open: it is kept, renamed.
+  startOver: () => ipcRenderer.invoke('vault:startOver'),
   importCsv: (scope) => ipcRenderer.invoke('vault:importCsv', { scope }),
   update: (from, fields) => ipcRenderer.invoke('vault:update', { from, ...fields }),
   exportCsv: () => ipcRenderer.invoke('vault:exportCsv'),

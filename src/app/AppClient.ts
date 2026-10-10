@@ -283,8 +283,9 @@ export class AppConnection {
     await this.request({ type: 'vault.lock' });
   }
   /** The saved cards, as lists may see them: label, brand, last four digits, expiry. */
-  async vaultCards(): Promise<PublicCard[]> {
-    const r = await this.request({ type: 'vault.cards' }, 120000);
+  /** forFill: listing to pick a card to fill, so an unlock here confirms that fill too. */
+  async vaultCards(forFill = false): Promise<PublicCard[]> {
+    const r = await this.request({ type: 'vault.cards', ...(forFill ? { forFill: true } : {}) }, 120000);
     if (r.error) throw new Error(String(r.error));
     return r.cards as PublicCard[];
   }

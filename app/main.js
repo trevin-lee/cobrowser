@@ -17,7 +17,7 @@
 //   -> {type:'closeAll'}                               (this workspace's tabs)
 //   <- binary frame  [u32 metaLen][meta JSON][jpeg]    meta.tabId says which tab
 //   <- {type:'tab', ...} for tabs the page opened itself; {type:'tabClosed', tabId}
-const { app, BrowserWindow, Tray, Menu, nativeImage, session, safeStorage, systemPreferences, ipcMain, dialog, Notification, shell } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, session, safeStorage, systemPreferences, ipcMain, dialog, Notification, shell, clipboard } = require('electron');
 const { WebSocketServer } = require('ws');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -276,6 +276,11 @@ async function confirmPerson(reason) {
   if (response !== 0) throw new Error('cancelled');
 }
 
+/** When Cobrowser: Fill Card unlocked the vault to list the cards, so the fill that follows
+ *  within FILL_UNLOCK_MS does not ask again. */
+let fillUnlockAt = 0;
+const FILL_UNLOCK_MS = 60000;
+
 /** A fresh confirmation for this one act (a change, showing or exporting passwords), which
  *  also unlocks the vault if it was locked. It never rides on an earlier unlock. */
 async function confirmFresh(reason) {
@@ -287,12 +292,53 @@ async function unlockVault(reason) {
   if (vault) return vault;
   await confirmPerson(reason || 'unlock the cobrowser vault'); // rejects on cancel/failure
   if (!safeStorage.isEncryptionAvailable()) throw new Error('OS keychain encryption is unavailable');
-  vault = fs.existsSync(VAULT_FILE)
-    ? JSON.parse(safeStorage.decryptString(fs.readFileSync(VAULT_FILE)))
-    : { entries: [] };
+  vault = fs.existsSync(VAULT_FILE) ? readVaultFile() : { entries: [] };
   log(`vault: unlocked (${vault.entries.length} logins)`);
   return vault;
 }
+/** The vault file, decrypted. One this Mac's keychain key cannot open (the "cobrowser Safe
+ *  Storage" item was deleted or refused) is reported as such, so the window can offer to
+ *  start over (vault:startOver) instead of asking for Touch ID again and again. */
+const UNREADABLE = 'the vault file cannot be read with this Mac\'s keychain key';
+function readVaultFile() {
+  try {
+    return JSON.parse(safeStorage.decryptString(fs.readFileSync(VAULT_FILE)));
+  } catch (e) {
+    log(`vault: unreadable: ${e.message}`);
+    throw new Error(UNREADABLE);
+  }
+}
+
+// Test-only: 'accept' or 'deny' answers Start a new vault. Never set in normal use.
+const TEST_START_OVER = SKIP_BIOMETRICS ? process.env.COBROWSER_TEST_START_OVER : undefined;
+
+/** Start a new, empty vault in place of one that cannot be read. The old file is kept beside
+ *  it, renamed with the date, never deleted: a key that turns up again still opens it. */
+async function startOverVault() {
+  if (!fs.existsSync(VAULT_FILE)) return { error: 'there is no vault file' };
+  try { readVaultFile(); return { error: 'the vault can still be read: unlock it instead' }; } catch { /* unreadable, as it should be */ }
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  const backup = path.join(DATA_DIR, `vault-unreadable-${stamp}.bin`);
+  let ok;
+  if (TEST_START_OVER !== undefined) ok = TEST_START_OVER === 'accept';
+  else {
+    focusApp();
+    const { response } = await dialog.showMessageBox(vaultWin && !vaultWin.isDestroyed() ? vaultWin : undefined, {
+      type: 'warning',
+      message: 'Start a new, empty vault?',
+      detail: `The vault cannot be read with this Mac's keychain key, so its logins and cards are out of reach. The file is kept as ${path.basename(backup)} in ${DATA_DIR}, never deleted, and a new, empty vault takes its place. Import your last CSV export to fill it again.`,
+      buttons: ['Start a new vault', 'Cancel'], defaultId: 1, cancelId: 1,
+    });
+    ok = response === 0;
+  }
+  if (!ok) return { canceled: true };
+  fs.renameSync(VAULT_FILE, backup);
+  vault = null;
+  log(`vault: started over; the unreadable vault is kept as ${backup}`);
+  vaultChanged();
+  return { ok: true, backup };
+}
+
 /** Written whole to a temporary file and renamed over the vault, so a crash, a power cut or a
  *  full disk mid-write leaves the previous vault intact rather than a truncated one. */
 function saveVault() {
@@ -495,7 +541,7 @@ async function exportVault(parent) {
   let file = SKIP_BIOMETRICS ? process.env.COBROWSER_TEST_EXPORT_PATH : undefined;
   if (!file) {
     focusApp();
-    const opts = { title: 'Export logins', defaultPath: path.join(app.getPath('documents'), 'cobrowser-logins.csv'), buttonLabel: 'Export', filters: [{ name: 'CSV', extensions: ['csv'] }], message: 'The file holds every password in plain text. Import it where you need it, then delete it.' };
+    const opts = { title: 'Export logins', defaultPath: path.join(app.getPath('documents'), 'cobrowser-logins.csv'), buttonLabel: 'Export', filters: [{ name: 'CSV', extensions: ['csv'] }], message: 'The file holds every password in plain text. Import it where you need it, then delete it.' + iCloudNote() };
     const r = parent ? await dialog.showSaveDialog(parent, opts) : await dialog.showSaveDialog(opts);
     if (r.canceled || !r.filePath) return null;
     file = r.filePath;
@@ -505,13 +551,20 @@ async function exportVault(parent) {
   return { count: vault.entries.length, file };
 }
 
+/** When iCloud syncs Desktop & Documents (their contents then live under iCloud Drive's own
+ *  folder), a plaintext export saved there is uploaded: the save dialog says so. */
+function iCloudNote() {
+  const synced = ['Documents', 'Desktop'].filter((d) => fs.existsSync(path.join(os.homedir(), 'Library', 'Mobile Documents', 'com~apple~CloudDocs', d)));
+  return synced.length ? ` Your ${synced.join(' and ')} folder${synced.length > 1 ? 's sync' : ' syncs'} to iCloud Drive: save it somewhere that does not, or it is uploaded.` : '';
+}
+
 /** The cards' backup, the same way: a fresh confirmation, a plaintext file the person chooses. */
 async function exportCards(parent) {
   await confirmFresh('export every card in the vault, with its number and security code, to a file');
   let file = SKIP_BIOMETRICS ? process.env.COBROWSER_TEST_EXPORT_PATH : undefined;
   if (!file) {
     focusApp();
-    const opts = { title: 'Export cards', defaultPath: path.join(app.getPath('documents'), 'cobrowser-cards.csv'), buttonLabel: 'Export', filters: [{ name: 'CSV', extensions: ['csv'] }], message: 'The file holds every card number and code in plain text. Keep it somewhere safe, or delete it once it is imported.' };
+    const opts = { title: 'Export cards', defaultPath: path.join(app.getPath('documents'), 'cobrowser-cards.csv'), buttonLabel: 'Export', filters: [{ name: 'CSV', extensions: ['csv'] }], message: 'The file holds every card number and code in plain text. Keep it somewhere safe, or delete it once it is imported.' + iCloudNote() };
     const r = parent ? await dialog.showSaveDialog(parent, opts) : await dialog.showSaveDialog(opts);
     if (r.canceled || !r.filePath) return null;
     file = r.filePath;
@@ -666,14 +719,18 @@ function cardValue(card, f) {
  * time, whoever asked for it; the number and code are typed by the app, never returned.
  */
 async function fillCard(tab, { card: which, by, workspaceName }) {
-  const v = await unlockVault('fill a card into the browser');
+  const wc = tab.win.webContents;
+  const host = hostOf(wc.getURL());
+  // A locked vault is unlocked for this fill, and that one prompt is the fill's confirmation:
+  // a second one straight after it adds nothing. So it names the site, and the card if named.
+  const wasLocked = !vault;
+  const named = which ? `your card "${which}"` : 'a saved card';
+  const v = await unlockVault(by === 'agent' ? `let the agent in "${workspaceName}" fill ${named} on ${host}` : `fill ${named} on ${host}`);
   const card = store.findCard(v, which);
   if (!card) {
     const have = (v.cards || []).map((c) => store.publicCard(c).label);
     return { filled: [], error: have.length ? (which ? `no saved card "${which}"` : 'several cards are saved: name one') : 'no card is saved in the vault', cards: have };
   }
-  const wc = tab.win.webContents;
-  const host = hostOf(wc.getURL());
   const pub = store.publicCard(card);
   const dbg = wc.debugger;
   const run = (expression, sessionId) => dbg.sendCommand('Runtime.evaluate', { expression, returnByValue: true }, sessionId).then((r) => r.result.value).catch(() => undefined);
@@ -684,9 +741,14 @@ async function fillCard(tab, { card: which, by, workspaceName }) {
     for (const f of (await run(`(${detectCardFields.toString()})()`, sessionId)) || []) found.push({ ...f, sessionId });
   }
   if (!found.length) return { filled: [], error: `no card fields on ${host}` };
-  await confirmFresh(by === 'agent'
-    ? `let the agent in "${workspaceName}" fill your card ${pub.label} (•••• ${pub.last4}) on ${host}`
-    : `fill your card ${pub.label} (•••• ${pub.last4}) on ${host}`);
+  // Cobrowser: Fill Card lists the cards first, unlocking for this fill (vault.cards forFill).
+  const unlockedForThis = wasLocked || (by === 'human' && Date.now() - fillUnlockAt < FILL_UNLOCK_MS);
+  fillUnlockAt = 0;
+  if (!unlockedForThis) {
+    await confirmFresh(by === 'agent'
+      ? `let the agent in "${workspaceName}" fill your card ${pub.label} (•••• ${pub.last4}) on ${host}`
+      : `fill your card ${pub.label} (•••• ${pub.last4}) on ${host}`);
+  }
   tab.boost();
   const filled = [];
   for (const f of found) {
@@ -999,6 +1061,14 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
       const b = el('button', 'primary', unlocking ? 'Waiting for you to confirm…' : 'Unlock'); b.disabled = unlocking; b.onclick = refresh;
       lc.append(el('div', null, 'Locked. Unlock with Touch ID or your Mac password. Every change, and showing or exporting a password, asks again.'), b);
       if (lastError && !unlocking) lc.append(el('p', 'hint', lastError));
+      // A vault this Mac's keychain key cannot open: unlocking again will not help.
+      if (/cannot be read with this Mac/.test(lastError) && !unlocking) {
+        const fresh = el('button', 'quiet danger', 'Start a new vault');
+        fresh.onclick = async () => {
+          try { const r = await vault.startOver(); if (r && r.ok) { lastError = ''; say('A new, empty vault: the old file is kept as ' + base(r.backup) + '. Import your last export to fill it.'); render(); } else if (r && r.error) say(r.error); } catch (e) { say(failed(e)); }
+        };
+        lc.append(el('p', 'hint', 'The old file is kept, renamed with the date, and a new, empty vault takes its place.'), fresh);
+      }
       wrap.append(lc); return;
     }
     if (mode === 'add' || mode === 'import' || mode === 'edit') {
@@ -1053,7 +1123,7 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
     show.onclick = async () => {
       if (dots.classList.contains('revealed')) return hide();
       try { const secret = await vault.reveal(sel.host, sel.username); dots.textContent = secret; dots.classList.add('revealed'); show.textContent = 'Hide'; copyBtn.hidden = false;
-        copyBtn.onclick = async () => { await navigator.clipboard.writeText(secret); copyBtn.textContent = 'Copied'; setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500); };
+        copyBtn.onclick = async () => { await vault.copyPassword(secret); copyBtn.textContent = 'Copied · cleared in 90 s'; setTimeout(() => { copyBtn.textContent = 'Copy'; }, 2500); };
         hideTimer = setTimeout(hide, 30000); } catch (e) { say(failed(e)); }
     };
     pval.append(copyBtn, show); prow.append(pval); pw.append(prow);
@@ -1345,6 +1415,9 @@ ipcMain.handle('vault:add', async (_e, { host, username, password, scope, scopeF
   return { replaced: r.replaced };
 });
 ipcMain.handle('vault:update', async (_e, { from, site, username, password, scope, scopeFrom, also, notes }) => {
+  // Tried on a copy first, as card changes are: a clash with another login is said before
+  // Touch ID is asked for, not after.
+  if (vault) store.updateLogin(structuredClone(vault), from, { site, username, password: password === null ? null : password || undefined, scope, also, notes });
   await confirmFresh(`change the login for ${from.username || 'the login'} on ${from.host}`);
   // null removes a saved password (the login signs in with a link or a code); empty keeps it.
   updateLogin(from, { site, username, password: password === null ? null : password || undefined, scope: scopeNow(from.host, from.username, scopeFrom, scope), also, notes }); saveVault();
@@ -1355,6 +1428,17 @@ ipcMain.handle('vault:setScope', async (_e, { host, username, before, after }) =
   setScope(host, username, scopeNow(host, username, before, after)); saveVault();
 });
 ipcMain.handle('vault:remove', async (_e, { host, username }) => { await confirmFresh(`remove the login for ${username || 'the login'} on ${host}`); removeLogin(host, username); saveVault(); });
+/** How long a copied password stays on the clipboard. Cleared only if it is still there:
+ *  anything copied since is the person's and is left alone. */
+const CLIPBOARD_CLEAR_MS = (SKIP_BIOMETRICS && Number(process.env.COBROWSER_TEST_CLIPBOARD_MS)) || 90000;
+ipcMain.handle('vault:startOver', () => startOverVault());
+ipcMain.handle('vault:copyPassword', async (_e, { secret }) => {
+  if (typeof secret !== 'string' || !secret) return;
+  // Awaited: Electron 44's clipboard calls in the main process return promises (readText()
+  // compared to a string was never equal, so nothing was cleared).
+  await clipboard.writeText(secret);
+  setTimeout(async () => { if ((await clipboard.readText()) === secret) await clipboard.clear(); }, CLIPBOARD_CLEAR_MS);
+});
 ipcMain.handle('vault:reveal', async (_e, { host, username }) => {
   // Showing a password never rides on the session unlock: a fresh confirmation every time.
   await confirmFresh(`show the password for ${username || host} on ${host}`);
@@ -2461,7 +2545,10 @@ async function handle(ws, state, m) {
           return reply({ card: store.publicCard(c) });
         }
         case 'vault.cards': {
-          const v = await unlockVault('list the cards in the cobrowser vault');
+          // forFill: Cobrowser: Fill Card picking a card; an unlock here confirms that fill.
+          const wasLocked = !vault;
+          const v = await unlockVault(m.forFill ? 'fill a saved card into the page in front of you' : 'list the cards in the cobrowser vault');
+          if (wasLocked && m.forFill) fillUnlockAt = Date.now();
           return reply({ cards: (v.cards || []).map(store.publicCard) });
         }
         case 'vault.fillCard': {
