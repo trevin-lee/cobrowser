@@ -76,6 +76,8 @@ jobs:
         env:
           # A runner has no GPU, so hidden tabs cost more to draw than on a Mac (12% there).
           COBROWSER_E2E_CPU_LIMIT: '30'
+          # A hidden tab's screenshot: 0.3 s to 0.9 s there (600 ms on a Mac).
+          COBROWSER_E2E_SHOT_LIMIT_MS: '2000'
 
       - name: Collect the scratch dirs (app logs, screenshots) of a failed run
         if: failure()
