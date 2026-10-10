@@ -2,6 +2,27 @@
 
 Release notes for earlier versions are on the [GitHub releases page](https://github.com/trevin-lee/cobrowser/releases).
 
+## 0.9.27
+
+### Added
+
+- **Start a new vault.** When the vault cannot be read with this Mac's keychain key (the "cobrowser Safe Storage" item deleted or refused), unlocking says so, and the vault window offers to start a new, empty vault. The old file is kept beside it as `vault-unreadable-<date>.bin`, never deleted.
+- **Cobrowser: Replace Agent Token** replaces the token that reaches every workspace (unscoped agents, the bridge add-ons): the old one stops working at once, connections made with it are closed, and the Firefox add-on and cobrowser's own agent entries get the new one. It names what is left to redo: the Chrome popup's URL and agents added with Connect Another Agent.
+- **Cobrowser: Unbind Your Own Browser** ends a workspace's binding, whichever browser it is. The bind commands now only bind.
+
+### Changed
+
+- **The title-bar button:** a **+** on a browser tab opens a new tab; on any other editor the logo is **Open Browser**, which brings back the browser tab you used last instead of opening another.
+- **A card fill with the vault locked asks once:** unlocking, with a prompt that names the site, is the fill's confirmation, for the agent and for Cobrowser: Fill Card.
+- **A password copied in the vault window is cleared from the clipboard after 90 seconds**, unless something else was copied since.
+
+### Fixed
+
+- **The bridge popup shows "Window closed"** for a workspace whose editor window is closed, instead of "Not bound".
+- **Editing a login into a copy of another is refused before Touch ID**, not after.
+- **The export dialogs say when iCloud syncs Desktop and Documents**, since a plaintext file saved there is uploaded.
+- **A release without Mozilla's signing fails** instead of leaving installed Firefox add-ons with nothing to update from; a manual run can still release without it, keeping them on the last signed version.
+
 ## 0.9.26
 
 ### Added
