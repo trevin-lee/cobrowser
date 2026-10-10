@@ -77,7 +77,7 @@ const zen = new ZenHub(
   currentToken,
   (workspace) => {
     const r = registry.list().find((x) => x.id === workspace);
-    return r?.container ? { browser: r.browser ?? 'firefox', container: r.container, accent: r.accent } : undefined;
+    return r?.container ? { browser: r.browser ?? 'firefox', container: r.container } : undefined;
   },
   log,
   VERSION,

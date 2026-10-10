@@ -96,8 +96,6 @@ async function save() {
   await refreshStatus();
 }
 
-// The editor's accent (cobrowser.accentColor), as the agent's frame on tabs uses it.
-api.runtime.sendMessage({ type: 'accent' }).then((c) => { if (/^#[0-9a-f]{6}$/i.test(c || '')) document.documentElement.style.setProperty('--accent', c); }, () => undefined);
 
 $('save').addEventListener('click', () => void save());
 $('reset').addEventListener('click', () => void resetCap());

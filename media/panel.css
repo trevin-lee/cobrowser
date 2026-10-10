@@ -136,7 +136,7 @@ button.icon svg {
   position: absolute;
   box-sizing: border-box;
   pointer-events: none;
-  /* The agent's colour (cobrowser.accentColor), not the editor theme's. */
+  /* The agent's colour, cobalt, not the editor theme's. */
   border: 2px solid var(--cobrowser-agent, var(--cobrowser-accent));
   border-radius: 3px;
   background: color-mix(in srgb, var(--cobrowser-agent, var(--cobrowser-accent)) 14%, transparent);

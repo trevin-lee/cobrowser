@@ -232,13 +232,6 @@ export class BrowserPanel {
   }
 
   /** Re-read every panel's title from its page (titles change without a navigation). */
-  /** The cobrowser.accentColor setting: the agent's highlight in every panel. */
-  static accent = '#2b5bff';
-  static setAccent(color: string): void {
-    BrowserPanel.accent = color;
-    for (const p of BrowserPanel.panels.values()) void p.panel.webview.postMessage({ type: 'extension.accent', color });
-  }
-
   static refreshTitles(): void {
     for (const p of BrowserPanel.panels.values()) p.updateTitle();
   }
@@ -563,7 +556,7 @@ export class BrowserPanel {
   <style nonce="${nonce}">${css}</style>
   <title>Cobrowser</title>
 </head>
-<body style="--cobrowser-agent: ${BrowserPanel.accent}">
+<body style="--cobrowser-agent: #2b5bff">
   <div id="toolbar">
     <button id="back" class="icon" title="Back" aria-label="Back">
       <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M10 3.5 5.5 8 10 12.5"/></svg>

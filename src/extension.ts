@@ -11,7 +11,7 @@ import { SessionTreeProvider } from './webview/SessionTreeProvider';
 import { writeClientConfigs } from './clients/writeClientConfigs';
 import { snippetFor, type OtherClient } from './clients/agentConfigs';
 import { daemonToken, deregister, ensureDaemon, isOlder, register, registrationState, replaceDaemonToken, tokenReplaced } from './daemon/client';
-import { DEFAULT_DAEMON_PORT, DEV_DAEMON_PORT, accentOrDefault, bridgeEndpointUrl } from './daemon/protocol';
+import { DEFAULT_DAEMON_PORT, DEV_DAEMON_PORT, bridgeEndpointUrl } from './daemon/protocol';
 import { AppConnection, readAppState, type AppState } from './app/AppClient';
 import { ensureApp, electronExecutable } from './app/ensureApp';
 import { APP_BUNDLE_ID, listSigningIdentities, readSignedMarker, signElectronForPasskeys, unsignForPasskeys } from './app/signApp';
@@ -184,19 +184,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // The app keeps one browser profile (partition) per workspace, keyed by this path, so
   // logins and tabs are isolated per project. A window with no folder shares a default.
   const workspaceId = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? path.join(context.globalStorageUri.fsPath, 'default');
-  // The accent colours what concerns the agent: its highlight in the panels, the vault (through
-  // the app) and the frame the bridge draws on tabs (through the daemon).
-  const readAccent = (): string => accentOrDefault(vscode.workspace.getConfiguration('cobrowser').get<string>('accentColor'));
-  AppConnection.accent = BrowserPanel.accent = readAccent();
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration('cobrowser.accentColor')) {
-        const color = readAccent();
-        AppConnection.accent = color;
-        BrowserPanel.setAccent(color);
-        BrowserPanel.app?.setAccent(color);
-        void registerWithDaemon();
-      }
       if (e.affectsConfiguration('cobrowser.uploadsWithoutAsking')) warnUserUploadSetting();
     }),
   );
@@ -454,7 +443,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       registerWithDaemon = () =>
         register(
           daemonPort,
-          { id, name: path.basename(id), url: `http://127.0.0.1:${mcpPort}/mcp`, token, pid: process.pid, container: firefoxContainerFor(context) || undefined, browser: bridgeBrowser(), accent: AppConnection.accent },
+          { id, name: path.basename(id), url: `http://127.0.0.1:${mcpPort}/mcp`, token, pid: process.pid, container: firefoxContainerFor(context) || undefined, browser: bridgeBrowser() },
           log,
           dev,
         );

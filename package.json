@@ -219,15 +219,6 @@
           "scope": "application",
           "description": "Localhost port for the shared cobrowser daemon — the single MCP endpoint every editor window and every agent client uses. 0 (default) means 39273. It is set for the whole editor, so every window agrees on it; each window's own internal server takes an ephemeral port and is never contacted directly. Takes effect after reloading every window; paste the new Copy Bridge URL into a bridge extension's popup."
         },
-        "cobrowser.accentColor": {
-          "type": "string",
-          "format": "color-hex",
-          "default": "#2b5bff",
-          "pattern": "^#[0-9a-fA-F]{6}$",
-          "patternErrorMessage": "A colour as #rrggbb, e.g. #2b5bff.",
-          "scope": "application",
-          "description": "The colour of what concerns the agent: its highlight in a browser tab, the frame it draws on tabs in your own Chrome or Firefox, and selection and the agent's switches in the vault. Cobalt (#2b5bff) by default. The logo keeps its own colours."
-        },
         "cobrowser.uploadsWithoutAsking": {
           "type": "boolean",
           "default": false,

@@ -783,8 +783,7 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
        the space shared with the agent. Cobalt marks what concerns the agent and what is chosen. */
     --bg: #0a0a0c; --panel: #111114; --lift: #19191d; --line: rgba(255,255,255,.08); --line-2: rgba(255,255,255,.15);
     --fg: #fafafa; --muted: #8e8e99; --dim: #4a4a53;
-    /* Every shade of the accent comes from it, so the cobrowser.accentColor setting (set on
-       this page by the app) recolours the whole window. */
+    /* Every shade of the accent, cobalt, comes from it. */
     --accent: #2b5bff; --danger: #ff5a52; --pane: #3a3a44;
     --accent-text: color-mix(in srgb, var(--accent) 62%, white); --accent-soft: color-mix(in srgb, var(--accent) 16%, transparent);
     --accent-glow: color-mix(in srgb, var(--accent) 40%, transparent); --sel-ring: color-mix(in srgb, var(--accent) 14%, var(--panel));
@@ -1381,28 +1380,9 @@ function openVaultWindow() {
   const outside = (url) => { if (/^(https?:|mailto:)/.test(url)) void shell.openExternal(url); };
   vaultWin.webContents.setWindowOpenHandler(({ url }) => { outside(url); return { action: 'deny' }; });
   vaultWin.webContents.on('will-navigate', (e, url) => { e.preventDefault(); outside(url); });
-  vaultWin.webContents.on('did-finish-load', () => paintAccent());
   void vaultWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(VAULT_HTML));
 }
 
-/**
- * The accent (the editor's cobrowser.accentColor), kept here so a vault window opened from the
- * menu bar, before any editor connects, has it too. Each editor sends it with its hello, and
- * again when it changes.
- */
-const ACCENT_FILE = path.join(DATA_DIR, 'accent.json');
-const DEFAULT_ACCENT = '#2b5bff';
-let accent = (() => { try { const v = JSON.parse(fs.readFileSync(ACCENT_FILE, 'utf8')).accent; return /^#[0-9a-f]{6}$/i.test(v) ? v : DEFAULT_ACCENT; } catch { return DEFAULT_ACCENT; } })();
-function setAccent(v) {
-  if (typeof v !== 'string' || !/^#[0-9a-f]{6}$/i.test(v) || v.toLowerCase() === accent) return;
-  accent = v.toLowerCase();
-  try { fs.writeFileSync(ACCENT_FILE, JSON.stringify({ accent })); } catch { /* kept for this run */ }
-  paintAccent();
-}
-function paintAccent() {
-  if (!vaultWin || vaultWin.isDestroyed()) return;
-  void vaultWin.webContents.executeJavaScript(`document.documentElement.style.setProperty('--accent', ${JSON.stringify(accent)}); 0`).catch(() => undefined);
-}
 
 ipcMain.handle('vault:list', async () => (await unlockVault('show the logins in the cobrowser vault')).entries.map(publicEntry));
 ipcMain.handle('vault:workspaces', () => knownWorkspaces());
@@ -2491,10 +2471,8 @@ function workspaceFor(id) {
 }
 
 async function handle(ws, state, m) {
-  if (m.type === 'accent') { setAccent(m.color); return; }
   if (m.type === 'hello') {
     if (typeof m.workspace !== 'string' || !m.workspace) return;
-    setAccent(m.accent);
     state.workspace = workspaceFor(m.workspace);
     state.workspace.sockets.add(ws);
     rememberWorkspace(m.workspace);

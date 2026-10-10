@@ -156,9 +156,6 @@ export class AppConnection {
 
   /** `forgotten`: the human forgot this workspace's browser since it last connected, so the
    *  editor should drop the tabs it saved for it rather than reopen them. */
-  /** The cobrowser.accentColor setting, told to the app with every hello (it colours the vault). */
-  static accent = '#2b5bff';
-
   static async connect(state: AppState, workspace: string): Promise<{ conn: AppConnection; tabs: AppTabInfo[]; forgotten: boolean }> {
     const ws = new WebSocket(`ws://127.0.0.1:${state.wsPort}/?token=${state.token}`);
     await new Promise<void>((resolve, reject) => {
@@ -171,7 +168,7 @@ export class AppConnection {
         clearTimeout(timer);
         resolve(JSON.parse((data as Buffer).toString()));
       });
-      ws.send(JSON.stringify({ type: 'hello', workspace, accent: AppConnection.accent }));
+      ws.send(JSON.stringify({ type: 'hello', workspace }));
     });
     return { conn: new AppConnection(ws, hello), tabs: hello.tabs, forgotten: hello.forgotten === true };
   }
@@ -274,10 +271,6 @@ export class AppConnection {
    *  passwords are written by the app; nothing but the count and the path comes back. */
   async vaultExport(): Promise<{ ok: boolean; count?: number; file?: string; canceled?: boolean; error?: string }> {
     return (await this.request({ type: 'vault.export' }, 300000)) as unknown as { ok: boolean; count?: number; file?: string; canceled?: boolean; error?: string };
-  }
-  /** The accent setting changed: the app recolours an open vault window at once. */
-  setAccent(color: string): void {
-    this.send({ type: 'accent', color });
   }
   async vaultLock(): Promise<void> {
     await this.request({ type: 'vault.lock' });

@@ -17,13 +17,7 @@ export interface Registration {
   container?: string;
   /** Which browser's add-on the binding is for. Defaults to firefox. */
   browser?: BridgeBrowser;
-  /** The cobrowser.accentColor setting (#rrggbb), for the frame the add-on draws on tabs. */
-  accent?: string;
 }
-
-/** cobrowser's default accent, cobalt, and the one form a custom one may take (#rrggbb). */
-export const DEFAULT_ACCENT = '#2b5bff';
-export const accentOrDefault = (v: unknown): string => (typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v.trim()) ? v.trim().toLowerCase() : DEFAULT_ACCENT);
 
 export type BridgeBrowser = 'firefox' | 'chrome';
 

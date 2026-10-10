@@ -84,9 +84,8 @@ const COMMITTING = /\b(pay\s+now|confirm\s+(payment|order|purchase)|place\s+orde
 
 /** How long an activity marker stays visible after an agent action. */
 const ACTIVITY_MS = 2500;
-/** The colour of the frame drawn on tabs the agent touches: cobrowser's accent setting, sent
- *  with each hello (cobalt until one arrives). */
-let markColor = '#2b5bff';
+/** cobrowser's cobalt: the frame and label drawn on tabs the agent acts in. */
+const markColor = '#2b5bff';
 const BACKOFF_MS = [1000, 2000, 5000, 10000, 30000];
 const CALL_TIMEOUT_MS = 30000;
 const MAX_TEXT = 20000;
@@ -211,7 +210,6 @@ function send(conn, payload) {
 async function handleMessage(conn, msg) {
   if (msg.type === 'hello') {
     try {
-      if (typeof msg.accent === 'string' && /^#[0-9a-f]{6}$/i.test(msg.accent)) markColor = msg.accent;
       // Unbound here: say why, and which browser the workspace uses instead, if any.
       if (!msg.container) {
         // Its editor window is closed: nothing to bind until the folder is open again.
@@ -1164,7 +1162,6 @@ api.runtime.onMessage.addListener((msg, sender) => {
   if (msg && msg.type === 'reconcile') return reconcile().then(() => statusList());
   if (msg && msg.type === 'containers') return api.contextualIdentities.query({});
   if (msg && msg.type === 'usage') return Promise.resolve(usage());
-  if (msg && msg.type === 'accent') return Promise.resolve(markColor);
   if (msg && msg.type === 'resetCap') {
     if (!fromOptionsPage(sender)) return Promise.resolve({ error: 'refused: only the Cobrowser Bridge page can reset the request cap' });
     requestCount = 0;

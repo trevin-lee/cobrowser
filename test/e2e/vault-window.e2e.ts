@@ -111,11 +111,6 @@ suite('vault-window', async (r) => {
     const unticked = JSON.parse(await scopeNow()) as string[];
     r.check('unticking a workspace takes off that one and keeps the grant made elsewhere', JSON.stringify(unticked) === JSON.stringify(['/elsewhere/ws-X']), unticked);
 
-    // The accent setting recolours the open window at once, shades included.
-    L.conn.setAccent('#ff5c1a');
-    const painted = (await L.conn.vaultWindow(`({ accent: getComputedStyle(document.documentElement).getPropertyValue('--accent').trim(), selected: getComputedStyle(document.querySelector('.item.sel')).boxShadow })`, { wait: 500 })).value as Record<string, string>;
-    r.check('the accent setting recolours the open vault window, selection included', painted.accent === '#ff5c1a' && painted.selected.includes('rgb(255, 92, 26)'), painted);
-    L.conn.setAccent('#2b5bff');
 
     // A Lock from elsewhere (the menu bar, the editor) shows in the window at once.
     await L.conn.vaultLock();

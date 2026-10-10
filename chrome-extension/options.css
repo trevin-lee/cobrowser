@@ -1,5 +1,5 @@
 /* The bridge's popup (and its page when opened in a tab): cobrowser's black, white and accent,
-   in light or dark with the browser. --accent is cobrowser.accentColor, sent by the editor. */
+   in light or dark with the browser. */
 :root {
   color-scheme: light dark;
   --accent: #2b5bff;
