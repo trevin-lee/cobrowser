@@ -10,8 +10,11 @@ suite('vault-recovery', async (r) => {
   fs.writeFileSync(path.join(data, 'vault.bin'), 'not a vault this key can open');
   const L = await launch({ env: { COBROWSER_TEST_START_OVER: 'accept' } });
   try {
+    const asks = () => fs.readFileSync(path.join(data, 'app.log'), 'utf8').split('confirmation skipped for:').length - 1;
+    const asksBefore = asks();
     const locked = await L.conn.vaultList().then(() => 'opened', (e: Error) => e.message);
-    r.check('a vault this Mac cannot read says so, instead of a decryption error', /cannot be read with this Mac's keychain key/.test(locked), locked);
+    const again2 = await L.conn.vaultList().then(() => 'opened', (e: Error) => e.message);
+    r.check('a vault this Mac cannot read says so, and where to start over, without asking for Touch ID each time', /cannot be read with this Mac's keychain key: open the vault/.test(locked) && again2 === locked && asks() === asksBefore, { locked, asksBefore, after: asks() });
 
     const offer = (await L.conn.vaultWindow(`refresh().then(() => [...document.querySelectorAll('#detail button')].map((b) => b.textContent))`, { wait: 600 })).value as string[];
     r.check('the vault window offers to start a new vault', Array.isArray(offer) && offer.includes('Start a new vault'), offer);

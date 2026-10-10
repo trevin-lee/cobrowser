@@ -290,16 +290,20 @@ async function confirmFresh(reason) {
 
 async function unlockVault(reason) {
   if (vault) return vault;
-  await confirmPerson(reason || 'unlock the cobrowser vault'); // rejects on cancel/failure
   if (!safeStorage.isEncryptionAvailable()) throw new Error('OS keychain encryption is unavailable');
-  vault = fs.existsSync(VAULT_FILE) ? readVaultFile() : { entries: [] };
+  // Read before asking: a vault this key cannot open fails at once, instead of after every
+  // Touch ID. What is read is only kept once the person confirms.
+  const opened = fs.existsSync(VAULT_FILE) ? readVaultFile() : { entries: [] };
+  await confirmPerson(reason || 'unlock the cobrowser vault'); // rejects on cancel/failure
+  vault = opened;
   log(`vault: unlocked (${vault.entries.length} logins)`);
+  vaultChanged(); // an open vault window shows it unlocked, whoever unlocked it
   return vault;
 }
 /** The vault file, decrypted. One this Mac's keychain key cannot open (the "cobrowser Safe
  *  Storage" item was deleted or refused) is reported as such, so the window can offer to
  *  start over (vault:startOver) instead of asking for Touch ID again and again. */
-const UNREADABLE = 'the vault file cannot be read with this Mac\'s keychain key';
+const UNREADABLE = 'the vault file cannot be read with this Mac\'s keychain key: open the vault (Cobrowser: Open Vault) to start a new one';
 function readVaultFile() {
   try {
     return JSON.parse(safeStorage.decryptString(fs.readFileSync(VAULT_FILE)));
@@ -367,6 +371,7 @@ async function offerToTrashCsv(file, message, detail) {
 }
 function lockVault() {
   vault = null;
+  void clearCopiedPassword(); // a password copied from the vault does not outlive its unlock
   oneTimeGrants.clear(); // "Allow once" ends with the unlock it was given under
   log('vault: locked');
   vaultChanged();
@@ -1060,7 +1065,8 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
       lc.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>';
       const b = el('button', 'primary', unlocking ? 'Waiting for you to confirm…' : 'Unlock'); b.disabled = unlocking; b.onclick = refresh;
       lc.append(el('div', null, 'Locked. Unlock with Touch ID or your Mac password. Every change, and showing or exporting a password, asks again.'), b);
-      if (lastError && !unlocking) lc.append(el('p', 'hint', lastError));
+      // In the window, its own pointer to the window is dropped.
+      if (lastError && !unlocking) lc.append(el('p', 'hint', lastError.replace(/: open the vault \(Cobrowser: Open Vault\) to start a new one$/, '.')));
       // A vault this Mac's keychain key cannot open: unlocking again will not help.
       if (/cannot be read with this Mac/.test(lastError) && !unlocking) {
         const fresh = el('button', 'quiet danger', 'Start a new vault');
@@ -1432,12 +1438,20 @@ ipcMain.handle('vault:remove', async (_e, { host, username }) => { await confirm
  *  anything copied since is the person's and is left alone. */
 const CLIPBOARD_CLEAR_MS = (SKIP_BIOMETRICS && Number(process.env.COBROWSER_TEST_CLIPBOARD_MS)) || 90000;
 ipcMain.handle('vault:startOver', () => startOverVault());
+/** The password last copied, until it leaves the clipboard: after CLIPBOARD_CLEAR_MS, or when
+ *  the vault locks or the app quits, whichever comes first. */
+let copiedSecret = null;
+async function clearCopiedPassword(secret = copiedSecret) {
+  if (!secret) return;
+  // Awaited: Electron 44's clipboard calls in the main process return promises.
+  if ((await clipboard.readText()) === secret) await clipboard.clear();
+  if (copiedSecret === secret) copiedSecret = null;
+}
 ipcMain.handle('vault:copyPassword', async (_e, { secret }) => {
   if (typeof secret !== 'string' || !secret) return;
-  // Awaited: Electron 44's clipboard calls in the main process return promises (readText()
-  // compared to a string was never equal, so nothing was cleared).
   await clipboard.writeText(secret);
-  setTimeout(async () => { if ((await clipboard.readText()) === secret) await clipboard.clear(); }, CLIPBOARD_CLEAR_MS);
+  copiedSecret = secret;
+  setTimeout(() => void clearCopiedPassword(secret), CLIPBOARD_CLEAR_MS);
 });
 ipcMain.handle('vault:reveal', async (_e, { host, username }) => {
   // Showing a password never rides on the session unlock: a fresh confirmation every time.
@@ -2805,5 +2819,12 @@ function announceQuit() {
   for (const w of workspaces.values()) w.broadcast({ type: 'quitting' });
 }
 app.on('before-quit', announceQuit);
+// A password copied from the vault does not outlive the app: the quit waits for it to be
+// cleared (the clipboard's calls are asynchronous), then goes on.
+app.on('before-quit', (e) => {
+  if (!copiedSecret) return;
+  e.preventDefault();
+  void clearCopiedPassword().finally(() => app.quit());
+});
 // The extension replaces the app with SIGTERM; make that a normal quit, announced.
 process.on('SIGTERM', () => { announceQuit(); app.quit(); });

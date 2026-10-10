@@ -89,6 +89,11 @@ suite('vault-window', async (r) => {
     await new Promise((res) => setTimeout(res, 2200));
     const kept = paste();
     r.check('a copied password is cleared from the clipboard, and something copied since is left alone', onIt === 'copied-secret-1' && cleared === '' && kept === 'something of mine', { onIt, cleared, kept });
+    await L.conn.vaultWindow(`vault.copyPassword('copied-secret-3')`);
+    await L.conn.vaultLock();
+    await new Promise((res) => setTimeout(res, 400));
+    const afterLock = paste();
+    r.check('locking the vault clears a password copied from it at once', afterLock === '', afterLock);
 
     // With nothing selected there is no line beside an item: the message goes under the header.
     await L.conn.vaultWindow(`document.getElementById('k-logins').click(); sel = null; mode = 'view'; render(); document.getElementById('export').click(); 1`, { wait: 800 });
