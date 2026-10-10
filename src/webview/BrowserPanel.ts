@@ -89,6 +89,8 @@ export class BrowserPanel {
   static tabTitleMax = DEFAULT_TAB_TITLE_MAX;
   /** The panel that is the active editor, for the keyboard-shortcut commands. */
   static active: BrowserPanel | undefined;
+  /** The browser tab the human used last, for Open Browser. */
+  private static lastActiveId: string | undefined;
 
   /** The app's id for this panel's tab. */
   get tabId(): string {
@@ -225,6 +227,14 @@ export class BrowserPanel {
     BrowserPanel.panels.get(id)?.panel.reveal(undefined, false);
   }
 
+  /** Bring back the browser tab used last (or any open one). False when there is none. */
+  static revealLast(): boolean {
+    const id = BrowserPanel.lastActiveId && BrowserPanel.panels.has(BrowserPanel.lastActiveId) ? BrowserPanel.lastActiveId : [...BrowserPanel.panels.keys()].pop();
+    if (!id) return false;
+    BrowserPanel.reveal(id);
+    return true;
+  }
+
   /** Re-apply every panel's viewport (a render setting changed). */
   static remeasureAll(): void {
     for (const p of BrowserPanel.panels.values()) {
@@ -276,10 +286,10 @@ export class BrowserPanel {
     // to another editor group (a split), so it keeps updating while you work
     // elsewhere. It only stops when actually hidden (another tab selected in its
     // own group), where there would be nothing to show anyway.
-    if (panel.active) BrowserPanel.active = this;
+    if (panel.active) { BrowserPanel.active = this; BrowserPanel.lastActiveId = this.id; }
     this.panel.onDidChangeViewState(
       () => {
-        if (this.panel.active) BrowserPanel.active = this;
+        if (this.panel.active) { BrowserPanel.active = this; BrowserPanel.lastActiveId = this.id; }
         else if (BrowserPanel.active === this) BrowserPanel.active = undefined;
         void this.syncRender();
         // Follow the user: if they move a browser tab to another group, that group becomes

@@ -46,6 +46,11 @@
       {
         "command": "cobrowser.newTab",
         "title": "Cobrowser: New Browser Tab",
+        "icon": "$(add)"
+      },
+      {
+        "command": "cobrowser.openBrowser",
+        "title": "Cobrowser: Open Browser",
         "icon": "media/icon.png"
       },
       {
@@ -155,6 +160,12 @@
         },
         {
           "command": "cobrowser.newTab",
+          "when": "activeWebviewPanelId == 'cobrowser'",
+          "group": "navigation@100"
+        },
+        {
+          "command": "cobrowser.openBrowser",
+          "when": "activeWebviewPanelId != 'cobrowser'",
           "group": "navigation@100"
         }
       ],

@@ -520,6 +520,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const s = await getSession();
       await s.newPage('about:blank', { byAgent: false });
     }),
+    // The launcher on every other editor's title bar: back to the browser, not another tab.
+    vscode.commands.registerCommand('cobrowser.openBrowser', async () => {
+      if (BrowserPanel.revealLast()) return;
+      const s = await getSession();
+      await s.newPage('about:blank', { byAgent: false });
+    }),
     // Browser-chrome shortcuts, bound in package.json while a cobrowser panel is active.
     vscode.commands.registerCommand('cobrowser.closeTab', () => BrowserPanel.active?.close()),
     vscode.commands.registerCommand('cobrowser.reloadTab', () => BrowserPanel.active?.navigate('reload')),

@@ -86,7 +86,7 @@ removed on first run.
 
 ## Where you watch it
 
-Every tab is an editor tab in a dedicated pane, streamed from the app at up to 60 fps. The address bar takes an address or words to search; `localhost`, IP addresses and `name:port` load over http, as development servers expect, and a page that cannot load says why. The **Cobrowser** icon in the Activity Bar lists this workspace's tabs (a filled dot marks the one the agent is working in); clicking one shows it. There is no OS window to show — the page is rendered offscreen — so prompts that need one (an extension's toolbar popup) cannot appear. Passkeys fail fast to a password by default (`cobrowser.autoFallbackPasskeys`) until you enable them.
+Every tab is an editor tab in a dedicated pane, streamed from the app at up to 60 fps. On a browser tab's title bar, **+** opens a new tab; on any other editor, the cobrowser logo (**Open Browser**) brings back the browser tab you used last, and opens one only when there is none. The address bar takes an address or words to search; `localhost`, IP addresses and `name:port` load over http, as development servers expect, and a page that cannot load says why. The **Cobrowser** icon in the Activity Bar lists this workspace's tabs (a filled dot marks the one the agent is working in); clicking one shows it. There is no OS window to show — the page is rendered offscreen — so prompts that need one (an extension's toolbar popup) cannot appear. Passkeys fail fast to a password by default (`cobrowser.autoFallbackPasskeys`) until you enable them.
 
 ### How it identifies itself
 
