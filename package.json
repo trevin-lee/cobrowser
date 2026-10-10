@@ -300,7 +300,6 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.webview.json",
     "test": "node esbuild.test.mjs && node --test \"dist-test/*.test.js\"",
     "package": "vsce package",
-    "package:chrome": "node scripts/pack-chrome-extension.mjs",
     "sign:firefox": "node scripts/sign-firefox-extension.mjs",
     "vscode:prepublish": "node esbuild.mjs --production",
     "vscode:uninstall": "node ./dist/uninstall.js",

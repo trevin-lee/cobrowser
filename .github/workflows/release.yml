@@ -73,26 +73,29 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Package the extension and the Chrome add-on
-        run: |
-          npm run package
-          npm run package:chrome
-          unzip -l cobrowser-*.vsix | grep -q 'extension/dist/app/cobrowser-auth.app/Contents/MacOS/cobrowser-auth$' || { echo "::error::the .vsix has no cobrowser-auth"; exit 1; }
-
-      - name: Package the macOS builds the stores get
+      # Only the macOS builds: cobrowser runs on nothing else, and a .vsix without a target would
+      # install on Windows and Linux and fail there. The Chrome add-on ships inside the .vsix
+      # (Cobrowser: Install Chrome Bridge Extension), which keeps it up to date.
+      - name: Package the macOS builds
         run: |
           for target in darwin-arm64 darwin-x64; do
             npx vsce package --target "$target"
           done
+          for vsix in cobrowser-darwin-*.vsix; do
+            unzip -l "$vsix" | grep -q 'extension/dist/app/cobrowser-auth.app/Contents/MacOS/cobrowser-auth$' || { echo "::error::$vsix has no cobrowser-auth"; exit 1; }
+          done
 
+      # A tagged release starts as a draft, and is published only once the Firefox add-on and its
+      # firefox-updates.json are attached (the publish job): installed add-ons look for that file
+      # on the latest release. A run by hand fills in a release that already exists.
       - name: Create or update the GitHub Release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.TAG }}
           body_path: ${{ runner.temp }}/release-notes.md
+          draft: ${{ github.event_name == 'push' }}
           files: |
-            *.vsix
-            cobrowser-bridge-chrome-*.zip
+            cobrowser-darwin-*.vsix
           fail_on_unmatched_files: true
 
   firefox:
@@ -161,9 +164,19 @@ jobs:
           ' "$TAG" "$GITHUB_REPOSITORY" "$xpi" > firefox-updates.json
           gh release upload "$TAG" "$xpi" firefox-updates.json --clobber
 
+  publish:
+    name: Publish the GitHub Release
+    needs: firefox
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Out of draft, as the latest release
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+
   extension:
     name: Publish to the stores
-    needs: release
+    needs: publish
     permissions:
       contents: read
       id-token: write

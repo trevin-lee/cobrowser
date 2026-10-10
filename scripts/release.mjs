@@ -85,10 +85,8 @@ for (const ext of ['chrome-extension', 'firefox-extension']) {
 // 2) Typecheck — fail before producing an artifact, not after.
 run('npm', ['run', 'typecheck']);
 
-// 3) Package (vsce runs vscode:prepublish → esbuild --production), and the Chrome add-on's
-//    zip for the GitHub release.
+// 3) Package (vsce runs vscode:prepublish → esbuild --production).
 run('npm', ['run', 'package']);
-run('npm', ['run', 'package:chrome']);
 
 // 4) Install into Cursor (replaces the active version).
 for (const e of editors) run(e.cli, ['--install-extension', vsix, '--force']);
