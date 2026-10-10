@@ -2,6 +2,16 @@
 
 Release notes for earlier versions are on the [GitHub releases page](https://github.com/trevin-lee/cobrowser/releases).
 
+## 0.9.26
+
+### Added
+
+- **Logins without a password**, for accounts that sign in with an emailed link or a one-time code. Save one from the vault window or **Add Login to Vault** with the password left empty, or import a CSV row without one. The vault window shows it has none; `list_credentials` marks it `noPassword`, and `fill_credentials` fills the username and leaves the link or the code to you. Saving or importing a login again without a password never erases a saved one; **Remove the saved password** in the edit form does.
+
+### Fixed
+
+- **One account saved under two hosts of a site** (facebook.com and accountscenter.facebook.com) **fills without a choice.** Both matched every page of the site, and passing the username still left two, so `fill_credentials` could never fill. The login whose site fits the page best is used; only different usernames are still a choice.
+
 ## 0.9.25
 
 ### Changed
