@@ -734,20 +734,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('cobrowser.importLoginsCsv', async () => {
       const picked = await vscode.window.showOpenDialog({ canSelectMany: false, filters: { CSV: ['csv'] }, title: 'Import logins (Apple Passwords / Bitwarden / Chrome CSV export)' });
       if (!picked?.[0]) return;
-      const csv = Buffer.from(await vscode.workspace.fs.readFile(picked[0])).toString('utf8');
-      let r: { count: number; added: number; replaced: number };
+      let r: { count: number; added: number; replaced: number; skipped: number };
       try {
+        const csv = Buffer.from(await vscode.workspace.fs.readFile(picked[0])).toString('utf8');
         r = await withApp((c) => c.vaultImportDetailed(csv));
       } catch (err) {
         void vscode.window.showErrorMessage(`Cobrowser: could not import logins — ${String((err as Error).message ?? err)}`);
         return;
       }
+      // A cobrowser export names each login's workspaces; other logins become usable here.
+      const skipped = r.skipped ? ` ${r.skipped} row${r.skipped === 1 ? ' was' : 's were'} skipped, with no website or neither a username nor a password: keep the file to check them.` : '';
       const del = await vscode.window.showInformationMessage(
-        `Cobrowser: imported ${r.count} login${r.count === 1 ? '' : 's'} (${r.added} new, ${r.replaced} replaced), usable in this workspace. The CSV holds the passwords in plain text — move it to the Trash?`,
+        `Cobrowser: imported ${r.count} login${r.count === 1 ? '' : 's'} (${r.added} new, ${r.replaced} replaced), usable in this workspace or in the workspaces the file names for them.${skipped} The CSV holds the passwords in plain text — move it to the Trash?`,
         'Move the CSV to the Trash',
         'Keep',
       );
-      if (del === 'Move the CSV to the Trash') await vscode.workspace.fs.delete(picked[0], { useTrash: true });
+      if (del === 'Move the CSV to the Trash') {
+        try { await vscode.workspace.fs.delete(picked[0], { useTrash: true }); } catch (err) { void vscode.window.showErrorMessage(`Cobrowser: could not move the CSV to the Trash — ${String((err as Error).message ?? err)}`); }
+      }
     }),
     vscode.commands.registerCommand('cobrowser.disablePasskeys', async () => {
       const exe = electronExecutable({ cacheDir: path.join(context.globalStorageUri.fsPath, 'electron') });

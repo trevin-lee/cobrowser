@@ -260,10 +260,10 @@ export class AppConnection {
   async vaultImport(csv: string, scope?: 'all' | string[]): Promise<number> {
     return (await this.vaultImportDetailed(csv, scope)).count;
   }
-  async vaultImportDetailed(csv: string, scope?: 'all' | string[]): Promise<{ count: number; added: number; replaced: number }> {
+  async vaultImportDetailed(csv: string, scope?: 'all' | string[]): Promise<{ count: number; added: number; replaced: number; skipped: number }> {
     const r = await this.request({ type: 'vault.import', csv, ...(scope ? { scope } : {}) }, 120000);
     if (r.error) throw new Error(String(r.error));
-    return { count: Number(r.count) || 0, added: Number(r.added) || 0, replaced: Number(r.replaced) || 0 };
+    return { count: Number(r.count) || 0, added: Number(r.added) || 0, replaced: Number(r.replaced) || 0, skipped: Number(r.skipped) || 0 };
   }
   async vaultList(): Promise<{ host: string; alsoOn?: string[]; username: string; noPassword?: boolean; notes?: string }[]> {
     const r = await this.request({ type: 'vault.list' }, 120000);

@@ -182,17 +182,20 @@ function removeLogin(vault, host, username) {
 /** Minimal RFC 4180 CSV → rows of strings. Apple Passwords, Bitwarden and Chrome exports
  *  all carry url/username/password columns under slightly different headers. */
 function parseCsv(text) {
-  const rows = []; let row = []; let cell = ''; let q = false;
+  const rows = []; let row = []; let cell = ''; let q = false; let openedOn = 0;
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
     if (q) {
       if (ch === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else q = false; }
       else cell += ch;
-    } else if (ch === '"') q = true;
+    } else if (ch === '"') { q = true; openedOn = rows.length + 1; }
     else if (ch === ',') { row.push(cell); cell = ''; }
     else if (ch === '\n' || ch === '\r') { if (ch === '\r' && text[i + 1] === '\n') i++; row.push(cell); rows.push(row); row = []; cell = ''; }
     else cell += ch;
   }
+  // A quote never closed would swallow every row after it into one cell: the file is refused
+  // rather than imported in part.
+  if (q) throw new Error(`the CSV has a quote that is never closed, on line ${openedOn}: nothing was imported`);
   if (cell.length || row.length) { row.push(cell); rows.push(row); }
   return rows.filter((r) => r.some((c) => c.trim()));
 }
@@ -238,7 +241,8 @@ function splitNote(note) {
  *  the row has some) from the file and keeps its workspaces, widened by the row's, never narrowed. */
 function importCsv(vault, text, scope) {
   const rows = parseCsv(text);
-  const result = { count: 0, added: 0, replaced: 0 };
+  // skipped: rows with no website, or neither a username nor a password, counted and said.
+  const result = { count: 0, added: 0, replaced: 0, skipped: 0 };
   if (rows.length < 2) return result;
   const header = rows[0].map((h) => h.trim().toLowerCase());
   const col = (...names) => header.findIndex((h) => names.includes(h));
@@ -248,7 +252,7 @@ function importCsv(vault, text, scope) {
     const url = r[iu], user = r[in_], pass = r[ip];
     // A row without a password is an account that signs in with a link or a code; a row with
     // neither a username nor a password says nothing to keep.
-    if (!url || (!pass && !user)) continue;
+    if (!url || (!pass && !user)) { result.skipped++; continue; }
     const { workspaces, sites, notes } = inote >= 0 ? splitNote(r[inote]) : {};
     const { replaced } = upsertLogin(vault, url, user || '', pass, workspaces === undefined ? scope : workspaces, { mergeScope: true, also: sites, notes });
     result.count++;

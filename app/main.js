@@ -1178,7 +1178,7 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
     try {
       const r = await vault.importCsv(draft.scope); if (r == null) return; mode = 'view'; resetDraft(); await refresh();
       const n = (k) => k + ' login' + (k === 1 ? '' : 's');
-      say('Imported ' + n(r.count) + ': ' + r.added + ' new, ' + r.replaced + ' already here (password replaced, workspaces kept and added to).');
+      say('Imported ' + n(r.count) + ': ' + r.added + ' new, ' + r.replaced + ' already here (password replaced, workspaces kept and added to).' + (r.skipped ? ' ' + r.skipped + (r.skipped === 1 ? ' row was' : ' rows were') + ' skipped, with no website or neither a username nor a password.' : ''));
     } catch (e) { say(failed(e)); }
   }
   // ---- cards: the same window, a second kind of thing the vault holds ----
@@ -1451,9 +1451,11 @@ ipcMain.handle('vault:reveal', async (_e, { host, username }) => {
 ipcMain.handle('vault:importCsv', async (_e, { scope } = {}) => {
   const r = await dialog.showOpenDialog(vaultWin, { properties: ['openFile'], filters: [{ name: 'CSV', extensions: ['csv'] }], title: 'Import logins (Apple Passwords / Bitwarden / Chrome export)' });
   if (r.canceled || !r.filePaths[0]) return null;
+  const text = fs.readFileSync(r.filePaths[0], 'utf8');
+  store.importCsv({ entries: [] }, text, scope); // a file that cannot be read is said before Touch ID
   await confirmFresh('import logins from a CSV file');
-  const res = importCsv(fs.readFileSync(r.filePaths[0], 'utf8'), scope); saveVault();
-  await offerToTrashCsv(r.filePaths[0], `Imported ${res.count} login${res.count === 1 ? '' : 's'} (${res.added} new, ${res.replaced} replaced).`, 'The CSV holds the passwords in plain text. Move it to the Trash?');
+  const res = importCsv(text, scope); saveVault();
+  await offerToTrashCsv(r.filePaths[0], `Imported ${res.count} login${res.count === 1 ? '' : 's'} (${res.added} new, ${res.replaced} replaced)${res.skipped ? `; ${res.skipped} row${res.skipped === 1 ? '' : 's'} skipped, with no website or neither a username nor a password` : ''}.`, res.skipped ? 'Some rows were not imported: keep the file to check them. It holds the passwords in plain text.' : 'The CSV holds the passwords in plain text. Move it to the Trash?');
   return res;
 });
 ipcMain.handle('vault:exportCsv', () => exportVault(vaultWin));
@@ -1465,8 +1467,10 @@ ipcMain.handle('vault:importCards', async () => {
     if (r.canceled || !r.filePaths[0]) return null;
     file = r.filePaths[0];
   }
+  const text = fs.readFileSync(file, 'utf8');
+  store.importCards({ cards: [] }, text); // a file that cannot be read is said before Touch ID
   await confirmFresh('import cards from a CSV file');
-  const res = store.importCards(vault, fs.readFileSync(file, 'utf8')); saveVault();
+  const res = store.importCards(vault, text); saveVault();
   log(`vault: imported ${res.count} card(s) (${res.added} new, ${res.replaced} replaced, ${res.skipped} skipped)`);
   if (!SKIP_BIOMETRICS) {
     await offerToTrashCsv(file, `Imported ${res.count} card${res.count === 1 ? '' : 's'} (${res.added} new, ${res.replaced} updated${res.skipped ? `, ${res.skipped} not valid cards, skipped` : ''}).`, 'The CSV holds the card numbers and codes in plain text. Move it to the Trash?');
@@ -2517,7 +2521,7 @@ async function handle(ws, state, m) {
           return reply({ ok: true, replaced: r.replaced });
         }
         case 'vault.export': { const r = await exportVault(); return reply(r ? { ok: true, ...r } : { ok: false, canceled: true }); }
-        case 'vault.import': { await confirmFresh('import logins from a CSV file'); const r = importCsv(String(m.csv || ''), m.scope ?? [state.workspace?.id].filter(Boolean)); saveVault(); return reply({ ok: true, count: r.count, added: r.added, replaced: r.replaced }); }
+        case 'vault.import': { const scope = m.scope ?? [state.workspace?.id].filter(Boolean); store.importCsv({ entries: [] }, String(m.csv || ''), scope); await confirmFresh('import logins from a CSV file'); const r = importCsv(String(m.csv || ''), scope); saveVault(); return reply({ ok: true, count: r.count, added: r.added, replaced: r.replaced, skipped: r.skipped }); }
         case 'vault.list': {
           const v = await unlockVault('list the logins in the cobrowser vault');
           const wsId = state.workspace?.id;

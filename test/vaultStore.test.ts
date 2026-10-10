@@ -16,7 +16,7 @@ const store = require('../app/vault-store.js') as {
   publicEntry: (e: Entry) => { host: string; also: string[]; username: string; scope: Scope; hasPassword: boolean };
   updateLogin: (v: Vault, from: { host: string; username: string }, fields: { site?: string; username?: string; password?: string | null; scope?: Scope; also?: string | string[] }) => Entry;
   removeLogin: (v: Vault, host: string, username: string) => number;
-  importCsv: (v: Vault, text: string, scope: Scope) => { count: number; added: number; replaced: number };
+  importCsv: (v: Vault, text: string, scope: Scope) => { count: number; added: number; replaced: number; skipped: number };
   exportCsv: (v: Vault) => string;
   applyScopeChange: (current: Scope, before: Scope, after: Scope) => Scope;
   splitNote: (note: string) => { notes: string; workspaces?: Scope; sites?: string[] };
@@ -112,7 +112,7 @@ test('import reports what it added and what it replaced; replaced logins keep th
   const v = empty();
   store.upsertLogin(v, 'costco.com', 'me', 'old', ['/a']);
   const csv = 'Title,URL,Username,Password\nCostco,https://costco.com/,me,new\nBank,"https://bank.co.uk/login",you,"p,w""q"\nNo password,https://x.com,z,\n';
-  assert.deepEqual(store.importCsv(v, csv, ['/b']), { count: 3, added: 2, replaced: 1 });
+  assert.deepEqual(store.importCsv(v, csv, ['/b']), { count: 3, added: 2, replaced: 1, skipped: 0 });
   assert.equal(store.findEntry(v, 'x.com', 'z')?.password, '', 'a row without a password is a login without one');
   const costco = store.findEntry(v, 'costco.com', 'me')!;
   assert.equal(costco.password, 'new');
@@ -133,7 +133,7 @@ test('export writes every login in a form other managers and this vault read bac
   assert.match(csv, /,http:\/\/192\.168\.1\.1,/, 'a device on the network is plain http');
   assert.match(csv, /,http:\/\/nas:5000,/);
   const back = empty();
-  assert.deepEqual(store.importCsv(back, csv, []), { count: 3, added: 3, replaced: 0 });
+  assert.deepEqual(store.importCsv(back, csv, []), { count: 3, added: 3, replaced: 0, skipped: 0 });
   const pairs = (x: Vault) => x.entries.map((e) => [e.host, e.port, e.username, e.password, JSON.stringify(e.scope), JSON.stringify((e as { also?: unknown }).also ?? null)]).sort();
   assert.deepEqual(pairs(back), pairs(v), 'the same logins, each with the workspaces it had');
 });
@@ -250,4 +250,17 @@ test('a CSV row without a password imports as a login without one, and survives 
   const back = empty();
   store.importCsv(back, store.exportCsv(v), 'all');
   assert.deepEqual(back.entries.map((e) => [e.host, e.username, e.password]), [['magic.example', 'me@example.com', ''], ['pw.example', 'u', 'p']]);
+});
+
+test('a CSV with a quote never closed is refused whole, naming the line, instead of losing the rows after it', () => {
+  const v = empty();
+  const csv = 'url,username,password\nhttps://a.example,"oops,pw1\nhttps://b.example,u2,pw2\nhttps://c.example,u3,pw3\n';
+  assert.throws(() => store.importCsv(v, csv, 'all'), /quote that is never closed, on line 2/);
+  assert.equal(v.entries.length, 0, 'nothing was imported');
+});
+
+test('rows an import cannot use are counted, not silently dropped', () => {
+  const v = empty();
+  const r = store.importCsv(v, 'url,username,password\n,u,p\nhttps://ok.example,u,p\nhttps://empty.example,,\n', 'all');
+  assert.deepEqual(r, { count: 1, added: 1, replaced: 0, skipped: 2 });
 });
