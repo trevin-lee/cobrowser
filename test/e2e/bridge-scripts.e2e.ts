@@ -56,8 +56,12 @@ suite('bridge-scripts', async (r) => {
 
       await run('PAGE_SCRIPTS.watch()');
       await run('PAGE_SCRIPTS.click(null, "#load")');
-      await sleep(300);
-      const busy = await run<{ quietFor: number }>('PAGE_SCRIPTS.quiet()');
+      // Seen changing: polled, since a hidden tab's timers can run late on a slower machine.
+      let busy = { quietFor: Infinity };
+      for (const t0 = Date.now(); Date.now() - t0 < 3000; await sleep(100)) {
+        busy = await run<{ quietFor: number }>('PAGE_SCRIPTS.quiet()');
+        if (busy.quietFor < 200) break;
+      }
       // The page updates for about 1.5 s; a slower machine (a CI runner) finishes later, so wait
       // for the quiet rather than a fixed time, up to a limit that still fails a page that never settles.
       let still = { quietFor: 0 };
