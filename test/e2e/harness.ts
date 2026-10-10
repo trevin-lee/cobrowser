@@ -220,3 +220,71 @@ export function suite(name: string, body: (r: Report) => Promise<void>): void {
     process.exit(1);
   });
 }
+
+/** Chrome for Testing: COBROWSER_E2E_CHROME, or the newest one Playwright downloaded. */
+export function chromeForTesting(): string | undefined {
+  if (process.env.COBROWSER_E2E_CHROME) return process.env.COBROWSER_E2E_CHROME;
+  const cache = path.join(os.homedir(), 'Library', 'Caches', 'ms-playwright');
+  const builds = fs.existsSync(cache) ? fs.readdirSync(cache).filter((d) => /^chromium-\d+$/.test(d)).sort((a, b) => Number(b.slice(9)) - Number(a.slice(9))) : [];
+  for (const b of builds) {
+    for (const arch of ['chrome-mac-arm64', 'chrome-mac']) {
+      const exe = path.join(cache, b, arch, 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing');
+      if (fs.existsSync(exe)) return exe;
+    }
+  }
+  return undefined;
+}
+
+export interface BridgeChrome {
+  chrome: ChildProcess;
+  /** Chrome's remote-debugging port (for other targets, such as the add-on's popup page). */
+  port: number;
+  /** Evaluate in the add-on's service worker, awaiting a promise. */
+  run<T>(expression: string): Promise<{ value?: T; error?: string }>;
+  stop(): void;
+}
+
+/**
+ * Chrome for Testing, headless, in a scratch profile (never the human's Chrome), with the
+ * bridge add-on from chrome-extension/ loaded. Undefined when its service worker never runs.
+ */
+export async function chromeWithBridge(exe: string, startUrl: string, profile: string): Promise<BridgeChrome | undefined> {
+  const { default: WebSocket } = await import('ws');
+  const port = 9400 + Math.floor(Math.random() * 400);
+  const ext = path.join(ROOT, 'chrome-extension');
+  const chrome = spawn(exe, ['--headless=new', `--user-data-dir=${scratchDir(profile)}`, '--no-first-run', '--no-default-browser-check', `--remote-debugging-port=${port}`, `--load-extension=${ext}`, `--disable-extensions-except=${ext}`, startUrl], { stdio: 'ignore' });
+  // The bridge's service worker, found by the add-on's name (Chrome runs its own too).
+  let ws: InstanceType<typeof WebSocket> | undefined;
+  for (let i = 0; i < 40 && !ws; i++) {
+    await sleep(250);
+    const list = (await fetch(`http://127.0.0.1:${port}/json/list`).then((x) => x.json()).catch(() => [])) as { type: string; webSocketDebuggerUrl: string }[];
+    for (const t of list.filter((x) => x.type === 'service_worker')) {
+      const c = new WebSocket(t.webSocketDebuggerUrl);
+      await new Promise((ok) => c.once('open', ok));
+      const name = await new Promise<string>((ok) => {
+        const on = (d: unknown) => { const m = JSON.parse(String(d)); if (m.id === 0) { c.off('message', on); ok(m.result?.result?.value); } };
+        c.on('message', on);
+        c.send(JSON.stringify({ id: 0, method: 'Runtime.evaluate', params: { expression: 'chrome.runtime.getManifest().name', returnByValue: true } }));
+        setTimeout(() => ok(''), 3000);
+      });
+      if (name === 'Cobrowser Bridge') { ws = c; break; }
+      c.close();
+    }
+  }
+  if (!ws) { chrome.kill('SIGKILL'); return undefined; }
+  const worker = ws;
+  let id = 1;
+  const run = <T,>(expression: string): Promise<{ value?: T; error?: string }> =>
+    new Promise((ok) => {
+      const mine = ++id;
+      const on = (d: unknown) => {
+        const m = JSON.parse(String(d));
+        if (m.id !== mine) return;
+        worker.off('message', on);
+        ok(m.result?.exceptionDetails ? { error: m.result.exceptionDetails.exception?.description ?? 'failed' } : { value: m.result?.result?.value });
+      };
+      worker.on('message', on);
+      worker.send(JSON.stringify({ id: mine, method: 'Runtime.evaluate', params: { expression, awaitPromise: true, returnByValue: true } }));
+    });
+  return { chrome, port, run, stop: () => { worker.close(); chrome.kill('SIGKILL'); } };
+}

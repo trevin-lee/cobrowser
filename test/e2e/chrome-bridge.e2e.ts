@@ -2,26 +2,11 @@
  * Chrome). The page-script suite runs the add-on's code in an ordinary page, which cannot show
  * what Chrome itself enforces: it refuses to evaluate strings in an extension, which is how
  * bridge_evaluate_script came to be broken in Chrome without a test noticing. */
-import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import WebSocket from 'ws';
-import { suite, serve, html, sleep, scratchDir, ROOT } from './harness';
+import { suite, serve, html, sleep, ROOT, chromeForTesting, chromeWithBridge } from './harness';
 
-/** Chrome for Testing: COBROWSER_E2E_CHROME, or the newest one Playwright downloaded. */
-function chromeForTesting(): string | undefined {
-  if (process.env.COBROWSER_E2E_CHROME) return process.env.COBROWSER_E2E_CHROME;
-  const cache = path.join(os.homedir(), 'Library', 'Caches', 'ms-playwright');
-  const builds = fs.existsSync(cache) ? fs.readdirSync(cache).filter((d) => /^chromium-\d+$/.test(d)).sort((a, b) => Number(b.slice(9)) - Number(a.slice(9))) : [];
-  for (const b of builds) {
-    for (const arch of ['chrome-mac-arm64', 'chrome-mac']) {
-      const exe = path.join(cache, b, arch, 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing');
-      if (fs.existsSync(exe)) return exe;
-    }
-  }
-  return undefined;
-}
 
 const PAGE = `<!doctype html><title>orders</title>
 <a class=order href="/orders/1">Order one</a> <a class=order href="/orders/2">Order two</a> <a class=order href="/orders/3">Order three</a>
@@ -38,43 +23,11 @@ suite('chrome-bridge', async (r) => {
     if (q.url === '/api/limited') { res.writeHead(429, { 'content-type': 'text/plain' }); res.end('slow down'); return; }
     const [st, h, b] = html(PAGE); res.writeHead(st, h); res.end(b);
   });
-  const port = 9400 + Math.floor(Math.random() * 400);
-  const ext = path.join(ROOT, 'chrome-extension');
-  const chrome = spawn(exe, ['--headless=new', `--user-data-dir=${scratchDir('chrome-profile')}`, '--no-first-run', '--no-default-browser-check', `--remote-debugging-port=${port}`, `--load-extension=${ext}`, `--disable-extensions-except=${ext}`, srv.base + '/'], { stdio: 'ignore' });
+  const bc = await chromeWithBridge(exe, srv.base + '/', 'chrome-profile');
   try {
-    // The bridge's service worker, found by the add-on's name (Chrome runs its own too).
-    let ws: WebSocket | undefined;
-    for (let i = 0; i < 40 && !ws; i++) {
-      await sleep(250);
-      const list = (await fetch(`http://127.0.0.1:${port}/json/list`).then((x) => x.json()).catch(() => [])) as { type: string; webSocketDebuggerUrl: string }[];
-      for (const t of list.filter((x) => x.type === 'service_worker')) {
-        const c = new WebSocket(t.webSocketDebuggerUrl);
-        await new Promise((ok) => c.once('open', ok));
-        const name = await new Promise<string>((ok) => {
-          const on = (d: WebSocket.RawData) => { const m = JSON.parse(String(d)); if (m.id === 0) { c.off('message', on); ok(m.result?.result?.value); } };
-          c.on('message', on);
-          c.send(JSON.stringify({ id: 0, method: 'Runtime.evaluate', params: { expression: 'chrome.runtime.getManifest().name', returnByValue: true } }));
-          setTimeout(() => ok(''), 3000);
-        });
-        if (name === 'Cobrowser Bridge') { ws = c; break; }
-        c.close();
-      }
-    }
-    r.check('the add-on loads in Chrome and its service worker runs', !!ws);
-    if (!ws) return;
-    let id = 1;
-    const run = <T,>(expression: string): Promise<{ value?: T; error?: string }> =>
-      new Promise((ok) => {
-        const mine = ++id;
-        const on = (d: WebSocket.RawData) => {
-          const m = JSON.parse(String(d));
-          if (m.id !== mine) return;
-          ws!.off('message', on);
-          ok(m.result?.exceptionDetails ? { error: m.result.exceptionDetails.exception?.description ?? 'failed' } : { value: m.result?.result?.value });
-        };
-        ws!.on('message', on);
-        ws!.send(JSON.stringify({ id: mine, method: 'Runtime.evaluate', params: { expression, awaitPromise: true, returnByValue: true } }));
-      });
+    r.check('the add-on loads in Chrome and its service worker runs', !!bc);
+    if (!bc) return;
+    const { run, port } = bc;
     // A bound connection, as the daemon's hello leaves one: scoped to the whole profile.
     const call = (method: string, params: Record<string, unknown>) =>
       run<unknown>(`(async () => { const tabId = (await chrome.tabs.query({ url: ${JSON.stringify(srv.base + '/*')} }))[0].id; return dispatch({ scope: PROFILE }, ${JSON.stringify(method)}, { tabId, ...${JSON.stringify(params)} }); })()`);
@@ -161,9 +114,8 @@ suite('chrome-bridge', async (r) => {
       pw.close();
     }
     r.check("the toolbar popup loads in Chrome and shows the bridge's state", shown?.title === 'Cobrowser Bridge' && shown?.summary === 'Not connected' && (shown?.groups as string[] | undefined)?.[0] === 'profile' && /^\d+$/.test(String(shown?.count)) && shown?.accent === '#2b5bff', shown);
-    ws.close();
   } finally {
-    chrome.kill('SIGKILL');
+    bc?.stop();
     srv.close();
   }
 });
