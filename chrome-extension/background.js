@@ -447,8 +447,8 @@ async function dispatch(conn, method, params) {
       if (found && found.ambiguous) {
         throw new Error(`"${params.text}" matches ${found.count} elements: ${found.samples.join(' | ')}. Pass exact:true, a more specific text, or use a uid from bridge_snapshot.`);
       }
-      if (found && found.committing && params.allowPayment !== true && params.allowDestructive !== true) {
-        return { refused: 'committing', label: found.label, needsUserAction: `the human should click "${found.label}" themselves; re-issue with allowPayment: true only if they asked you to complete this payment`, why: 'This submits a payment or places an order. The human owns that click.' };
+      if (found && found.committing && params.allowPayment !== true) {
+        return { refused: 'payment', label: found.label, needsUserAction: `the human should click "${found.label}" themselves; re-issue with allowPayment: true only if they asked you to complete this payment`, why: 'This submits a payment or places an order. The human owns that click.' };
       }
       await runInTab(params.tabId, PAGE_SCRIPTS.effectStart, []).catch(() => null);
       const clicked = await runInTab(params.tabId, PAGE_SCRIPTS.click, [found ? found.ref : (params.ref ?? null), params.selector ?? null]);

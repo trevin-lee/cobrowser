@@ -89,7 +89,7 @@ document.getElementById('file').addEventListener('change',(e)=>window.__files=[.
     const UP2 = path.join(path.dirname(UP), 'e2e-cover.txt');
     fs.writeFileSync(UP2, 'cover letter');
     const upPage = await s.run(() => s.newPage(`${srv.base}/upload`));
-    const up = (o: { uid?: string; selector?: string; filePaths: string[] }, ask = false) => s.run(() => s.uploadFile({ ...o, pageId: upPage.pageId, ask }), upPage.pageId);
+    const up = (o: { uid?: string; selector?: string; filePaths: string[] }, ask = false) => s.run(() => s.uploadFile({ ...o, pageId: upPage.pageId, ask }), upPage.pageId) as Promise<{ uploaded?: string[]; error?: string; declined?: boolean; refused?: string }>;
     const got = async () => JSON.stringify(await s.evaluateScript('() => window.__up', [], upPage.pageId));
     const declined = await up({ selector: '#single', filePaths: [UP] }, true);
     r.check('an upload the human declines attaches nothing', declined.declined === true && (await got()) === '{}', { declined, page: await got() });
@@ -102,7 +102,7 @@ document.getElementById('file').addEventListener('change',(e)=>window.__files=[.
     const nothing = await up({ selector: '#nothing', filePaths: [UP] });
     r.check('a click that opens no picker says so and points at the file inputs', /did not open a file picker.*2 file inputs/.test(nothing.error ?? ''), nothing);
     const pay = await up({ selector: '#pay', filePaths: [UP] });
-    r.check('upload_file will not click a button that pays', /pays or places an order/.test(pay.error ?? '') && (await s.evaluateScript('() => window.__paid', [], upPage.pageId)) !== true, pay);
+    r.check('upload_file will not click a button that pays, refusing it as click does', (pay as { refused?: string }).refused === 'payment' && (await s.evaluateScript('() => window.__paid', [], upPage.pageId)) !== true, pay);
     const hidden = await up({ selector: '#single', filePaths: [path.join(os.homedir(), '.ssh', 'known_hosts')] });
     r.check('a hidden file is refused whatever the human would say', /refused|no such file/.test(hidden.error ?? '') && !(await got()).includes('known_hosts'), hidden);
     const raw = await conn.cdp((await conn.listTabs()).find((t) => t.url.endsWith('/upload'))!.tabId, 'DOM.setFileInputFiles', { files: [UP], backendNodeId: 1 }).then(() => 'sent', (e: Error) => e.message);

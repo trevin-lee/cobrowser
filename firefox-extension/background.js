@@ -410,9 +410,9 @@ async function dispatch(conn, method, params) {
             'Pass exact:true, a more specific text, or use a uid from bridge_snapshot.',
         );
       }
-      if (found && found.committing && params.allowPayment !== true && params.allowDestructive !== true) {
+      if (found && found.committing && params.allowPayment !== true) {
         return {
-          refused: 'committing',
+          refused: 'payment',
           label: found.label,
           needsUserAction: `the human should click "${found.label}" themselves; re-issue with allowPayment: true only if they asked you to complete this payment`,
           why: 'This submits a payment or places an order. The human owns that click.',

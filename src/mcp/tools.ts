@@ -126,13 +126,13 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
       description:
         'Navigate your current tab (or pageId). Returns the SETTLED {url,title} after load (not the requested url), so redirects/failures are detectable.',
       inputSchema: {
-        type: z.enum(['url', 'back', 'forward', 'reload']),
+        type: z.enum(['url', 'back', 'forward', 'reload']).optional().describe('Default "url", which needs url.'),
         url: z.string().optional(),
-        timeout: z.number().optional(),
+        timeout: z.number().optional().describe('Milliseconds to wait for the page to load (default 30000).'),
         pageId,
       },
     },
-    async ({ type, url, timeout, pageId: id }) => {
+    async ({ type = 'url', url, timeout, pageId: id }) => {
       const s = await getSession();
       const landed = await s.run(() => s.navigate(type, url, timeout, id), id);
       return asText(JSON.stringify({ requested: url ?? null, url: landed.url, title: landed.title }));
@@ -230,7 +230,7 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     async ({ uid, selector, filePaths, pageId: id }) => {
       const s = await getSession();
       const r = await s.run(() => s.uploadFile({ uid, selector, filePaths, pageId: id, ask: !uploadsWithoutAsking() }), id);
-      return asText(r.uploaded ? `uploaded ${r.uploaded.join(', ')} to ${r.host}` : JSON.stringify(r, null, 2));
+      return asText('uploaded' in r && r.uploaded ? `uploaded ${r.uploaded.join(', ')} to ${r.host}` : JSON.stringify(r, null, 2));
     },
   );
 

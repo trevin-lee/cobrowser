@@ -6,7 +6,7 @@ import { COMMITTING, CREDENTIAL, SECRET_AUTOCOMPLETE, credentialRefusal, payment
 /** What click reports: what it clicked (and whether the page visibly reacted), or why it did
  *  not (see guards.ts). */
 export type ClickResult = { clicked: string; noVisibleEffect?: boolean } | ReturnType<typeof paymentRefusal>;
-export type UploadResult = { uploaded?: string[]; host?: string; error?: string; declined?: boolean };
+export type UploadResult = { uploaded?: string[]; host?: string; error?: string; declined?: boolean } | ReturnType<typeof paymentRefusal>;
 
 /** In-page: watch for DOM changes around a click, so one the page ignored is reported rather
  *  than assumed to have worked. Kept under a Symbol.for key, off the page's own names. */
@@ -680,7 +680,8 @@ export class BrowserSession {
     // The click rule holds here too: a button that pays or places an order is the human's.
     if (!el.fileInput) {
       const { label } = await this.locate(p, opts);
-      if (COMMITTING.test(label)) return { error: `"${label}" pays or places an order, so upload_file will not click it. Target the file input or the upload button itself.` };
+      // The same refusal as click's, so an agent reads one shape whichever tool refused.
+      if (COMMITTING.test(label)) return { ...paymentRefusal(label), needsUserAction: `target the file input or the upload button itself; "${label}" is the human's to click` };
     }
     const armed = await this.app.uploadArm(p.tabId, opts.filePaths, opts.ask !== false);
     if (!armed.armed) return { error: armed.error ?? 'the upload was not allowed', ...(armed.declined ? { declined: true } : {}) };

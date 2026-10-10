@@ -217,7 +217,7 @@
           "type": "number",
           "default": 0,
           "scope": "application",
-          "description": "Localhost port for the shared cobrowser daemon — the single MCP endpoint every editor window and every agent client uses. 0 (default) means 39273. It is set for the whole editor, so every window agrees on it; each window's own internal server takes an ephemeral port and is never contacted directly. Takes effect after reloading every window; paste the new Copy Bridge URL into a bridge extension's popup."
+          "description": "Localhost port for the shared cobrowser daemon — the single MCP endpoint every editor window and every agent client uses. 0 (default) means 39273. It is set for the whole editor, so every window agrees on it; each window's own internal server takes an ephemeral port and is never contacted directly. Takes effect after reloading every window. The Firefox add-on picks up the new port by itself; in the Chrome extension's popup, paste each workspace's new Copy Bridge URL."
         },
         "cobrowser.uploadsWithoutAsking": {
           "type": "boolean",

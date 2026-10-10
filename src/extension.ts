@@ -114,6 +114,12 @@ function extensionVersion(context: vscode.ExtensionContext): string {
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  // The browser it runs is macOS's (and the vault is macOS's keychain): elsewhere it registers
+  // nothing, starts nothing, and says so once.
+  if (process.platform !== 'darwin') {
+    void vscode.window.showErrorMessage('Cobrowser runs on macOS only. It has done nothing on this computer: uninstall it from the Extensions view.');
+    return;
+  }
   extensionContext = context;
   output = vscode.window.createOutputChannel('Cobrowser');
   context.subscriptions.push(output);
@@ -723,7 +729,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
     }),
     vscode.commands.registerCommand('cobrowser.disablePasskeys', async () => {
-      const exe = electronExecutable({ cacheDir: path.join(context.globalStorageUri.fsPath, 'electron') });
+      // The same browser Enable Passkeys signed: a checkout's own Electron when there is one.
+      const devElectron = path.join(context.extensionUri.fsPath, 'app', 'node_modules', 'electron', 'dist', 'Electron.app', 'Contents', 'MacOS', 'Electron');
+      const exe = electronExecutable({ cacheDir: path.join(context.globalStorageUri.fsPath, 'electron'), devElectron });
       if (!exe || !readSignedMarker(exe)) {
         void vscode.window.showInformationMessage('Cobrowser: passkeys are not enabled.');
         return;
