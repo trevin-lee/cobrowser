@@ -70,6 +70,10 @@
         "title": "Cobrowser: Bind Firefox Container to This Workspace"
       },
       {
+        "command": "cobrowser.unbindBrowser",
+        "title": "Cobrowser: Unbind Your Own Browser"
+      },
+      {
         "command": "cobrowser.showTab",
         "title": "Cobrowser: Show Tab"
       },

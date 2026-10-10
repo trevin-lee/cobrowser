@@ -28,7 +28,7 @@ A workspace is bound to a **tab group** by its title, or to `profile`. The bridg
 every call that touches a tab outside that scope. Chrome closes a group with its last tab, and
 gives a restored group a new id, so the bridge finds the group again by its title, and if none
 is open, the agent's next new tab starts it again under that name. An untitled group cannot be
-bound until it is named. Running the bind command with an empty name unbinds the workspace. Tab groups are visible and nameable in the
+bound until it is named. **Cobrowser: Unbind Your Own Browser** unbinds the workspace. Tab groups are visible and nameable in the
 tab strip, which makes them a good stand-in for Firefox containers — with one honest
 difference: a tab group is not a cookie boundary. Every tab in the profile shares the same
 logins. The group limits what the agent can *reach*, not what the browser *knows*.

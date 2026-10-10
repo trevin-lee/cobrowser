@@ -565,14 +565,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const current = bridgeBrowser() === 'firefox' ? bound : '';
       // A workspace drives one browser at a time: binding Firefox ends a Chrome binding.
       const replacing = bridgeBrowser() === 'chrome' ? bound : '';
-      const UNBIND = '$(circle-slash) Unbind';
       const items: vscode.QuickPickItem[] = containers.map((c) => ({
         label: c.name,
         description: c.name === current ? 'currently bound' : undefined,
         detail: `container ${c.userContextId} in profile ${c.profile}`,
       }));
       items.push({ label: 'default', description: current === 'default' ? 'currently bound' : undefined, detail: 'No container: the tabs outside every container' });
-      if (current || replacing) items.push({ label: UNBIND, detail: "Stop this workspace's agent reaching your own browser" });
       // A container this Mac's profiles do not show (a Firefox fork kept elsewhere) can be typed.
       const pick = vscode.window.createQuickPick();
       pick.items = items;
@@ -587,18 +585,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       });
       pick.dispose();
       if (!picked) return;
-      const next = picked === UNBIND ? '' : picked;
-      // Unbinding ends whichever binding the workspace has; binding makes it Firefox's.
-      await context.workspaceState.update(FIREFOX_CONTAINER_KEY, next);
-      if (next) await context.workspaceState.update(BRIDGE_BROWSER_KEY, 'firefox');
+      // Binding makes it Firefox's; unbinding is Cobrowser: Unbind Your Own Browser, for both.
+      await context.workspaceState.update(FIREFOX_CONTAINER_KEY, picked);
+      await context.workspaceState.update(BRIDGE_BROWSER_KEY, 'firefox');
       syncBridge(); // takes effect now: the daemon re-hellos the add-on's socket, no reload
-      const was = replacing ? `the Chrome tab group "${replacing}"` : `the "${current}" container`;
-      void vscode.window.showInformationMessage(
-        next
-          ? `Cobrowser: this workspace is bound to the "${next}" container${replacing ? ` instead of the Chrome tab group "${replacing}"` : ''}.`
-          : `Cobrowser: this workspace is no longer bound to ${was}; its agent cannot reach your own browser.`,
-      );
-      log(next ? `Firefox bridge: bound to container "${next}".` : 'Bridge: unbound.');
+      void vscode.window.showInformationMessage(`Cobrowser: this workspace is bound to the "${picked}" container${replacing ? ` instead of the Chrome tab group "${replacing}"` : ''}.`);
+      log(`Firefox bridge: bound to container "${picked}".`);
     }),
     vscode.commands.registerCommand('cobrowser.bindChromeTabGroup', async () => {
       if (!hasWorkspace()) return;
@@ -608,27 +600,35 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const replacing = bridgeBrowser() === 'firefox' ? bound : '';
       const next = await vscode.window.showInputBox({
         title: replacing ? `Bind this workspace to a Chrome tab group (replaces the Firefox container "${replacing}")` : 'Bind this workspace to a Chrome tab group',
-        prompt: replacing
-          ? 'The tab group\'s name as shown in Chrome\'s tab strip, or "profile" for every tab. Empty keeps the Firefox container.'
-          : 'The tab group\'s name as shown in Chrome\'s tab strip, or "profile" for every tab. Empty unbinds.',
+        prompt: 'The tab group\'s name as shown in Chrome\'s tab strip, or "profile" for every tab. To unbind, run "Cobrowser: Unbind Your Own Browser".',
         value: current,
         placeHolder: 'profile',
       });
       if (next === undefined) return;
-      // Return on an empty box, as if the placeholder were a default, must not end a Firefox
-      // binding: the Firefox command's own Unbind does that.
-      if (!next.trim() && replacing) {
-        void vscode.window.showInformationMessage(`Cobrowser: nothing changed; this workspace stays bound to the Firefox container "${replacing}".`);
+      // An empty box (Return, as if the placeholder were a default) changes nothing: unbinding
+      // is its own command, for both browsers.
+      if (!next.trim()) {
+        void vscode.window.showInformationMessage('Cobrowser: nothing changed. To unbind this workspace, run "Cobrowser: Unbind Your Own Browser".');
         return;
       }
       await context.workspaceState.update(FIREFOX_CONTAINER_KEY, next.trim());
-      if (next.trim()) await context.workspaceState.update(BRIDGE_BROWSER_KEY, 'chrome');
+      await context.workspaceState.update(BRIDGE_BROWSER_KEY, 'chrome');
       syncBridge();
-      void vscode.window.showInformationMessage(
-        next.trim()
-          ? `Cobrowser: bound to Chrome tab group "${next.trim()}"${replacing ? ` instead of the Firefox container "${replacing}"` : ''}. If the extension is not connected yet, run "Cobrowser: Copy Bridge URL" and paste it into its popup.`
-          : `Cobrowser: this workspace is no longer bound to ${replacing ? `the Firefox container "${replacing}"` : 'a Chrome tab group'}; its agent cannot reach your own browser.`,
-      );
+      void vscode.window.showInformationMessage(`Cobrowser: bound to Chrome tab group "${next.trim()}"${replacing ? ` instead of the Firefox container "${replacing}"` : ''}. If the extension is not connected yet, run "Cobrowser: Copy Bridge URL" and paste it into its popup.`);
+    }),
+    // One way to unbind, whichever browser: the bind commands only bind.
+    vscode.commands.registerCommand('cobrowser.unbindBrowser', async () => {
+      if (!hasWorkspace()) return;
+      const bound = context.workspaceState.get<string>(FIREFOX_CONTAINER_KEY)?.trim() ?? '';
+      if (!bound) {
+        void vscode.window.showInformationMessage('Cobrowser: this workspace is not bound to your own browser.');
+        return;
+      }
+      const was = bridgeBrowser() === 'chrome' ? `the Chrome tab group "${bound}"` : `the Firefox container "${bound}"`;
+      await context.workspaceState.update(FIREFOX_CONTAINER_KEY, '');
+      syncBridge();
+      void vscode.window.showInformationMessage(`Cobrowser: this workspace is no longer bound to ${was}; its agent cannot reach your own browser.`);
+      log('Bridge: unbound.');
     }),
     vscode.commands.registerCommand('cobrowser.enablePasskeys', async () => {
       // Sign the downloaded browser so Chromium's Touch ID authenticator can store passkeys.
