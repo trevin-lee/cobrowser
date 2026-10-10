@@ -510,20 +510,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   };
 
   context.subscriptions.push(
+    // Open Browser (the launcher on every other editor's title bar, the welcome view): back to
+    // the browser, never another tab. Starting it opens the saved tabs, or one blank tab.
     vscode.commands.registerCommand('cobrowser.open', async () => {
+      const wasRunning = !!session;
       const s = await getSession();
-      // Open a panel for each existing page (reveals the active one). Future
-      // pages open their panels via onPageOpened.
-      s.emitExisting();
+      if (wasRunning && BrowserPanel.revealLast()) return;
+      if (s.pageEntries().length) s.emitExisting(); // panels for the pages there are
+      else await s.newPage('about:blank', { byAgent: false });
     }),
     vscode.commands.registerCommand('cobrowser.newTab', async () => {
+      const wasRunning = !!session;
       const s = await getSession();
-      await s.newPage('about:blank', { byAgent: false });
-    }),
-    // The launcher on every other editor's title bar: back to the browser, not another tab.
-    vscode.commands.registerCommand('cobrowser.openBrowser', async () => {
-      if (BrowserPanel.revealLast()) return;
-      const s = await getSession();
+      // Starting the browser with nothing saved has just opened a blank tab: that is the new tab.
+      const pages = s.pageEntries();
+      if (!wasRunning && pages.length === 1 && pages[0].url === 'about:blank') return;
       await s.newPage('about:blank', { byAgent: false });
     }),
     // Browser-chrome shortcuts, bound in package.json while a cobrowser panel is active.

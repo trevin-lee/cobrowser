@@ -41,17 +41,13 @@
     "commands": [
       {
         "command": "cobrowser.open",
-        "title": "Cobrowser: Open Browser Panel"
+        "title": "Cobrowser: Open Browser",
+        "icon": "media/icon.png"
       },
       {
         "command": "cobrowser.newTab",
         "title": "Cobrowser: New Browser Tab",
         "icon": "$(add)"
-      },
-      {
-        "command": "cobrowser.openBrowser",
-        "title": "Cobrowser: Open Browser",
-        "icon": "media/icon.png"
       },
       {
         "command": "cobrowser.restartBrowser",
@@ -172,7 +168,7 @@
           "group": "navigation@100"
         },
         {
-          "command": "cobrowser.openBrowser",
+          "command": "cobrowser.open",
           "when": "activeWebviewPanelId != 'cobrowser'",
           "group": "navigation@100"
         }
@@ -205,7 +201,7 @@
     "viewsWelcome": [
       {
         "view": "cobrowser.sessions",
-        "contents": "No browser is running for this workspace. It starts when you open a tab, or when an agent uses a cobrowser tool.\n[Open Browser Panel](command:cobrowser.open)"
+        "contents": "No browser is running for this workspace. It starts when you open a tab, or when an agent uses a cobrowser tool.\n[Open Browser](command:cobrowser.open)"
       }
     ],
     "mcpServerDefinitionProviders": [

@@ -10,7 +10,7 @@ Search for **Cobrowser** in your editor's Extensions view and install it; the ed
 
 Each release's `.vsix` is also on [GitHub](https://github.com/trevin-lee/cobrowser/releases/latest), for installing by hand: `code --install-extension cobrowser-<version>.vsix`, or the **Extensions: Install from VSIX…** command.
 
-After installing, run **Cobrowser: Open Browser Panel** from the Command Palette. After an update, restart extensions when the editor offers to (or reload the window); the browser app and the daemon replace themselves with the new version, and windows still on the old one keep working with them.
+After installing, run **Cobrowser: Open Browser** from the Command Palette. After an update, restart extensions when the editor offers to (or reload the window); the browser app and the daemon replace themselves with the new version, and windows still on the old one keep working with them.
 
 No browser setup required — the companion app (a pinned Electron, ~120 MB) downloads on first run (see [Requirements](#requirements)).
 
@@ -86,7 +86,7 @@ removed on first run.
 
 ## Where you watch it
 
-Every tab is an editor tab in a dedicated pane, streamed from the app at up to 60 fps. On a browser tab's title bar, **+** opens a new tab; on any other editor, the cobrowser logo (**Open Browser**) brings back the browser tab you used last, and opens one only when there is none. The address bar takes an address or words to search; `localhost`, IP addresses and `name:port` load over http, as development servers expect, and a page that cannot load says why. The **Cobrowser** icon in the Activity Bar lists this workspace's tabs (a filled dot marks the one the agent is working in); clicking one shows it. There is no OS window to show — the page is rendered offscreen — so prompts that need one (an extension's toolbar popup) cannot appear. Passkeys fail fast to a password by default (`cobrowser.autoFallbackPasskeys`) until you enable them.
+Every tab is an editor tab in a dedicated pane, streamed from the app at up to 60 fps. On a browser tab's title bar, **+** opens a new tab; on any other editor, the cobrowser logo (**Cobrowser: Open Browser**) brings back the browser tab you used last; when the browser is not running it starts it, with the tabs you had or one blank tab. The address bar takes an address or words to search; `localhost`, IP addresses and `name:port` load over http, as development servers expect, and a page that cannot load says why. The **Cobrowser** icon in the Activity Bar lists this workspace's tabs (a filled dot marks the one the agent is working in); clicking one shows it. There is no OS window to show — the page is rendered offscreen — so prompts that need one (an extension's toolbar popup) cannot appear. Passkeys fail fast to a password by default (`cobrowser.autoFallbackPasskeys`) until you enable them.
 
 ### How it identifies itself
 
@@ -210,7 +210,7 @@ npm run build              # esbuild → dist/ (extension, webview, daemon, app)
 
 Then open this folder in VS Code / Cursor and press **F5** (launches the Extension Development Host). In the dev host:
 
-1. Run **Cobrowser: Open Browser Panel** (Command Palette) — the app starts (from `app/node_modules` in a checkout, no download) and a tab streams into the panel.
+1. Run **Cobrowser: Open Browser** (Command Palette) — the app starts (from `app/node_modules` in a checkout, no download) and a tab streams into the panel.
 2. Navigate + **log into** the sites you want the agent to use. Credentials persist in the workspace's profile.
 3. Point your agent at the MCP server (auto-registered per the table above) and drive the same tabs.
 
