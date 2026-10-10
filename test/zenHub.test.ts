@@ -71,9 +71,20 @@ test('a rebind re-hellos the existing socket instead of needing a reconnect', as
   await s.stop();
 });
 
-test('wrong token or missing workspace is refused before any hello', async () => {
+/** Dial with a token that is not the current one: what the socket receives, and how it ends. */
+const dialWrong = (port: number, token: string) =>
+  new Promise<{ code: number; messages: number }>((resolve) => {
+    const ws = new WebSocket(ZenHub.url(port, token, '/w/a'));
+    let messages = 0;
+    ws.on('message', () => messages++);
+    ws.on('close', (code) => resolve({ code, messages }));
+    ws.on('error', () => resolve({ code: -1, messages }));
+  });
+
+test('a wrong token gets no hello and is closed as replaced; a missing workspace is refused', async () => {
   const s = await setup({ '/w/a': fx('personal') });
-  await assert.rejects(s.dial('/w/a', 'not-the-token'));
+  // Told why (4003), so the add-on can say its URL is out of date, and nothing else.
+  assert.deepEqual(await dialWrong(s.port, 'not-the-token'), { code: 4003, messages: 0 });
   await assert.rejects(new Promise((_r, rej) => { const ws = new WebSocket(`ws://127.0.0.1:${s.port}/zen?token=admin-token`); ws.on('error', rej); ws.on('open', () => rej(new Error('should not open'))); }).catch(() => { throw new Error('refused'); }));
   await s.stop();
 });
@@ -143,8 +154,6 @@ test('after the token is replaced, sockets opened with the old one are dropped a
   current = 'new-token';
   assert.equal(hub.dropStale(), 1);
   assert.equal(await closed, 4001);
-  const retry = new WebSocket(ZenHub.url(port, 'old-token', '/w/a'));
-  const refused = await new Promise<boolean>((r) => { retry.on('open', () => r(false)); retry.on('error', () => r(true)); retry.on('close', () => r(true)); });
-  assert.equal(refused, true, 'the old token no longer opens a socket');
+  assert.deepEqual(await dialWrong(port, 'old-token'), { code: 4003, messages: 0 }, 'the old token gets nothing, and is told it was replaced');
   hub.close(); await new Promise<void>((r) => server.close(() => r()));
 });

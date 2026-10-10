@@ -539,7 +539,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         'Replace the token that reaches every workspace?',
         {
           modal: true,
-          detail: 'Anything holding the old one stops working at once: Cursor\'s entry and the Firefox add-on are updated for you; the URL in the Chrome add-on\'s popup and any agent added with "Connect Another Agent" must be set up again. Claude Code and VS Code\'s agent use per-workspace tokens and are not affected.',
+          detail: 'Anything holding the old one stops working at once. The Firefox add-on is updated for you, and so is Cursor\'s entry when this is Cursor (other Cursor windows take it when they reload). The Chrome add-on\'s popup holds one URL per workspace: paste each workspace\'s new URL there. Agents added with "Connect Another Agent" need connecting again. Claude Code and VS Code\'s agent use per-workspace tokens and are not affected.',
         },
         'Replace',
       );
@@ -552,7 +552,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         if (token) await writeClientConfigs(daemonPort, token, log, dev);
         log('Agent token replaced.');
         const next = await vscode.window.showInformationMessage(
-          'Cobrowser: the token is replaced. Firefox picks up the new one by itself within 30 seconds. If you use the Chrome add-on, paste the new URL into its popup; reconnect any agent you added with "Connect Another Agent".',
+          'Cobrowser: the token is replaced. Firefox picks up the new one by itself within 30 seconds. If you use the Chrome add-on, run Copy Bridge URL in each workspace and paste each URL into its popup; reconnect any agent you added with "Connect Another Agent".',
           'Copy Bridge URL',
           'Connect Another Agent',
         );
@@ -565,10 +565,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('cobrowser.copyFirefoxBridgeUrl', async () => {
       if (!hasWorkspace()) return;
       await vscode.env.clipboard.writeText(bridgeUrl());
-      void vscode.window.showInformationMessage(
-        'Cobrowser: bridge URL copied. It never changes for this workspace (unless cobrowser.port does). Firefox configures itself from the managed manifest; ' +
-          'paste it into the add-on\'s toolbar popup only if that did not happen, or into the Chrome extension\'s toolbar popup, which has no manifest.',
-      );
+      // Firefox is configured by the editor; Chrome cannot be, so its popup takes this URL.
+      const where = bridgeBrowser() === 'firefox'
+        ? 'Firefox picks it up by itself; paste it into the add-on\'s toolbar popup only if it has not connected.'
+        : 'Paste it into the Chrome extension\'s toolbar popup, under Connect a workspace, in place of this workspace\'s old one.';
+      const bound = firefoxContainerFor(context) ? '' : ' This workspace is not bound to your own browser yet: run a Bind command first.';
+      void vscode.window.showInformationMessage(`Cobrowser: bridge URL copied. ${where} It changes only when the agent token is replaced.${bound}`);
     }),
     vscode.commands.registerCommand('cobrowser.installChromeBridge', async () => {
       try {

@@ -181,9 +181,11 @@ function connect(url) {
     void handleMessage(conn, msg);
   };
 
-  ws.onclose = () => {
+  ws.onclose = (event) => {
     conn.ws = null;
     conn.scope = null;
+    // 4003: cobrowser is running, but this URL's token was replaced (Replace Agent Token).
+    if (event && event.code === 4003) conn.error = 'this URL\'s token was replaced: paste the new one from "Cobrowser: Copy Bridge URL"';
     updateBadge();
     scheduleRetry(conn);
   };

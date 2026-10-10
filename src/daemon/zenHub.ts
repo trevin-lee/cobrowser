@@ -70,8 +70,15 @@ export class ZenHub {
       const admin = this.token();
       const workspace = url.searchParams.get('workspace') ?? '';
       const browser: BridgeBrowser = url.searchParams.get('browser') === 'chrome' ? 'chrome' : 'firefox';
-      if (!admin || url.searchParams.get('token') !== admin || !workspace) {
+      if (!admin || !workspace) {
         socket.destroy();
+        return;
+      }
+      // A wrong token (one replaced by Cobrowser: Replace Agent Token) is told so, with a close
+      // code, so the add-on can say its URL is out of date rather than that nothing is running.
+      // Nothing is read from or sent over that socket.
+      if (url.searchParams.get('token') !== admin) {
+        this.wss?.handleUpgrade(req, socket, head, (ws) => ws.close(4003, 'token replaced'));
         return;
       }
       this.wss?.handleUpgrade(req, socket, head, (ws) => this.adopt(workspace, browser, ws, admin));

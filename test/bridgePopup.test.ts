@@ -27,5 +27,8 @@ for (const [dir, here, other] of [['chrome-extension', 'Chrome', 'Firefox'], ['f
     const closed = /this workspace\\'s editor window is closed[^']*/.exec(bg)?.[0]?.replace(/\\'/g, "'");
     assert.ok(closed, `${dir}: the window-closed message was not found`);
     assert.equal(words(true, closed), 'Window closed');
+    const replaced = /this URL\\'s token was replaced[^']*/.exec(bg)?.[0]?.replace(/\\'/g, "'");
+    assert.ok(replaced, `${dir}: the replaced-token message was not found`);
+    assert.equal(words(false, replaced), 'URL out of date');
   });
 }

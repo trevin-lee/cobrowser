@@ -118,7 +118,7 @@ setInterval(() => { void refreshStatus(); void refreshUsage(); }, 3000);
  *  is not bound to Chrome", also contains "bound to Chrome". */
 function stateWords(connected, error) {
   const e = error || '';
-  if (!connected) return 'Not running';
+  if (!connected) return /token was replaced/i.test(e) ? 'URL out of date' : 'Not running';
   if (/window is closed/i.test(e)) return 'Window closed';
   if (!e || /not bound/i.test(e)) return 'Not bound';
   if (/bound to Firefox/i.test(e)) return 'Bound to Firefox';
