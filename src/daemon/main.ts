@@ -402,6 +402,14 @@ const httpServer = http.createServer((req, res) => {
       return;
     }
 
+    // The token file was just replaced (Cobrowser: Replace Agent Token): bridge sockets opened
+    // with the old token are closed. Authenticated with the new one, like every admin route.
+    if (req.method === 'POST' && url === '/token-replaced') {
+      const dropped = zen.dropStale();
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ dropped }));
+      return;
+    }
     if (req.method === 'POST' && url === '/shutdown') {
       log('shutdown requested');
       json(res, 200, { ok: true });

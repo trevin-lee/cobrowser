@@ -24,6 +24,8 @@ interface Conn {
   container: FirefoxContainer | undefined;
   lastError: string | undefined;
   pending: Map<number, Pending>;
+  /** The token the add-on dialled in with: a socket opened with a replaced one is dropped. */
+  token: string;
 }
 
 const CALL_TIMEOUT_MS = 35000;
@@ -72,7 +74,7 @@ export class ZenHub {
         socket.destroy();
         return;
       }
-      this.wss?.handleUpgrade(req, socket, head, (ws) => this.adopt(workspace, browser, ws));
+      this.wss?.handleUpgrade(req, socket, head, (ws) => this.adopt(workspace, browser, ws, admin));
     });
   }
 
@@ -101,6 +103,21 @@ export class ZenHub {
       c.container = undefined;
       this.sendHello(workspace, c);
     }
+  }
+
+  /** The token was replaced: close every socket dialled in with the old one. The add-on
+   *  redials with the URL it has, which only the new token opens. */
+  dropStale(): number {
+    const current = this.token();
+    let dropped = 0;
+    for (const [k, c] of this.conns) {
+      if (c.token === current) continue;
+      c.ws.close(4001, 'token replaced');
+      this.conns.delete(k);
+      dropped++;
+    }
+    if (dropped) this.log(`bridge: dropped ${dropped} connection(s) opened with a replaced token`);
+    return dropped;
   }
 
   /** Every connected add-on is told its binding again: windows came or went, and one that
@@ -184,7 +201,7 @@ export class ZenHub {
 
   // ------------------------------------------------------------------ internals
 
-  private adopt(workspace: string, browser: BridgeBrowser, ws: WebSocket): void {
+  private adopt(workspace: string, browser: BridgeBrowser, ws: WebSocket, token: string): void {
     const key = this.key(workspace, browser);
     const prev = this.conns.get(key);
     if (prev && prev.ws !== ws) {
@@ -192,7 +209,7 @@ export class ZenHub {
       this.log(`bridge: ${workspace} [${browser}] — a new connection replaced the previous one`);
       prev.ws.close();
     }
-    const c: Conn = { ws, browser, version: undefined, container: undefined, lastError: undefined, pending: new Map() };
+    const c: Conn = { ws, browser, version: undefined, container: undefined, lastError: undefined, pending: new Map(), token };
     this.conns.set(key, c);
 
     ws.on('message', (data: Buffer) => {

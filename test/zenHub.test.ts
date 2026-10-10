@@ -129,3 +129,22 @@ test('an unbound workspace whose editor window is closed is told so; one whose w
   closed.ws.close(); opened.ws.close();
   await s.stop();
 });
+
+test('after the token is replaced, sockets opened with the old one are dropped and the old token opens nothing', async () => {
+  let current = 'old-token';
+  const server = http.createServer((_q, r) => r.writeHead(404).end());
+  const hub = new ZenHub(() => current, () => fx('personal'), () => undefined);
+  hub.attach(server);
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const port = (server.address() as { port: number }).port;
+  const ws = new WebSocket(ZenHub.url(port, 'old-token', '/w/a'));
+  await new Promise((r) => ws.on('open', r));
+  const closed = new Promise<number>((r) => ws.on('close', (code) => r(code)));
+  current = 'new-token';
+  assert.equal(hub.dropStale(), 1);
+  assert.equal(await closed, 4001);
+  const retry = new WebSocket(ZenHub.url(port, 'old-token', '/w/a'));
+  const refused = await new Promise<boolean>((r) => { retry.on('open', () => r(false)); retry.on('error', () => r(true)); retry.on('close', () => r(true)); });
+  assert.equal(refused, true, 'the old token no longer opens a socket');
+  hub.close(); await new Promise<void>((r) => server.close(() => r()));
+});

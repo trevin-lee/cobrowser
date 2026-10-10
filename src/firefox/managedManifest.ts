@@ -112,3 +112,15 @@ export function registerEndpoint(workspace: string, url: string, log: (m: string
   }
   write(file, workspaces, log);
 }
+
+/** The machine-wide token was replaced: every workspace's endpoint gets the new one, so the
+ *  Firefox add-on redials with it (it reads this file every 30 s). */
+export function replaceTokenInEndpoints(oldToken: string, newToken: string, log: (m: string) => void): void {
+  const file = manifestPath();
+  if (!file) return;
+  const existing = read(file);
+  if (!existing) return;
+  const from = `token=${encodeURIComponent(oldToken)}`, to = `token=${encodeURIComponent(newToken)}`;
+  const workspaces = Object.fromEntries(Object.entries(existing.data.workspaces).map(([w, u]) => [w, u.split(from).join(to)]));
+  write(file, workspaces, log);
+}

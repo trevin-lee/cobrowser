@@ -10,12 +10,12 @@ import { BrowserPanel } from './webview/BrowserPanel';
 import { SessionTreeProvider } from './webview/SessionTreeProvider';
 import { writeClientConfigs } from './clients/writeClientConfigs';
 import { snippetFor, type OtherClient } from './clients/agentConfigs';
-import { daemonToken, deregister, ensureDaemon, isOlder, register, registrationState } from './daemon/client';
+import { daemonToken, deregister, ensureDaemon, isOlder, register, registrationState, replaceDaemonToken, tokenReplaced } from './daemon/client';
 import { DEFAULT_DAEMON_PORT, DEV_DAEMON_PORT, accentOrDefault, bridgeEndpointUrl } from './daemon/protocol';
 import { AppConnection, readAppState, type AppState } from './app/AppClient';
 import { ensureApp, electronExecutable } from './app/ensureApp';
 import { APP_BUNDLE_ID, listSigningIdentities, readSignedMarker, signElectronForPasskeys, unsignForPasskeys } from './app/signApp';
-import { registerEndpoint, unregisterEndpoint } from './firefox/managedManifest';
+import { registerEndpoint, replaceTokenInEndpoints, unregisterEndpoint } from './firefox/managedManifest';
 import { listFirefoxContainers } from './firefox/containers';
 
 // Bearer token for the local MCP endpoint. Stored in workspaceState (NOT globalState): each
@@ -531,6 +531,36 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('cobrowser.reloadTab', () => BrowserPanel.active?.navigate('reload')),
     vscode.commands.registerCommand('cobrowser.back', () => BrowserPanel.active?.navigate('back')),
     vscode.commands.registerCommand('cobrowser.forward', () => BrowserPanel.active?.navigate('forward')),
+    // The token that reaches every workspace (unscoped agents, the bridge add-ons), replaced:
+    // what cobrowser keeps it in is updated, and the rest is named for the human.
+    vscode.commands.registerCommand('cobrowser.replaceAgentToken', async () => {
+      const ok = await vscode.window.showWarningMessage(
+        'Replace the token that reaches every workspace?',
+        {
+          modal: true,
+          detail: 'Anything holding the old one stops working at once: Cursor\'s entry and the Firefox add-on are updated for you; the URL in the Chrome add-on\'s popup and any agent added with "Connect Another Agent" must be set up again. Claude Code and VS Code\'s agent use per-workspace tokens and are not affected.',
+        },
+        'Replace',
+      );
+      if (ok !== 'Replace') return;
+      try {
+        const old = daemonToken(undefined, dev);
+        const fresh = replaceDaemonToken(dev);
+        replaceTokenInEndpoints(old, fresh, log);
+        await tokenReplaced(daemonPort, dev);
+        if (token) await writeClientConfigs(daemonPort, token, log, dev);
+        log('Agent token replaced.');
+        const next = await vscode.window.showInformationMessage(
+          'Cobrowser: the token is replaced. Firefox picks up the new one by itself within 30 seconds. If you use the Chrome add-on, paste the new URL into its popup; reconnect any agent you added with "Connect Another Agent".',
+          'Copy Bridge URL',
+          'Connect Another Agent',
+        );
+        if (next === 'Copy Bridge URL') await vscode.commands.executeCommand('cobrowser.copyFirefoxBridgeUrl');
+        if (next === 'Connect Another Agent') await vscode.commands.executeCommand('cobrowser.connectAgent');
+      } catch (err) {
+        void vscode.window.showErrorMessage(`Cobrowser: could not replace the token — ${String((err as Error).message ?? err)}`);
+      }
+    }),
     vscode.commands.registerCommand('cobrowser.copyFirefoxBridgeUrl', async () => {
       if (!hasWorkspace()) return;
       await vscode.env.clipboard.writeText(bridgeUrl());

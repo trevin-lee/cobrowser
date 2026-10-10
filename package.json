@@ -74,6 +74,10 @@
         "title": "Cobrowser: Unbind Your Own Browser"
       },
       {
+        "command": "cobrowser.replaceAgentToken",
+        "title": "Cobrowser: Replace Agent Token"
+      },
+      {
         "command": "cobrowser.showTab",
         "title": "Cobrowser: Show Tab"
       },

@@ -69,6 +69,22 @@ export function daemonToken(accepted?: (candidate: string) => boolean, dev = fal
 }
 
 
+/**
+ * Replace the machine-wide token with a new one (Cobrowser: Replace Agent Token). The daemon
+ * reads the file per request, so the old token stops opening it at once. The old per-editor
+ * files older builds left are removed too, so nothing can adopt the old token again.
+ */
+export function replaceDaemonToken(dev = false): string {
+  const fresh = writeToken(crypto.randomUUID(), dev);
+  if (!dev) for (const legacy of legacyTokenPaths()) { try { fs.rmSync(legacy, { force: true }); } catch { /* best effort */ } }
+  return fresh;
+}
+
+/** Tell the daemon the token was replaced, so it closes bridge sockets opened with the old one. */
+export function tokenReplaced(port: number, dev = false): Promise<boolean> {
+  return post(port, daemonToken(undefined, dev), '/token-replaced', {});
+}
+
 async function health(port: number, token: string): Promise<HealthResponse | undefined> {
   try {
     const res = await fetch(`http://127.0.0.1:${port}/health`, {
