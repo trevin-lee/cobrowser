@@ -213,7 +213,9 @@ async function runZenTool(
     case 'bridge_wait_for': {
       const texts = Array.isArray(args.text) ? args.text.map(String) : typeof args.text === 'string' ? [args.text] : [];
       const text = texts.length === 0 ? undefined : texts.length === 1 ? texts[0] : texts;
-      return asJson(await hub.call(workspace, 'waitFor', { tabId, text, selector: args.selector, settle: args.settle, quietMs: args.quietMs, timeoutMs: args.timeout }));
+      // The hub waits past the add-on's own limit for a wait (its timeout, up to 60 s, + 5 s).
+      const waitMs = Math.min(Number(args.timeout) || 15000, 60000);
+      return asJson(await hub.call(workspace, 'waitFor', { tabId, text, selector: args.selector, settle: args.settle, quietMs: args.quietMs, timeoutMs: args.timeout }, waitMs + 10000));
     }
     case 'bridge_list_tabs': {
       const listed = await hub.call<Record<string, unknown>>(workspace, 'listTabs');

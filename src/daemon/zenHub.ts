@@ -155,7 +155,8 @@ export class ZenHub {
   }
 
   /** Call a method in the add-on on behalf of a workspace. */
-  call<T>(workspace: string, method: string, params: Record<string, unknown> = {}): Promise<T> {
+  /** `timeoutMs`: how long to wait for the add-on's answer (a wait asks for longer). */
+  call<T>(workspace: string, method: string, params: Record<string, unknown> = {}, timeoutMs = CALL_TIMEOUT_MS): Promise<T> {
     const b = this.bindingFor(workspace);
     if (!b) {
       return Promise.reject(
@@ -187,8 +188,8 @@ export class ZenHub {
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         c.pending.delete(id);
-        reject(new Error(`bridge call "${method}" timed out after ${CALL_TIMEOUT_MS}ms`));
-      }, CALL_TIMEOUT_MS);
+        reject(new Error(`bridge call "${method}" timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
       c.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer });
       c.ws.send(JSON.stringify({ type: 'req', id, method, params }));
     });

@@ -243,7 +243,9 @@ async function handleMessage(conn, msg) {
   }
   if (msg.type === 'req') {
     try {
-      const result = await withTimeout(dispatch(conn, msg.method, msg.params ?? {}), CALL_TIMEOUT_MS);
+      // A wait lasts as long as it was asked to (up to 60 s), with a margin; anything else 30 s.
+      const limit = msg.method === 'waitFor' ? Math.min(Number((msg.params ?? {}).timeoutMs) || 15000, 60000) + 5000 : CALL_TIMEOUT_MS;
+      const result = await withTimeout(dispatch(conn, msg.method, msg.params ?? {}), limit);
       send(conn, { type: 'res', id: msg.id, ok: true, result });
     } catch (err) {
       send(conn, { type: 'res', id: msg.id, ok: false, error: String(err && err.message ? err.message : err) });

@@ -8,9 +8,9 @@ import { ZenHub } from '../src/daemon/zenHub';
 type Addon = { browser: 'firefox' | 'chrome'; version: string | undefined; expected: string; stale: boolean } | undefined;
 /** A hub that answers like an installed add-on would, recording what it was asked. */
 function fakeHub(answer: (method: string, params: Record<string, unknown>) => unknown, addon: Addon = undefined) {
-  const calls: { method: string; params: Record<string, unknown> }[] = [];
+  const calls: { method: string; params: Record<string, unknown>; timeoutMs?: number }[] = [];
   const hub = {
-    call: async (_ws: string, method: string, params: Record<string, unknown> = {}) => { calls.push({ method, params }); return answer(method, params); },
+    call: async (_ws: string, method: string, params: Record<string, unknown> = {}, timeoutMs?: number) => { calls.push({ method, params, timeoutMs }); return answer(method, params); },
     addon: () => addon,
   } as unknown as ZenHub;
   return { hub, calls };
@@ -49,6 +49,9 @@ test('wait_for takes several texts and timeout', async () => {
   const { hub, calls } = fakeHub(() => ({ found: true }));
   await callZenTool(hub, '/ws', 'bridge_wait_for', { tabId: 1, text: ['Done', 'Failed'], timeout: 5000 });
   assert.deepEqual([calls[0].params.text, calls[0].params.timeoutMs], [['Done', 'Failed'], 5000]);
+  // A long wait is not cut off by the hub before the add-on gives up on it.
+  await callZenTool(hub, '/ws', 'bridge_wait_for', { tabId: 1, text: ['Done'], timeout: 50000 });
+  assert.ok((calls[1].timeoutMs ?? 0) > 55000, `the hub waits ${calls[1].timeoutMs} ms for a 50 s wait`);
 });
 
 test('navigate goes back, forward and reloads; an old add-on is told why it cannot', async () => {
