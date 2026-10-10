@@ -32,8 +32,11 @@ for every tag (see *Signing* below).
 
 `.github/workflows/release.yml` signs the add-on when a release is tagged, using two repository
 secrets from <https://addons.mozilla.org/developers/addon/api/key/>, created by the account that
-owns the add-on: `AMO_JWT_ISSUER` and `AMO_JWT_SECRET`. Without them the release is made without
-the Firefox add-on, and the run says so; add them and run the workflow by hand with the tag.
+owns the add-on: `AMO_JWT_ISSUER` and `AMO_JWT_SECRET`. Without them the release fails, since a
+release with no `firefox-updates.json` leaves installed add-ons with nothing to update from; add
+them and run the workflow by hand with the tag. To release anyway (Mozilla's signing is down), run
+it by hand with `allow_unsigned_firefox`: the previous release's `firefox-updates.json` is carried
+forward, so installed add-ons stay on the last signed version.
 Mozilla signs each version once, so a version that is already on its release is left alone.
 
 To sign on your own machine instead (a fork, or a test build), put the same two values in

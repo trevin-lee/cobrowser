@@ -15,8 +15,11 @@ name: Release
 #
 # Secrets: AMO_JWT_ISSUER and AMO_JWT_SECRET (https://addons.mozilla.org/developers/addon/api/key/,
 # the account that owns the add-on) sign the Firefox add-on; the stores' credentials are
-# described in publish-extension.yml. Without one, that part is skipped with a warning. Run
-# this workflow by hand with a tag to fill in a release afterwards.
+# described in publish-extension.yml. Without the Mozilla ones the release fails: a release
+# without firefox-updates.json leaves installed Firefox add-ons with nothing to update from. To
+# release anyway (Mozilla's signing is down), run this workflow by hand with
+# allow_unsigned_firefox, which carries the previous release's firefox-updates.json forward so
+# add-ons stay on the last signed version. Run it by hand with a tag to fill in a release later.
 on:
   push:
     tags: ['v*']
@@ -25,6 +28,10 @@ on:
       tag:
         description: 'Existing tag to (re)build the release for, e.g. v0.9.6'
         required: true
+      allow_unsigned_firefox:
+        description: 'Release without signing the Firefox add-on (installed add-ons stay on the last signed version)'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -103,10 +110,23 @@ jobs:
         run: |
           if [ -n "$AMO_JWT_ISSUER" ] && [ -n "$AMO_JWT_SECRET" ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning title=Firefox add-on not signed::Set the AMO_JWT_ISSUER and AMO_JWT_SECRET repository secrets, then run this workflow by hand with tag $TAG."
+          elif [ "${{ inputs.allow_unsigned_firefox }}" = "true" ]; then
+            echo "::warning title=Firefox add-on not signed::Released without signing, as asked: installed add-ons stay on the last signed version."
             echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error title=Firefox add-on not signed::Set the AMO_JWT_ISSUER and AMO_JWT_SECRET repository secrets and run this workflow by hand with tag $TAG, or run it with allow_unsigned_firefox to release without signing."
+            exit 1
           fi
+
+      # Released unsigned on purpose: installed add-ons look for firefox-updates.json on the
+      # latest release, so the previous one's is carried forward, pointing at the last signed .xpi.
+      - name: Keep installed add-ons on the last signed version
+        if: steps.creds.outputs.ok != 'true'
+        run: |
+          prev=$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --limit 20 --json tagName -q '.[].tagName' | grep -vxF "$TAG" | head -1)
+          gh release download "$prev" --repo "$GITHUB_REPOSITORY" -p firefox-updates.json -D carried
+          gh release upload "$TAG" carried/firefox-updates.json --repo "$GITHUB_REPOSITORY" --clobber
+          echo "carried firefox-updates.json forward from $prev"
 
       - uses: actions/checkout@v7
         if: steps.creds.outputs.ok == 'true'
