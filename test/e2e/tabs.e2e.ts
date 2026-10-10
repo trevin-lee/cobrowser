@@ -36,10 +36,13 @@ suite('tabs', async (r) => {
     r.check('an unknown pageId is a clear error', /No open page with id 999/.test(err), err);
 
     const t0 = Date.now(); let slowDone = 0, fastDone = 0;
-    const slow = s.run(() => s.evaluateScript('() => new Promise((r) => setTimeout(() => r(1), 1500))', [], A), A).then(() => { slowDone = Date.now() - t0; });
+    // Blocking, not speed: the click (a pointer path and a short wait for the page's response)
+    // takes 0.5 s on a Mac and about 1.6 s on a CI runner without a GPU, so it is measured against
+    // the slow action, which it must finish well before, rather than against a fixed time.
+    const slow = s.run(() => s.evaluateScript('() => new Promise((r) => setTimeout(() => r(1), 3000))', [], A), A).then(() => { slowDone = Date.now() - t0; });
     const fast = s.run(() => s.click({ selector: '#b', pageId: B }), B).then(() => { fastDone = Date.now() - t0; });
     await Promise.all([slow, fast]);
-    r.check('a slow action in one tab does not block another tab', fastDone < 1200 && slowDone >= 1400, { fastDone, slowDone });
+    r.check('a slow action in one tab does not block another tab', slowDone >= 2900 && fastDone < slowDone - 800, { fastDone, slowDone });
     const order: string[] = [];
     await Promise.all([s.run(async () => { await sleep(300); order.push('first'); }, A), s.run(async () => { order.push('second'); }, A)]);
     r.check('actions on the same tab still run in order', order.join() === 'first,second', order);

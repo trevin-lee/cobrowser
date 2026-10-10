@@ -58,8 +58,13 @@ suite('bridge-scripts', async (r) => {
       await run('PAGE_SCRIPTS.click(null, "#load")');
       await sleep(300);
       const busy = await run<{ quietFor: number }>('PAGE_SCRIPTS.quiet()');
-      await sleep(1600);
-      const still = await run<{ quietFor: number }>('PAGE_SCRIPTS.quiet()');
+      // The page updates for about 1.5 s; a slower machine (a CI runner) finishes later, so wait
+      // for the quiet rather than a fixed time, up to a limit that still fails a page that never settles.
+      let still = { quietFor: 0 };
+      for (const t0 = Date.now(); Date.now() - t0 < 6000; await sleep(200)) {
+        still = await run<{ quietFor: number }>('PAGE_SCRIPTS.quiet()');
+        if (still.quietFor >= 400) break;
+      }
       r.check(`[${ext}] settle sees a page that is still changing, then one that has stopped`, busy.quietFor < 200 && still.quietFor >= 400, { busy, still });
       if (ext === 'firefox-extension') {
         const awaited = await run<unknown>('PAGE_SCRIPTS.evaluate("(async (n) => { await new Promise((r) => setTimeout(r, 50)); return n * 2; })(...[21])", "isolated")');
