@@ -2,6 +2,26 @@
 
 Release notes for earlier versions are on the [GitHub releases page](https://github.com/trevin-lee/cobrowser/releases).
 
+## 0.9.29
+
+### Added
+
+- **`press_key`**: agents press the keys a person reaches for (Escape, Tab, Enter, the arrows, ⌘A and the other edit shortcuts), as real key events. A printable key into a password field is refused.
+- **Agents answer a page's alert, confirm and prompt** with `handle_dialog`. An action that opens one is told at once what it asks, instead of waiting; you can still answer it yourself.
+- **Cobrowser: Take Over a Moved Folder's Browser.** A renamed or moved folder opened with an empty browser; run in its window, this gives it the browser of the path it had: sign-ins, site data, site permissions and the logins allowed there.
+- **A right-click menu in the sidebar:** reload or close a tab; restart the browser or clear its browsing data.
+
+### Changed
+
+- **Command names are consistent:** New Tab and Close Tab (were New Browser Tab, Close Browser Tab), Unbind Chrome or Firefox (was Unbind Your Own Browser), Install Chrome Bridge, Turn On Passkeys (was Enable Passkeys). Keybindings keep working.
+- **A login's notes may run to 100,000 characters** (were cut at 4,000); longer ones are refused, not cut.
+
+### Fixed
+
+- **Turning Everywhere off gives a login back the workspaces it had**, instead of none.
+- **Install Chrome Bridge from an editor on an older cobrowser no longer replaces a newer add-on.**
+- **Electron downloads from earlier versions are removed** (about 250 MB each).
+
 ## 0.9.28
 
 ### Removed
