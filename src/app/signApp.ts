@@ -10,7 +10,7 @@ const execFileP = promisify(execFile);
 
 /** The default bundle identity of the signed app, and the keychain namespace for passkeys.
  *  An identifier belongs to the first team that registers it, so another team signs with
- *  its own (Enable Passkeys asks); the one in use is recorded in the signed marker. */
+ *  its own (Turn On Passkeys asks); the one in use is recorded in the signed marker. */
 export const APP_BUNDLE_ID = 'dev.trevin.cobrowser';
 
 export interface SignedMarker {
@@ -149,7 +149,7 @@ export async function obtainProvisioningProfile(team: string, log: Log, bundleId
     const msg = String((e as { stdout?: string }).stdout ?? '') + String((e as { stderr?: string }).stderr ?? '');
     const line = msg.split('\n').find((l) => /error:/i.test(l)) ?? msg.slice(-400);
     if (/requires Xcode|xcode-select/i.test(msg)) {
-      throw new Error('Enable Passkeys needs Xcode itself (from the App Store), signed in with your Apple ID in Xcode → Settings → Accounts; this Mac has only the Command Line Tools.');
+      throw new Error('Turn On Passkeys needs Xcode itself (from the App Store), signed in with your Apple ID in Xcode → Settings → Accounts; this Mac has only the Command Line Tools.');
     }
     const taken = /not available/i.test(line) ? ` The identifier ${bundleId} belongs to another team; sign with an identifier of this team's own.` : '';
     throw new Error(`xcodebuild could not create a provisioning profile: ${line.trim()}${taken}`);
@@ -285,7 +285,7 @@ export async function signElectronForPasskeys(electronExe: string, log: Log, opt
 /**
  * Undo the passkey signing: ad hoc signatures without entitlements or a profile, the way a
  * downloaded Electron comes, so the browser starts no matter what. Used when the profile has
- * expired and cannot be renewed. Passkeys fall back to passwords until Enable Passkeys runs.
+ * expired and cannot be renewed. Passkeys fall back to passwords until Turn On Passkeys runs.
  */
 export function unsignForPasskeys(electronExe: string, log: Log): void {
   const appDir = path.dirname(path.dirname(path.dirname(electronExe)));

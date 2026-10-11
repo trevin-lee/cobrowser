@@ -598,7 +598,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       });
       pick.dispose();
       if (!picked) return;
-      // Binding makes it Firefox's; unbinding is Cobrowser: Unbind Your Own Browser, for both.
+      // Binding makes it Firefox's; unbinding is Cobrowser: Unbind Chrome or Firefox, for both.
       await context.workspaceState.update(FIREFOX_CONTAINER_KEY, picked);
       await context.workspaceState.update(BRIDGE_BROWSER_KEY, 'firefox');
       syncBridge(); // takes effect now: the daemon re-hellos the add-on's socket, no reload
@@ -613,7 +613,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const replacing = bridgeBrowser() === 'firefox' ? bound : '';
       const next = await vscode.window.showInputBox({
         title: replacing ? `Bind this workspace to a Chrome tab group (replaces the Firefox container "${replacing}")` : 'Bind this workspace to a Chrome tab group',
-        prompt: 'The tab group\'s name as shown in Chrome\'s tab strip, or "profile" for every tab. To unbind, run "Cobrowser: Unbind Your Own Browser".',
+        prompt: 'The tab group\'s name as shown in Chrome\'s tab strip, or "profile" for every tab. To unbind, run "Cobrowser: Unbind Chrome or Firefox".',
         value: current,
         placeHolder: 'profile',
       });
@@ -621,7 +621,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       // An empty box (Return, as if the placeholder were a default) changes nothing: unbinding
       // is its own command, for both browsers.
       if (!next.trim()) {
-        void vscode.window.showInformationMessage('Cobrowser: nothing changed. To unbind this workspace, run "Cobrowser: Unbind Your Own Browser".');
+        void vscode.window.showInformationMessage('Cobrowser: nothing changed. To unbind this workspace, run "Cobrowser: Unbind Chrome or Firefox".');
         return;
       }
       await context.workspaceState.update(FIREFOX_CONTAINER_KEY, next.trim());
@@ -688,7 +688,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         const until = marker.expires ? ` It lasts until ${new Date(marker.expires).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })} and renews itself before then.` : '';
         void vscode.window.showInformationMessage(`Cobrowser: passkeys enabled with ${pick.label}.${until} The browser restarts signed the next time a panel opens.`);
       } catch (err) {
-        void vscode.window.showErrorMessage(`Cobrowser: could not enable passkeys — ${String((err as Error).message ?? err)}`);
+        void vscode.window.showErrorMessage(`Cobrowser: could not turn on passkeys — ${String((err as Error).message ?? err)}`);
       }
     }),
     vscode.commands.registerCommand('cobrowser.addLogin', async () => {
@@ -734,7 +734,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
     }),
     vscode.commands.registerCommand('cobrowser.disablePasskeys', async () => {
-      // The same browser Enable Passkeys signed: a checkout's own Electron when there is one.
+      // The same browser Turn On Passkeys signed: a checkout's own Electron when there is one.
       const devElectron = path.join(context.extensionUri.fsPath, 'app', 'node_modules', 'electron', 'dist', 'Electron.app', 'Contents', 'MacOS', 'Electron');
       const exe = electronExecutable({ cacheDir: path.join(context.globalStorageUri.fsPath, 'electron'), devElectron });
       if (!exe || !readSignedMarker(exe)) {
@@ -743,7 +743,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
       const ok = await vscode.window.showWarningMessage(
         'Turn passkeys off?',
-        { modal: true, detail: 'The browser quits, closing every workspace\'s tabs (they reopen when a panel next opens), and is signed again as it was downloaded; passkey prompts then fall back to passwords. Passkeys already saved stay in your keychain, and work again if you enable passkeys with the same team and identifier.' },
+        { modal: true, detail: 'The browser quits, closing every workspace\'s tabs (they reopen when a panel next opens), and is signed again as it was downloaded; passkey prompts then fall back to passwords. Passkeys already saved stay in your keychain, and work again if you turn passkeys on again with the same team and identifier.' },
         'Turn Off',
       );
       if (ok !== 'Turn Off') return;

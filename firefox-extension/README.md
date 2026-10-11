@@ -63,7 +63,7 @@ If a workspace does not connect, run **Cobrowser: Copy Bridge URL** and paste it
 add-on's toolbar popup under *Connect a workspace by hand*.
 
 A workspace drives one browser at a time: binding a Firefox container replaces a Chrome tab
-group binding, and the other way round. **Cobrowser: Unbind Your Own Browser** stops the
+group binding, and the other way round. **Cobrowser: Unbind Chrome or Firefox** stops the
 workspace's agent reaching your browser. A container deleted in Firefox is found again if you
 make one with the same name; until then the agent is told it is gone.
 

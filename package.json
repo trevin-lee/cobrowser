@@ -46,7 +46,7 @@
       },
       {
         "command": "cobrowser.newTab",
-        "title": "Cobrowser: New Browser Tab",
+        "title": "Cobrowser: New Tab",
         "icon": "$(add)"
       },
       {
@@ -67,7 +67,7 @@
       },
       {
         "command": "cobrowser.unbindBrowser",
-        "title": "Cobrowser: Unbind Your Own Browser"
+        "title": "Cobrowser: Unbind Chrome or Firefox"
       },
       {
         "command": "cobrowser.replaceAgentToken",
@@ -104,7 +104,7 @@
       },
       {
         "command": "cobrowser.installChromeBridge",
-        "title": "Cobrowser: Install Chrome Bridge Extension"
+        "title": "Cobrowser: Install Chrome Bridge"
       },
       {
         "command": "cobrowser.bindChromeTabGroup",
@@ -112,7 +112,7 @@
       },
       {
         "command": "cobrowser.closeTab",
-        "title": "Cobrowser: Close Browser Tab"
+        "title": "Cobrowser: Close Tab"
       },
       {
         "command": "cobrowser.reloadTab",
@@ -128,7 +128,7 @@
       },
       {
         "command": "cobrowser.enablePasskeys",
-        "title": "Cobrowser: Enable Passkeys (Sign the Browser)"
+        "title": "Cobrowser: Turn On Passkeys"
       },
       {
         "command": "cobrowser.disablePasskeys",

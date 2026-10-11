@@ -86,7 +86,7 @@ export function replaceReason(
   if (running.build !== mine.build) return 'cobrowser app is running an older build of this version — restarting it.';
   // Branding renames the bundle the running process was launched from; it has to stop first.
   if (mine.unbranded) return 'cobrowser app is being renamed and given its icon — restarting it.';
-  // Signed for passkeys since it started (Enable Passkeys ran): the unsigned process can't
+  // Signed for passkeys since it started (Turn On Passkeys ran): the unsigned process can't
   // reach the authenticator, so it restarts as the signed one.
   if (!running.webauthn && mine.signed) return 'cobrowser app is running unsigned but the browser is now signed for passkeys — restarting it.';
   return undefined;
@@ -177,7 +177,7 @@ export async function keepSigningValid(electron: string, opts: Pick<EnsureAppOpt
     } catch (u) {
       opts.log(`could not remove the expired signing: ${(u as Error).message}`);
     }
-    opts.onSigningNotice?.('warning', `The browser's passkey signing expired on ${date(expires!)} and could not be renewed (${(e as Error).message}). It now starts unsigned, and passkeys fall back to passwords. Run "Cobrowser: Enable Passkeys (Sign the Browser)" to sign it again.`);
+    opts.onSigningNotice?.('warning', `The browser's passkey signing expired on ${date(expires!)} and could not be renewed (${(e as Error).message}). It now starts unsigned, and passkeys fall back to passwords. Run "Cobrowser: Turn On Passkeys" to sign it again.`);
   }
 }
 

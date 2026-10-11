@@ -75,7 +75,7 @@ jobs:
 
       # Only the macOS builds: cobrowser runs on nothing else, and a .vsix without a target would
       # install on Windows and Linux and fail there. The Chrome add-on ships inside the .vsix
-      # (Cobrowser: Install Chrome Bridge Extension), which keeps it up to date.
+      # (Cobrowser: Install Chrome Bridge), which keeps it up to date.
       - name: Package the macOS builds
         run: |
           for target in darwin-arm64 darwin-x64; do
