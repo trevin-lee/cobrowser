@@ -2,6 +2,29 @@
 
 Release notes for earlier versions are on the [GitHub releases page](https://github.com/trevin-lee/cobrowser/releases).
 
+## 0.9.30
+
+### Changed
+
+- **Take Over a Moved Folder's Browser asks for Touch ID**, as any change to the vault does, since it moves which workspaces may use your logins. It runs only in a window with a folder.
+- **Forget Another Workspace's Browser takes the path off your logins too**, as Take Over does, so a folder opened there later starts with none. It refuses a folder open in any editor window, whether or not its browser has started.
+- **Forget and Take Over end the old path's binding to Chrome or Firefox.** The bridge URL names the folder, so a renamed folder is bound again; both say so.
+- **Cobrowser works in an untrusted folder** (Restricted Mode), where VS Code had turned it off; there the agent always asks before uploading files.
+- **Cancelling Touch ID says nothing**, in every command.
+- A release is published only from a commit that passed CI.
+
+### Fixed
+
+- **A vault export reads back whole:** a login with only a website, the workspaces a login had before Everywhere, Bitwarden's several websites in one cell, a card expiring after 2099, and a card's name when the file's name column is empty.
+- **Imports say "updated"** for a login already in the vault, since a row without a password keeps the saved one.
+- **A failed download says so**, and an agent whose click started a download is told where the file goes.
+- **Fill Card:** its Open Vault button opens the vault on Cards, and a card pick cancelled after unlocking no longer lets the next Fill Card within a minute fill without asking.
+- **The unreadable-vault message** in the vault window no longer tells you to open the vault window.
+- **The login request dialog says when a site has more logins** than it shows.
+- **The bridge:** a call that times out says the page may be showing a dialog the bridge cannot answer; the README says what the bridge lacks, and every message says when the bridge URL changes (the token, the port, a moved folder). Replace Agent Token no longer promises to update a URL pasted into the Firefox popup by hand.
+- **Add Login and Import Logins refuse in a window without a folder**, whose browser no agent reaches.
+- Wording: passkeys are turned on and off, the agents' instructions say filling a card is not paying, the sidebar's dot says where the agent's tools act, and the toolbar shows the shortcuts for Back, Forward and Reload.
+
 ## 0.9.29
 
 ### Added
