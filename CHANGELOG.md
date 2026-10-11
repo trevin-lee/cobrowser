@@ -2,6 +2,30 @@
 
 Release notes for earlier versions are on the [GitHub releases page](https://github.com/trevin-lee/cobrowser/releases).
 
+## 0.9.28
+
+### Removed
+
+- **Five settings nobody needs to tune:** `cobrowser.tabTitleMaxLength` (titles are cut at 30 characters, as a browser tab is; VS Code's own tab sizing covers narrower tabs), `cobrowser.autoFallbackPasskeys` (an unsigned browser always falls back to a password; off, prompts only hung), `cobrowser.renderScale` and `cobrowser.renderBudgetMegapixels` (fixed at their defaults), and `cobrowser.accentColor` (what concerns the agent is cobalt everywhere). A value set for any of them is ignored.
+- **The universal `.vsix` and the Chrome add-on's zip** are no longer on releases: only the macOS packages (`cobrowser-darwin-arm64`, `cobrowser-darwin-x64`), and the Chrome add-on through **Cobrowser: Install Chrome Bridge Extension**, which keeps it up to date.
+
+### Changed
+
+- **One Open Browser command.** Open Browser Panel and the title-bar Open Browser are one, **Cobrowser: Open Browser**: your last browser tab, or the browser started with the tabs you had.
+- **A release is published only once it is complete**, after the signed Firefox add-on and its update file are attached.
+- **Backward compatibility lives in one place:** what an older version left behind is converted once, at start, and kept for three months (README: Releasing).
+
+### Fixed
+
+- **New Tab and Open Browser no longer open an extra blank tab** when the browser has to start.
+- **A logins CSV with a quote never closed is refused, naming the line**, instead of silently losing every row after it; skipped rows are counted, and a file that cannot be read is said before Touch ID.
+- **A password copied from the vault is cleared when the vault locks or the app quits**, not only after 90 seconds.
+- **An unreadable vault fails at once** and says to open the vault to start a new one, instead of asking for Touch ID on every call; the vault window now shows unlocks made elsewhere.
+- **The bridge URL's wording is right:** it changes when the agent token is replaced. Replace Agent Token says what it updates; a stale URL shows as **URL out of date** in the popup.
+- **`bridge_wait_for` waits as long as it promises** (up to 60 s; the add-ons cut it at 30).
+- **On a system other than macOS the extension does nothing** and says so, instead of failing at the first browser start.
+- `navigate_page`'s type defaults to `url`; a button that pays is refused the same way by every tool; Turn Off Passkeys finds the browser Enable Passkeys signed in a source checkout.
+
 ## 0.9.27
 
 ### Added
