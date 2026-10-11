@@ -56,7 +56,7 @@ suite('vault-window', async (r) => {
     // Cards have a backup: Export writes them to a file of their own, Import reads one back.
     await L.conn.vaultWindow(`document.getElementById('export').click(); 1`, { wait: 800 });
     const out = fs.existsSync(cardsOut) ? fs.readFileSync(cardsOut, 'utf8') : '';
-    r.check("Export in the Cards view writes every card, number and code included, to its own CSV", /^label,name,number,expiry,code,notes\n/.test(out) && out.includes('4242424242424242,03/29,123'), out);
+    r.check("Export in the Cards view writes every card, number and code included, to its own CSV", /^label,name,number,expiry,code,notes\n/.test(out) && out.includes('4242424242424242,03/2029,123'), out);
     const imported = await L.conn.vaultWindow(`document.getElementById('import').click(); 1`, { wait: 800 });
     void imported;
     const after = (await L.conn.vaultWindow(`({ state: document.getElementById('state').textContent, status: document.getElementById('status')?.textContent, items: document.querySelectorAll('#list .item').length })`)).value as Record<string, unknown>;
