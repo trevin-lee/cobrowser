@@ -13,9 +13,13 @@
  * work account; 2FA goes to the human's phone"). Cards carry notes the same way.
  */
 
-/** Notes as stored: text, trimmed, bounded (they are read on every list). */
+/** Notes as stored: text, trimmed. Bounded only against a file pasted by mistake (they are read
+ *  on every list), and refused rather than cut when longer. */
+const NOTES_LIMIT = 100000;
 function normalizeNotes(notes) {
-  return String(notes ?? '').replace(/\r\n/g, '\n').trim().slice(0, 4000);
+  const text = String(notes ?? '').replace(/\r\n/g, '\n').trim();
+  if (text.length > NOTES_LIMIT) throw new Error(`notes are limited to ${NOTES_LIMIT.toLocaleString('en-US')} characters; these have ${text.length.toLocaleString('en-US')}`);
+  return text;
 }
 const crypto = require('node:crypto');
 const { parseSite, siteLabel, siteMatches, isIp } = require('./site.js');
@@ -90,7 +94,16 @@ function mergeScope(a, b) {
 }
 
 function publicEntry(e) {
-  return { host: siteLabel(e), also: (e.also || []).map(siteLabel), username: e.username, scope: e.scope, notes: e.notes || '', hasPassword: !!e.password };
+  return { host: siteLabel(e), also: (e.also || []).map(siteLabel), username: e.username, scope: e.scope, scopeWas: e.scopeWas || [], notes: e.notes || '', hasPassword: !!e.password };
+}
+
+/** Give a login a scope. Turning Everywhere on keeps the workspaces it had (scopeWas), so
+ *  turning it off gives them back. */
+function assignScope(entry, scope) {
+  const next = normalizeScope(scope);
+  if (next === 'all') { if (Array.isArray(entry.scope) && entry.scope.length) entry.scopeWas = entry.scope; }
+  else delete entry.scopeWas;
+  entry.scope = next;
 }
 
 function findEntry(vault, label, username) {
@@ -107,20 +120,21 @@ function findEntry(vault, label, username) {
 function upsertLogin(vault, site, username, password, scope, { mergeScope: merge = true, also, notes } = {}) {
   const { host, port } = parseSite(site);
   if (!host) throw new Error('site is required');
+  const note = normalizeNotes(notes); // refused before anything changes
   const existing = vault.entries.find((e) => e.host === host && (e.port || '') === port && e.username === username);
   if (existing) {
     // An empty password is "none given", never "erase it": only an edit removes a saved one.
     if (password) existing.password = password;
     existing.updatedAt = Date.now();
-    if (scope !== undefined) existing.scope = merge ? mergeScope(existing.scope, normalizeScope(scope)) : normalizeScope(scope);
+    if (scope !== undefined) assignScope(existing, merge ? mergeScope(existing.scope, normalizeScope(scope)) : scope);
     // Other websites are only ever added here, like workspaces from a command or an import.
     if (also !== undefined) existing.also = normalizeSites([...(existing.also || []), ...normalizeSites(also)], existing);
     // Notes are replaced only by new notes; adding again without any keeps the old ones.
-    if (notes !== undefined && normalizeNotes(notes)) existing.notes = normalizeNotes(notes);
+    if (note) existing.notes = note;
     return { entry: existing, replaced: true };
   }
   const entry = { id: crypto.randomBytes(6).toString('hex'), host, port, username, password: password || '', scope: normalizeScope(scope), updatedAt: Date.now() };
-  if (normalizeNotes(notes)) entry.notes = normalizeNotes(notes);
+  if (note) entry.notes = note;
   const others = normalizeSites(also, entry);
   if (others.length) entry.also = others;
   vault.entries.push(entry);
@@ -134,6 +148,7 @@ function upsertLogin(vault, site, username, password, scope, { mergeScope: merge
 function updateLogin(vault, from, fields) {
   const entry = findEntry(vault, from.host, from.username);
   if (!entry) throw new Error('that login is no longer in the vault');
+  const note = fields.notes !== undefined ? normalizeNotes(fields.notes) : undefined; // refused before anything changes
   const site = fields.site !== undefined ? parseSite(fields.site) : { host: entry.host, port: entry.port || '' };
   if (!site.host) throw new Error('site is required');
   const username = fields.username !== undefined ? String(fields.username) : entry.username;
@@ -144,9 +159,9 @@ function updateLogin(vault, from, fields) {
   entry.username = username;
   if (fields.password === null) entry.password = ''; // now signs in with a link or a code
   else if (fields.password) entry.password = fields.password;
-  if (fields.scope !== undefined) entry.scope = normalizeScope(fields.scope);
+  if (fields.scope !== undefined) assignScope(entry, fields.scope);
   if (fields.also !== undefined) entry.also = normalizeSites(fields.also, entry);
-  if (fields.notes !== undefined) { const n = normalizeNotes(fields.notes); if (n) entry.notes = n; else delete entry.notes; }
+  if (note !== undefined) { if (note) entry.notes = note; else delete entry.notes; }
   if (entry.also && !entry.also.length) delete entry.also;
   entry.updatedAt = Date.now();
   return entry;
@@ -154,7 +169,7 @@ function updateLogin(vault, from, fields) {
 
 function setScope(vault, host, username, scope) {
   const e = findEntry(vault, host, username);
-  if (e) e.scope = normalizeScope(scope);
+  if (e) assignScope(e, scope);
   return !!e;
 }
 

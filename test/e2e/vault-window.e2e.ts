@@ -111,6 +111,12 @@ suite('vault-window', async (r) => {
     const unticked = JSON.parse(await scopeNow()) as string[];
     r.check('unticking a workspace takes off that one and keeps the grant made elsewhere', JSON.stringify(unticked) === JSON.stringify(['/elsewhere/ws-X']), unticked);
 
+    // Everywhere on and off again: the workspaces it had come back.
+    await L.conn.vaultWindow(`document.querySelector('#detail .scope .switch').click(); 1`, { wait: 600 });
+    const everywhere = JSON.parse(await scopeNow()) as string | string[];
+    await L.conn.vaultWindow(`document.querySelector('#detail .scope .switch').click(); 1`, { wait: 600 });
+    const back = JSON.parse(await scopeNow()) as string[];
+    r.check('turning Everywhere off gives back the workspaces the login had', everywhere === 'all' && JSON.stringify(back) === JSON.stringify(['/elsewhere/ws-X']), { everywhere, back });
 
     // A Lock from elsewhere (the menu bar, the editor) shows in the window at once.
     await L.conn.vaultLock();

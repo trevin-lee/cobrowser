@@ -21,6 +21,7 @@ const store = require('../app/vault-store.js') as {
   applyScopeChange: (current: Scope, before: Scope, after: Scope) => Scope;
   splitNote: (note: string) => { notes: string; workspaces?: Scope; sites?: string[] };
   closestPerUsername: (matches: Entry[], page: Page) => Entry[];
+  setScope: (v: Vault, host: string, username: string, scope: Scope) => boolean;
 };
 
 const empty = (): Vault => ({ entries: [] });
@@ -61,7 +62,7 @@ test('editing changes site, username and scope in place, and keeps the password 
   const id = v.entries[0].id;
   store.updateLogin(v, { host: 'costco.com', username: 'old@x.com' }, { site: 'www.costco.com', username: 'new@x.com', scope: 'all' });
   assert.equal(v.entries.length, 1);
-  assert.deepEqual({ ...v.entries[0], updatedAt: 0 }, { id, host: 'www.costco.com', port: '', username: 'new@x.com', password: 'secret', scope: 'all', updatedAt: 0 });
+  assert.deepEqual({ ...v.entries[0], updatedAt: 0 }, { id, host: 'www.costco.com', port: '', username: 'new@x.com', password: 'secret', scope: 'all', scopeWas: ['/a'], updatedAt: 0 });
   store.updateLogin(v, { host: 'www.costco.com', username: 'new@x.com' }, { password: 'fresh' });
   assert.equal(v.entries[0].password, 'fresh');
 });
@@ -263,4 +264,27 @@ test('rows an import cannot use are counted, not silently dropped', () => {
   const v = empty();
   const r = store.importCsv(v, 'url,username,password\n,u,p\nhttps://ok.example,u,p\nhttps://empty.example,,\n', 'all');
   assert.deepEqual(r, { count: 1, added: 1, replaced: 0, skipped: 2 });
+});
+
+test('turning Everywhere on keeps the workspaces a login had, and turning it off gives them back', () => {
+  const v = empty();
+  store.upsertLogin(v, 'a.com', 'me', 'pw', ['/w1', '/w2']);
+  store.setScope(v, 'a.com', 'me', 'all');
+  const e = v.entries[0] as Entry & { scopeWas?: string[] };
+  assert.deepEqual(store.publicEntry(e).scope, 'all');
+  assert.deepEqual((store.publicEntry(e) as { scopeWas?: string[] }).scopeWas, ['/w1', '/w2']);
+  store.setScope(v, 'a.com', 'me', ['/w1', '/w2']);
+  assert.equal(e.scopeWas, undefined, 'once it is a list again, there is nothing to give back');
+  store.updateLogin(v, { host: 'a.com', username: 'me' }, { scope: 'all' });
+  store.updateLogin(v, { host: 'a.com', username: 'me' }, { scope: 'all' });
+  assert.deepEqual(e.scopeWas, ['/w1', '/w2'], 'saving Everywhere again keeps what it had');
+});
+
+test('notes may be long, and ones too long are refused rather than cut', () => {
+  const v = empty();
+  const long = 'x'.repeat(50000);
+  store.upsertLogin(v, 'a.com', 'me', 'pw', 'all', { notes: long } as never);
+  assert.equal((v.entries[0] as Entry & { notes?: string }).notes, long);
+  assert.throws(() => store.upsertLogin(v, 'b.com', 'me', 'pw', 'all', { notes: 'x'.repeat(100001) } as never), /limited to 100,000 characters/);
+  assert.equal(v.entries.length, 1);
 });

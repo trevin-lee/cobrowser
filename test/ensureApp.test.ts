@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { replaceReason } from '../src/app/ensureApp';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { replaceReason, pruneOldElectron, ELECTRON_VERSION } from '../src/app/ensureApp';
 
 const mine = { version: '0.9.18', build: 'b2', signed: false, unbranded: false };
 
@@ -19,4 +22,16 @@ test('the same version restarts to take on its name and icon, or its passkey sig
   assert.match(replaceReason({ version: '0.9.18', build: 'b2', webauthn: false }, { ...mine, unbranded: true }) ?? '', /renamed/);
   assert.match(replaceReason({ version: '0.9.18', build: 'b2', webauthn: false }, { ...mine, signed: true }) ?? '', /signed for passkeys/);
   assert.equal(replaceReason({ version: '0.9.18', build: 'b2', webauthn: true }, { ...mine, signed: true }), undefined);
+});
+
+test("earlier versions' Electron downloads are removed, this version's and anything else kept", () => {
+  const cache = fs.mkdtempSync(path.join(os.tmpdir(), 'cobrowser-electron-'));
+  const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
+  const current = `electron-v${ELECTRON_VERSION}-darwin-${arch}`;
+  for (const d of [current, 'electron-v41.0.0-darwin-arm64', 'electron-v43.2.1-darwin-x64', 'notes']) fs.mkdirSync(path.join(cache, d));
+  const said: string[] = [];
+  pruneOldElectron(cache, (m) => said.push(m));
+  assert.deepEqual(fs.readdirSync(cache).sort(), [current, 'notes'].sort());
+  assert.equal(said.length, 2);
+  pruneOldElectron(path.join(cache, 'missing'), () => assert.fail('nothing to say'));
 });

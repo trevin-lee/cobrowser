@@ -935,8 +935,8 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
   // scopeFrom: the workspaces the form started from, for a login already saved, so saving
   // applies what changed here to the login as it is then (another grant may land meanwhile).
   // hadPass: the login being edited has a password; dropPass: the person chose to remove it.
-  const draft = { sites: [''], user: '', pass: '', notes: '', scope: [], scopeFrom: undefined, from: null, matched: null, hadPass: false, dropPass: false };
-  const resetDraft = () => Object.assign(draft, { sites: [''], user: '', pass: '', notes: '', scope: [], scopeFrom: undefined, from: null, matched: null, hadPass: false, dropPass: false });
+  const draft = { sites: [''], user: '', pass: '', notes: '', scope: [], scopeWas: undefined, scopeFrom: undefined, from: null, matched: null, hadPass: false, dropPass: false };
+  const resetDraft = () => Object.assign(draft, { sites: [''], user: '', pass: '', notes: '', scope: [], scopeWas: undefined, scopeFrom: undefined, from: null, matched: null, hadPass: false, dropPass: false });
   const cleanSites = () => draft.sites.map((x) => x.trim()).filter(Boolean);
   // A login's websites, one row each: every site it fills on, matched as strictly as any other.
   function sitesEditor(onEnter) {
@@ -1026,8 +1026,9 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
     }
   }
 
-  function scopeEditor(getScope, setScope) {
+  function scopeEditor(getScope, setScope, getWas) {
     const box = el('div', 'scope');
+    let was = null; // the workspaces it had when Everywhere was turned on here
     const every = el('div', 'row every'); every.append(disc('all'), el('b', null, 'Everywhere'), el('small', null, 'any workspace'));
     const sw = el('button', 'switch'); sw.setAttribute('role', 'switch'); every.append(sw);
     const filt = el('div', 'wsfilter'); const fi = el('input'); fi.placeholder = 'Filter workspaces'; fi.autocomplete = 'off'; fi.spellcheck = false; filt.append(fi);
@@ -1051,7 +1052,13 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
         wl.append(r);
       }
     };
-    sw.onclick = () => { setScope(getScope() === 'all' ? [] : 'all'); paint(); };
+    // Turning Everywhere off gives back the workspaces it had before it was turned on.
+    sw.onclick = () => {
+      const sc = getScope();
+      if (sc === 'all') setScope([...(was || getWas() || [])]);
+      else { was = sc; setScope('all'); }
+      paint();
+    };
     fi.oninput = paint; paint();
     box.repaint = paint;
     return box;
@@ -1103,7 +1110,7 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
         }
         wrap.append(section('Notes', notesEditor(() => draft.notes, (v) => { draft.notes = v; })));
       }
-      const editor = scopeEditor(() => draft.scope, (v) => { draft.scope = v; sync(); });
+      const editor = scopeEditor(() => draft.scope, (v) => { draft.scope = v; sync(); }, () => draft.scopeWas);
       repaintScope = editor.repaint;
       wrap.append(section('Where the agent may use it', editor, true));
       const a = el('div', 'actions'); const st = el('div'); st.id = 'status'; a.append(st, el('span', 'spacer'));
@@ -1119,7 +1126,7 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
     id.append(h2, el('div', 'user mono', sel.username || '(no username)'));
     t.append(id);
     const acts = el('div', 'acts');
-    const ed = el('button', 'quiet', 'Edit'); ed.onclick = () => { Object.assign(draft, { sites: [sel.host, ...(sel.also || [])], user: sel.username, pass: '', notes: sel.notes || '', scope: sel.scope, scopeFrom: sel.scope, from: { host: sel.host, username: sel.username }, hadPass: !!sel.hasPassword, dropPass: false }); mode = 'edit'; render(); };
+    const ed = el('button', 'quiet', 'Edit'); ed.onclick = () => { Object.assign(draft, { sites: [sel.host, ...(sel.also || [])], user: sel.username, pass: '', notes: sel.notes || '', scope: sel.scope, scopeWas: sel.scopeWas, scopeFrom: sel.scope, from: { host: sel.host, username: sel.username }, hadPass: !!sel.hasPassword, dropPass: false }); mode = 'edit'; render(); };
     // Removing asks for Touch ID or the Mac's password, which is the confirmation.
     const rm = el('button', 'quiet danger', 'Remove'); rm.onclick = async () => { try { await vault.remove(sel.host, sel.username); sel = null; await refresh(); } catch (e) { say(failed(e)); } };
     acts.append(ed, rm); t.append(acts); wrap.append(t);
@@ -1146,7 +1153,7 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
     wrap.append(section('Where the agent may use it', scopeEditor(() => sel.scope, async (v) => {
       const login = sel, before = login.scope; login.scope = v; renderList();
       try { await vault.setScope(login.host, login.username, before, v); } catch (e) { login.scope = before; render(); say(failed(e)); }
-    }), true));
+    }, () => sel.scopeWas), true));
     const a = el('div', 'actions'); const st = el('div'); st.id = 'status'; a.append(st); wrap.append(a);
   }
   const canSave = () => !!(cleanSites().length && (draft.scope === 'all' || draft.scope.length));
@@ -1162,7 +1169,7 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
     if (matchKey !== draft.matched) {
       draft.matched = matchKey;
       draft.scopeFrom = existing ? existing.scope : undefined;
-      if (existing) { draft.scope = existing.scope === 'all' ? 'all' : [...existing.scope]; repaintScope(); }
+      if (existing) { draft.scope = existing.scope === 'all' ? 'all' : [...existing.scope]; draft.scopeWas = existing.scopeWas; repaintScope(); }
     }
     if (mode === 'add') b.textContent = replacing ? 'Replace login' : 'Save login';
     // Say why Save is off, once the rest is filled in — the missing piece is otherwise invisible.
@@ -2381,6 +2388,7 @@ function moveLoginScopes() {
   for (const e of vault.entries) {
     const scope = workspaceMoves.renameInScope(e.scope, m.logins);
     if (JSON.stringify(scope) !== JSON.stringify(e.scope)) { e.scope = scope; changed++; }
+    if (e.scopeWas) e.scopeWas = workspaceMoves.renameInScope(e.scopeWas, m.logins);
   }
   if (changed) saveVault();
   m.logins = {};

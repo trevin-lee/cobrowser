@@ -113,6 +113,7 @@ export async function ensureApp(opts: EnsureAppOptions): Promise<AppState> {
   const electron = opts.devElectron && fs.existsSync(opts.devElectron)
     ? opts.devElectron
     : await ensureElectron(opts);
+  pruneOldElectron(opts.cacheDir, opts.log); // no app runs from them: an older one was stopped above
   if (!fs.existsSync(opts.appMain)) throw new Error(`cobrowser app bundle missing: ${opts.appMain}`);
   await keepSigningValid(electron, opts);
   const signed = readSignedMarker(electron);
@@ -182,6 +183,27 @@ export async function keepSigningValid(electron: string, opts: Pick<EnsureAppOpt
 }
 
 /** Download the pinned Electron once into the cache and return its executable path. */
+/** The Electron versions earlier cobrowser versions downloaded (about 250 MB each): only this
+ *  version's is used. */
+export function pruneOldElectron(cacheDir: string, log: (m: string) => void): void {
+  const keep = path.basename(cachedVersionDir(cacheDir));
+  let names: string[];
+  try {
+    names = fs.readdirSync(cacheDir);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (name === keep || !/^electron-v[\d.]+-darwin-(arm64|x64)$/.test(name)) continue;
+    try {
+      fs.rmSync(path.join(cacheDir, name), { recursive: true, force: true });
+      log(`Removed ${name}, which an earlier version of cobrowser downloaded.`);
+    } catch (e) {
+      log(`Could not remove ${name}: ${(e as Error).message}`);
+    }
+  }
+}
+
 async function ensureElectron(opts: EnsureAppOptions): Promise<string> {
   if (process.platform !== 'darwin') {
     throw new Error('cobrowser app: only macOS is supported in this release');
