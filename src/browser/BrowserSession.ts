@@ -729,6 +729,12 @@ export class BrowserSession {
     return r;
   }
 
+  /** Answer the page's alert, confirm or prompt in a tab, as the human would in its window. */
+  handleDialog(opts: OnPage & { accept: boolean; text?: string }) {
+    this.markAgent();
+    return this.app.answerDialog(this.pageFor(opts.pageId).tabId, opts.accept, opts.text);
+  }
+
   /** Move to an element and click it (the input half of click, without its rule). */
   private async pressBox(p: AppPage, box: ElementBox, dblClick: boolean): Promise<void> {
     this.emitHighlight(p, box);

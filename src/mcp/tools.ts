@@ -200,7 +200,7 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'click',
     {
       description:
-        'Click an element by uid (from take_snapshot; valid while the element exists) OR a CSS selector. A real input click (the cursor moves there, presses, releases) that frameworks (React etc.) accept as genuine — unlike element.click() from evaluate_script, which fires untrusted events sites may ignore. Check the outcome with read_page, not a fresh full snapshot. If the click opens a page dialog (confirm, prompt) or a file picker, it is shown to the human and the click waits for their answer (to attach files yourself, use upload_file). REFUSES buttons that pay or place an order (it reports the button instead of clicking), since the human owns that click; pass allowPayment only if they asked you to complete that payment.',
+        'Click an element by uid (from take_snapshot; valid while the element exists) OR a CSS selector. A real input click (the cursor moves there, presses, releases) that frameworks (React etc.) accept as genuine — unlike element.click() from evaluate_script, which fires untrusted events sites may ignore. Check the outcome with read_page, not a fresh full snapshot. If the click opens a page dialog (alert, confirm, prompt), you are told at once what it asks: answer it with handle_dialog, or leave it to the human, who sees it too. A file picker is shown to the human (to attach files yourself, use upload_file). REFUSES buttons that pay or place an order (it reports the button instead of clicking), since the human owns that click; pass allowPayment only if they asked you to complete that payment.',
       inputSchema: { uid: z.string().optional(), selector: z.string().optional(), dblClick: z.boolean().optional(), allowPayment: z.boolean().optional(), pageId },
     },
     async ({ uid, selector, dblClick, allowPayment, pageId: id }) => {
@@ -264,6 +264,24 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
       const s = await getSession();
       const r = await s.run(() => s.fillForm(elements, id, allowCredentials === true), id);
       return asText(r.refused ? JSON.stringify(r, null, 2) : `filled ${r.filled} field(s)`);
+    },
+  );
+
+  server.registerTool(
+    'handle_dialog',
+    {
+      description:
+        "Answer the alert, confirm or prompt a page is showing in your current tab (or pageId), as the human would: accept (OK) or not (Cancel), with text for a prompt (its default otherwise). While one is open the page is paused, and other tools on that tab say what it asks. The human sees the same dialog and may answer it first; then this says no dialog is open. Do not accept a dialog that confirms a payment or an order unless the human asked you to complete it.",
+      inputSchema: {
+        accept: z.boolean().describe('true for OK, false for Cancel'),
+        text: z.string().optional().describe('For a prompt: what to answer (its default when omitted)'),
+        pageId,
+      },
+    },
+    async ({ accept, text, pageId: id }) => {
+      const s = await getSession();
+      const r = await s.handleDialog({ accept, text, pageId: id });
+      return asText(r.answered ? `${accept ? 'accepted' : 'dismissed'} the ${r.answered}: "${r.message}"` : JSON.stringify(r));
     },
   );
 

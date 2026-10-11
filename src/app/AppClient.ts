@@ -282,6 +282,11 @@ export class AppConnection {
     return r.card as PublicCard;
   }
   /** Fill a saved card into a tab's card fields, after the person confirms (every time). */
+  /** Answer the page's open alert, confirm or prompt (handle_dialog). */
+  async answerDialog(tabId: string, accept: boolean, text?: string): Promise<{ answered?: string; message?: string; accepted?: boolean; error?: string }> {
+    return (await this.request({ type: 'dialog.answer', tabId, accept, ...(text !== undefined ? { text } : {}) })) as { answered?: string; message?: string; accepted?: boolean; error?: string };
+  }
+
   /** Check files for upload_file and ask the human to confirm them (or, with ask false, tell
    *  them once the files are in); then the tab's next file picker takes them. Waits for the
    *  human's answer. */

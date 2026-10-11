@@ -1502,45 +1502,70 @@ function tabOf(contents) {
   return undefined;
 }
 
-async function answerPageDialog({ type, message, def }, origin) {
-  if (TEST_DIALOG !== undefined) {
-    const yes = TEST_DIALOG === 'accept';
-    log(`dialog: TEST MODE — ${type} "${message}" answered ${yes ? 'accept' : 'dismiss'}`);
-    return type === 'confirm' ? yes : type === 'prompt' ? (yes ? `${def}` || 'test answer' : null) : undefined;
+/**
+ * Answer a page's alert, confirm or prompt: whoever answers first, the human in the app's
+ * window or an agent with handle_dialog (tab.pageDialog.answer). The window is the app's own
+ * for all three, not a native alert, so an agent's answer can close it.
+ * Returns what the page's call returns: confirm a boolean, prompt a string or null.
+ */
+async function answerPageDialog({ type, message, def }, origin, tab) {
+  let byAgent;
+  const agent = new Promise((resolve) => { byAgent = resolve; });
+  const open = { type, message: String(message ?? ''), def: def == null ? '' : String(def), origin, answer: byAgent };
+  // Only a dialog that waits on someone (the human, or a test's agent) stops the page for the
+  // agent; one a test answers at once is as if none had opened.
+  const waits = TEST_DIALOG === undefined || TEST_DIALOG === 'agent';
+  if (tab && waits) {
+    tab.pageDialog = open;
+    for (const notify of tab.dialogWaiters) notify(open);
+    tab.dialogWaiters.clear();
   }
-  focusApp();
-  if (type === 'prompt') return promptWindow(origin, message, def);
-  const { response } = await dialog.showMessageBox({
-    type: type === 'confirm' ? 'question' : 'info',
-    message: `${origin} says`,
-    detail: message,
-    buttons: type === 'confirm' ? ['OK', 'Cancel'] : ['OK'],
-    defaultId: 0,
-    cancelId: type === 'confirm' ? 1 : 0,
-  });
-  return type === 'confirm' ? response === 0 : undefined;
+  try {
+    if (TEST_DIALOG === 'agent') return await agent; // a test where the agent answers
+    if (TEST_DIALOG !== undefined) {
+      const yes = TEST_DIALOG === 'accept';
+      log(`dialog: TEST MODE — ${type} "${message}" answered ${yes ? 'accept' : 'dismiss'}`);
+      return type === 'confirm' ? yes : type === 'prompt' ? (yes ? `${def}` || 'test answer' : null) : undefined;
+    }
+    focusApp();
+    const close = new AbortController();
+    const human = pageDialogWindow(type, origin, open.message, open.def, close.signal);
+    return await Promise.race([human, agent.then((v) => { close.abort(); return v; })]);
+  } finally {
+    if (tab && tab.pageDialog === open) tab.pageDialog = null;
+  }
 }
 
-/** prompt(): macOS has no text-input alert, so a small window of the app's own. */
-function promptWindow(origin, message, def) {
+/** The page dialog as a small window of the app's own (macOS has no text-input alert, and a
+ *  native alert without a parent window cannot be closed from code). */
+function pageDialogWindow(type, origin, message, def, signal) {
   return new Promise((resolve) => {
     const esc = (v) => String(v).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+    const input = type === 'prompt' ? `<input id="i" value="${esc(def)}">` : '';
+    const cancel = type === 'alert' ? '' : '<button type="button" id="c">Cancel</button>';
     const html = `<!doctype html><meta charset="utf-8"><title>${esc(origin)} says</title>
-<style>:root{color-scheme:light dark}body{font:13px -apple-system,system-ui;margin:18px 20px}p{margin:0 0 12px;white-space:pre-wrap}
+<style>:root{color-scheme:light dark}body{font:13px -apple-system,system-ui;margin:18px 20px}h1{font-size:13px;margin:0 0 6px}p{margin:0 0 12px;white-space:pre-wrap}
 input{width:100%;box-sizing:border-box;font:inherit;padding:5px 7px}div{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}button{font:inherit;padding:4px 14px}</style>
-<p>${esc(message)}</p><form id="f"><input id="i" value="${esc(def)}"><div><button type="button" id="c">Cancel</button><button>OK</button></div></form>
-<script>const i=document.getElementById('i');i.focus();i.select();
-document.getElementById('f').onsubmit=(e)=>{e.preventDefault();document.title='ok:'+i.value};
-document.getElementById('c').onclick=()=>{document.title='cancel'};
+<h1>${esc(origin)} says</h1><p>${esc(message)}</p><form id="f">${input}<div>${cancel}<button id="ok">OK</button></div></form>
+<script>const i=document.getElementById('i');(i||document.getElementById('ok')).focus();if(i)i.select();
+document.getElementById('f').onsubmit=(e)=>{e.preventDefault();document.title='ok:'+(i?i.value:'')};
+const c=document.getElementById('c');if(c)c.onclick=()=>{document.title='cancel'};
 addEventListener('keydown',(e)=>{if(e.key==='Escape')document.title='cancel'});</script>`;
-    const win = new BrowserWindow({ width: 440, height: 190, show: false, resizable: false, minimizable: false, maximizable: false, fullscreenable: false, alwaysOnTop: true, title: `${origin} says`, webPreferences: { sandbox: true, contextIsolation: true } });
+    const win = new BrowserWindow({ width: 440, height: type === 'prompt' ? 210 : 170, show: false, resizable: false, minimizable: false, maximizable: false, fullscreenable: false, alwaysOnTop: true, title: `${origin} says`, webPreferences: { sandbox: true, contextIsolation: true } });
+    const value = (ok, text) => (type === 'confirm' ? ok : type === 'prompt' ? (ok ? text : null) : undefined);
     let settled = false;
     const finish = (v) => { if (settled) return; settled = true; resolve(v); if (!win.isDestroyed()) win.close(); };
-    win.on('page-title-updated', (e, title) => { e.preventDefault(); if (title.startsWith('ok:')) finish(title.slice(3)); else if (title === 'cancel') finish(null); });
-    win.on('closed', () => finish(null));
-    win.once('ready-to-show', () => { focusApp(); win.show(); });
+    win.on('page-title-updated', (e, title) => { e.preventDefault(); if (title.startsWith('ok:')) finish(value(true, title.slice(3))); else if (title === 'cancel') finish(value(false)); });
+    win.on('closed', () => finish(value(false)));
+    if (signal) signal.addEventListener('abort', () => finish(value(false)));
+    win.once('ready-to-show', () => { if (!settled) { focusApp(); win.show(); } });
     void win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
   });
+}
+
+/** What an agent is told when a page dialog stands between it and the page. */
+function dialogNote(d) {
+  return `The page is showing a ${d.type}: "${d.message.slice(0, 300)}"${d.type === 'prompt' && d.def ? ` (default "${d.def.slice(0, 100)}")` : ''}. Answer it with handle_dialog (accept: true or false${d.type === 'prompt' ? ', and text' : ''}), or leave it to the human, who sees it too.`;
 }
 
 ipcMain.on('cobrowser:dialog', async (e, d) => {
@@ -1550,7 +1575,7 @@ ipcMain.on('cobrowser:dialog', async (e, d) => {
   if (!d || !['alert', 'confirm', 'prompt'].includes(d.type)) { e.returnValue = fallback; return; }
   if (tab) tab.pendingDialogs++;
   try {
-    e.returnValue = await answerPageDialog(d, origin);
+    e.returnValue = await answerPageDialog(d, origin, tab);
   } catch (err) {
     log(`dialog: ${err.message}`);
     e.returnValue = fallback;
@@ -1686,6 +1711,10 @@ class Tab {
     this.hoverSession = undefined;
     /** Page dialogs and file pickers shown to the human right now (the page waits on them). */
     this.pendingDialogs = 0;
+    /** The page's alert, confirm or prompt open now, which an agent can answer (handle_dialog),
+     *  and the commands waiting to hear one has opened. */
+    this.pageDialog = null;
+    this.dialogWaiters = new Set();
     /** Files the human allowed the agent to upload, for the next file picker (armUpload). */
     this.armedUpload = null;
     /** Recent renderer crashes, so a page that keeps crashing is not reloaded forever. */
@@ -2627,24 +2656,41 @@ async function handle(ws, state, m) {
       }
       // A screenshot wants a fresh frame now, not the next scheduled one.
       if (m.method === 'Page.captureScreenshot') t.win.webContents.invalidate();
+      // A page dialog stops the page: the command is told so at once, with what it asks, and
+      // an agent can answer it (handle_dialog) instead of waiting out the timeout.
+      if (t.pageDialog) return reply({ error: dialogNote(t.pageDialog), dialog: { type: t.pageDialog.type, message: t.pageDialog.message } });
+      let onDialog;
+      const dialogOpened = new Promise((_r, rej) => { onDialog = (d) => rej(Object.assign(new Error(dialogNote(d)), { dialog: { type: d.type, message: d.message } })); t.dialogWaiters.add(onDialog); });
       // A command the session never answers must not hang the caller forever.
       let timer;
       const timeout = new Promise((_r, rej) => { timer = setTimeout(() => rej(new Error(`${m.method} did not answer within 20s`)), 20000); });
       let timedOut = false;
-      try { reply({ result: await Promise.race([t.win.webContents.debugger.sendCommand(m.method, m.params || {}), timeout.catch((e) => { timedOut = true; throw e; })]) }); }
+      try { reply({ result: await Promise.race([t.win.webContents.debugger.sendCommand(m.method, m.params || {}), dialogOpened, timeout.catch((e) => { timedOut = true; throw e; })]) }); }
       catch (e) {
         // The page is waiting on a dialog the human has to answer: that is not a stuck session.
         const waiting = timedOut && t.pendingDialogs > 0;
         const msg = waiting ? 'The page is showing a dialog to the human (a confirm, prompt or file picker); it continues when they answer it.' : (e.message || String(e));
         log(`tab ${t.id}: ${m.method}: ${msg}`);
-        reply({ error: msg });
+        reply({ error: msg, ...(e.dialog ? { dialog: e.dialog } : {}) });
         if (waiting) timedOut = false;
       }
-      finally { clearTimeout(timer); }
+      finally { clearTimeout(timer); t.dialogWaiters.delete(onDialog); }
       // Best effort for a session that stopped answering: detaching fires 'detach', which
       // reattaches a fresh one.
       if (timedOut && !t.win.isDestroyed()) { try { t.win.webContents.debugger.detach(); } catch { /* already gone */ } }
       return;
+    }
+    case 'dialog.answer': {
+      // handle_dialog: the agent answers the page's alert, confirm or prompt.
+      const t = w.tabs.get(m.tabId);
+      const reply = (obj) => ws.send(JSON.stringify({ ...obj, requestId: m.requestId }));
+      if (!t || t.win.isDestroyed()) return reply({ error: 'no such tab in this workspace' });
+      const d = t.pageDialog;
+      if (!d) return reply({ error: 'no dialog is open on this tab' });
+      const accept = m.accept !== false;
+      d.answer(d.type === 'confirm' ? accept : d.type === 'prompt' ? (accept ? (typeof m.text === 'string' ? m.text : d.def) : null) : undefined);
+      log(`dialog: ${d.type} on ${d.origin} answered by the agent (${accept ? 'accept' : 'dismiss'})`);
+      return reply({ answered: d.type, message: d.message, accepted: accept });
     }
     case 'upload.arm': {
       const t = w.tabs.get(m.tabId);
