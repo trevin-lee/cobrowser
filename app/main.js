@@ -268,7 +268,8 @@ async function confirmPerson(reason) {
   if (await askHelper(reason)) return;
   if (process.platform === 'darwin' && systemPreferences.canPromptTouchID()) {
     await Promise.race([
-      systemPreferences.promptTouchID(reason),
+      // Declining reads the same whichever way it was asked.
+      systemPreferences.promptTouchID(reason).catch((e) => { throw /cancel/i.test(String(e && e.message)) ? new Error('cancelled') : e; }),
       new Promise((_r, rej) => setTimeout(() => rej(new Error('no answer to the confirmation')), CONFIRM_TIMEOUT_MS)),
     ]);
     return;

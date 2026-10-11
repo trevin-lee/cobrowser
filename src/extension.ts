@@ -120,6 +120,14 @@ function forgetBridge(id: string): void {
   forgetBinding(id);
 }
 
+/** A command that failed, said; a confirmation the person cancelled changed nothing and says
+ *  nothing, wherever it was asked. */
+function vaultFailed(what: string, err: unknown): void {
+  const msg = String((err as Error)?.message ?? err);
+  if (/\bcancell?ed\b/i.test(msg)) return;
+  void vscode.window.showErrorMessage(`Cobrowser: could not ${what} — ${msg}`);
+}
+
 /** The tab a command acts on: a sidebar row's, or the one in front. */
 function panelFor(node?: TreeNode): BrowserPanel | undefined {
   return node?.kind === 'tab' ? BrowserPanel.get(node.page.pageId) : BrowserPanel.active;
@@ -730,7 +738,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             : `Cobrowser: saved a login for ${site}${password ? '' : ' (no password: it signs in with a link or a code)'}, usable in this workspace. Change where it can be used with "Cobrowser: Open Vault".`,
         );
       } catch (err) {
-        void vscode.window.showErrorMessage(`Cobrowser: could not save the login — ${String((err as Error).message ?? err)}`);
+        vaultFailed('save the login', err);
       }
     }),
     vscode.commands.registerCommand('cobrowser.importLoginsCsv', async () => {
@@ -742,7 +750,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         const csv = Buffer.from(await vscode.workspace.fs.readFile(picked[0])).toString('utf8');
         r = await withApp((c) => c.vaultImportDetailed(csv));
       } catch (err) {
-        void vscode.window.showErrorMessage(`Cobrowser: could not import logins — ${String((err as Error).message ?? err)}`);
+        vaultFailed('import logins', err);
         return;
       }
       // A cobrowser export names each login's workspaces; other logins become usable here.
@@ -784,7 +792,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         if (r.error) throw new Error(r.error);
         if (r.ok) void vscode.window.showInformationMessage(`Cobrowser: exported ${r.count} login(s) to ${r.file}. The file holds the passwords in plain text — delete it once it is imported elsewhere.`);
       } catch (err) {
-        void vscode.window.showErrorMessage(`Cobrowser: could not export logins — ${String((err as Error).message ?? err)}`);
+        vaultFailed('export logins', err);
       }
     }),
     // MCP clients cobrowser cannot register through an interface of theirs: show the entry
@@ -838,15 +846,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         if (r.error) void vscode.window.showWarningMessage(`Cobrowser: ${r.error}.`);
         else vscode.window.setStatusBarMessage(`Cobrowser: filled ${pick.label} (${r.filled.join(', ')})`, 5000);
       } catch (err) {
-        const msg = String((err as Error).message ?? err);
-        if (!/cancelled/.test(msg)) void vscode.window.showErrorMessage(`Cobrowser: could not fill the card — ${msg}`);
+        vaultFailed('fill the card', err);
       }
     }),
     vscode.commands.registerCommand('cobrowser.manageLogins', async (view?: unknown) => {
       try {
         await withApp((c) => c.vaultOpenWindow(view === 'cards' ? 'cards' : undefined));
       } catch (err) {
-        void vscode.window.showErrorMessage(`Cobrowser: could not open the vault — ${String((err as Error).message ?? err)}`);
+        vaultFailed('open the vault', err);
       }
     }),
     vscode.commands.registerCommand('cobrowser.lockVault', async () => {
@@ -864,7 +871,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }
         void vscode.window.showInformationMessage('Cobrowser: vault locked. Using a login or a card asks for Touch ID or your Mac password again.');
       } catch (err) {
-        void vscode.window.showErrorMessage(`Cobrowser: could not lock the vault — ${String((err as Error).message ?? err)}`);
+        vaultFailed('lock the vault', err);
       }
     }),
     vscode.commands.registerCommand('cobrowser.sitePermissions', async () => {
@@ -928,7 +935,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         forgetBridge(pick.id);
         void vscode.window.showInformationMessage(`Cobrowser: forgot ${pick.label}'s browser.`);
       } catch (err) {
-        void vscode.window.showErrorMessage(`Cobrowser: could not forget the workspace — ${String((err as Error).message ?? err)}`);
+        vaultFailed('forget the workspace', err);
       }
     }),
     vscode.commands.registerCommand('cobrowser.takeOverWorkspace', async () => {
@@ -962,7 +969,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         await getSession();
         void vscode.window.showInformationMessage(`Cobrowser: ${here} now has ${pick.label}'s browser. If ${pick.label} used Chrome or Firefox through the bridge, bind ${here} again; for Chrome, paste its new bridge URL into the popup and remove the old one.`);
       } catch (err) {
-        void vscode.window.showErrorMessage(`Cobrowser: could not take over the browser — ${String((err as Error).message ?? err)}`);
+        vaultFailed('take over the browser', err);
       }
     }),
     vscode.commands.registerCommand('cobrowser.restartBrowser', async () => {
