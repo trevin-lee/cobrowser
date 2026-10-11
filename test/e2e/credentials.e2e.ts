@@ -149,13 +149,19 @@ suite('credentials', async (r) => {
         const agentAsks = asks() - before;
         await L3.conn.vaultLock();
         before = asks();
-        await L3.conn.vaultCards(true);
-        await L3.conn.vaultFillCard(t.tabId, undefined, 'human');
+        const { fillToken } = await L3.conn.vaultCardsForFill();
+        await L3.conn.vaultFillCard(t.tabId, undefined, 'human', fillToken);
         const commandAsks = asks() - before;
+        // A pick cancelled after the unlock: a later Fill Card asks for itself.
+        await L3.conn.vaultLock();
+        await L3.conn.vaultCardsForFill();
+        before = asks();
+        await L3.conn.vaultFillCard(t.tabId, undefined, 'human');
+        const afterCancel = asks() - before;
         before = asks();
         await L3.conn.vaultFillCard(t.tabId, undefined, 'agent');
         const unlockedAsks = asks() - before;
-        r.check('[cards] a fill with the vault locked asks once, by the agent or the Fill Card command; unlocked, each fill still asks', agentAsks === 1 && commandAsks === 1 && unlockedAsks === 1, { agentAsks, commandAsks, unlockedAsks });
+        r.check('[cards] a fill with the vault locked asks once, by the agent or the Fill Card command; unlocked, each fill still asks', agentAsks === 1 && commandAsks === 1 && unlockedAsks === 1 && afterCancel === 1, { agentAsks, commandAsks, unlockedAsks, afterCancel });
         const none = await L3.conn.vaultFillCard((await L3.conn.openTab(shop.base + '/frame', 400, 300)).tabId, 'no such card', 'agent');
         r.check('[cards] an unknown card is a clear error, with the cards there are', /no saved card/.test(none.error ?? '') && none.cards?.[0] === 'Personal', none);
       } finally {

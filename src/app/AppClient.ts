@@ -271,10 +271,15 @@ export class AppConnection {
   }
   /** The saved cards, as lists may see them: label, brand, last four digits, expiry. */
   /** forFill: listing to pick a card to fill, so an unlock here confirms that fill too. */
-  async vaultCards(forFill = false): Promise<PublicCard[]> {
+  async vaultCards(): Promise<PublicCard[]> {
+    return (await this.vaultCardsForFill(false)).cards;
+  }
+  /** The cards, for Cobrowser: Fill Card. When this unlocked the vault, `fillToken` lets the
+   *  fill that follows skip a second confirmation. */
+  async vaultCardsForFill(forFill = true): Promise<{ cards: PublicCard[]; fillToken?: string }> {
     const r = await this.request({ type: 'vault.cards', ...(forFill ? { forFill: true } : {}) }, 120000);
     if (r.error) throw new Error(String(r.error));
-    return r.cards as PublicCard[];
+    return { cards: r.cards as PublicCard[], ...(typeof r.fillToken === 'string' ? { fillToken: r.fillToken } : {}) };
   }
   async vaultAddCard(card: { number: string; exp: string; cvc?: string; name?: string; label?: string; notes?: string }): Promise<PublicCard> {
     const r = await this.request({ type: 'vault.addCard', card }, 120000);
@@ -299,16 +304,16 @@ export class AppConnection {
     return (await this.request({ type: 'upload.outcome', tabId, wait }, wait + 5000)) as { uploaded?: string[]; host?: string; error?: string; noPicker?: boolean };
   }
 
-  async vaultFillCard(tabId: string, card: string | undefined, by: 'human' | 'agent'): Promise<{ filled: string[]; card?: string; last4?: string; error?: string; cards?: string[] }> {
-    return (await this.request({ type: 'vault.fillCard', tabId, card, by }, 180000)) as unknown as { filled: string[]; card?: string; last4?: string; error?: string; cards?: string[] };
+  async vaultFillCard(tabId: string, card: string | undefined, by: 'human' | 'agent', fillToken?: string): Promise<{ filled: string[]; card?: string; last4?: string; error?: string; cards?: string[] }> {
+    return (await this.request({ type: 'vault.fillCard', tabId, card, by, ...(fillToken ? { fillToken } : {}) }, 180000)) as unknown as { filled: string[]; card?: string; last4?: string; error?: string; cards?: string[] };
   }
   /** Test instances only: run a script in the vault window, and optionally photograph it. */
   async vaultWindow(script?: string, opts: { capture?: boolean; wait?: number } = {}): Promise<{ value?: unknown; width: number; height: number; png?: string; error?: string }> {
     return (await this.request({ type: 'vault.window', script, ...opts }, 60000)) as unknown as { value?: unknown; width: number; height: number; png?: string; error?: string };
   }
   /** Bring up the app's vault window, where logins and cards are viewed, edited and scoped. */
-  async vaultOpenWindow(): Promise<void> {
-    await this.request({ type: 'vault.open' });
+  async vaultOpenWindow(view?: 'cards'): Promise<void> {
+    await this.request({ type: 'vault.open', ...(view ? { view } : {}) });
   }
   /** Ask the human (native dialog) to let this workspace use a login it is not scoped for. */
   async vaultRequest(site: string, username: string | undefined, reason: string | undefined): Promise<{ granted: 'workspace' | 'once' | 'already' | 'denied'; host?: string; username?: string; error?: string }> {

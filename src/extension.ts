@@ -801,17 +801,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return;
       }
       try {
-        const cards = await app.vaultCards(true);
+        const { cards, fillToken } = await app.vaultCardsForFill();
         if (!cards.length) {
           const next = await vscode.window.showInformationMessage('Cobrowser: no card is saved yet. Add one under Cards in the vault.', 'Open Vault');
-          if (next) await vscode.commands.executeCommand('cobrowser.manageLogins');
+          if (next) await vscode.commands.executeCommand('cobrowser.manageLogins', 'cards');
           return;
         }
         const pick = cards.length === 1
           ? cards[0]
           : (await vscode.window.showQuickPick(cards.map((c) => ({ label: c.label, description: `${c.brand} •••• ${c.last4} · ${c.exp}`, card: c })), { title: 'Fill which card?' }))?.card;
         if (!pick) return;
-        const r = await app.vaultFillCard(panel.tabId, pick.id, 'human');
+        const r = await app.vaultFillCard(panel.tabId, pick.id, 'human', fillToken);
         if (r.error) void vscode.window.showWarningMessage(`Cobrowser: ${r.error}.`);
         else vscode.window.setStatusBarMessage(`Cobrowser: filled ${pick.label} (${r.filled.join(', ')})`, 5000);
       } catch (err) {
@@ -819,9 +819,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         if (!/cancelled/.test(msg)) void vscode.window.showErrorMessage(`Cobrowser: could not fill the card — ${msg}`);
       }
     }),
-    vscode.commands.registerCommand('cobrowser.manageLogins', async () => {
+    vscode.commands.registerCommand('cobrowser.manageLogins', async (view?: unknown) => {
       try {
-        await withApp((c) => c.vaultOpenWindow());
+        await withApp((c) => c.vaultOpenWindow(view === 'cards' ? 'cards' : undefined));
       } catch (err) {
         void vscode.window.showErrorMessage(`Cobrowser: could not open the vault — ${String((err as Error).message ?? err)}`);
       }

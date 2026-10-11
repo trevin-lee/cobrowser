@@ -278,9 +278,10 @@ async function confirmPerson(reason) {
   if (response !== 0) throw new Error('cancelled');
 }
 
-/** When Cobrowser: Fill Card unlocked the vault to list the cards, so the fill that follows
- *  within FILL_UNLOCK_MS does not ask again. */
-let fillUnlockAt = 0;
+/** When Cobrowser: Fill Card unlocked the vault to list the cards: the one fill that follows,
+ *  carrying this token, within FILL_UNLOCK_MS does not ask again. A pick that was cancelled
+ *  leaves the token unused, so no later fill rides on that unlock. */
+let fillGrant = null; // { token, at }
 const FILL_UNLOCK_MS = 60000;
 
 /** A fresh confirmation for this one act (a change, showing or exporting passwords), which
@@ -726,7 +727,7 @@ function cardValue(card, f) {
  * (Stripe and the like put each field in a frame of their own). Asks the person first, every
  * time, whoever asked for it; the number and code are typed by the app, never returned.
  */
-async function fillCard(tab, { card: which, by, workspaceName }) {
+async function fillCard(tab, { card: which, by, workspaceName, fillToken }) {
   const wc = tab.win.webContents;
   const host = hostOf(wc.getURL());
   // A locked vault is unlocked for this fill, and that one prompt is the fill's confirmation:
@@ -750,8 +751,8 @@ async function fillCard(tab, { card: which, by, workspaceName }) {
   }
   if (!found.length) return { filled: [], error: `no card fields on ${host}` };
   // Cobrowser: Fill Card lists the cards first, unlocking for this fill (vault.cards forFill).
-  const unlockedForThis = wasLocked || (by === 'human' && Date.now() - fillUnlockAt < FILL_UNLOCK_MS);
-  fillUnlockAt = 0;
+  const unlockedForThis = wasLocked || (by === 'human' && !!fillToken && fillGrant?.token === fillToken && Date.now() - fillGrant.at < FILL_UNLOCK_MS);
+  fillGrant = null;
   if (!unlockedForThis) {
     await confirmFresh(by === 'agent'
       ? `let the agent in "${workspaceName}" fill your card ${pub.label} (•••• ${pub.last4}) on ${host}`
@@ -1075,7 +1076,7 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
       const b = el('button', 'primary', unlocking ? 'Waiting for you to confirm…' : 'Unlock'); b.disabled = unlocking; b.onclick = refresh;
       lc.append(el('div', null, 'Locked. Unlock with Touch ID or your Mac password. Every change, and showing or exporting a password, asks again.'), b);
       // In the window, its own pointer to the window is dropped.
-      if (lastError && !unlocking) lc.append(el('p', 'hint', lastError.replace(/: open the vault \(Cobrowser: Open Vault\) to start a new one$/, '.')));
+      if (lastError && !unlocking) lc.append(el('p', 'hint', lastError.split(': open the vault (')[0].replace(/[.]?$/, '.')));
       // A vault this Mac's keychain key cannot open: unlocking again will not help.
       if (/cannot be read with this Mac/.test(lastError) && !unlocking) {
         const fresh = el('button', 'quiet danger', 'Start a new vault');
@@ -1376,8 +1377,10 @@ function markdownToHtml(md) {
 }
 
 let vaultWin;
-function openVaultWindow() {
-  if (vaultWin && !vaultWin.isDestroyed()) { vaultWin.show(); vaultWin.focus(); return; }
+/** The vault window, brought forward; `view` 'cards' opens it on Cards. */
+function openVaultWindow(view) {
+  const showView = () => { if (view === 'cards') void vaultWin.webContents.executeJavaScript("document.getElementById('k-cards').click(); 0").catch(() => undefined); };
+  if (vaultWin && !vaultWin.isDestroyed()) { vaultWin.show(); vaultWin.focus(); showView(); return; }
   const { nativeTheme } = require('electron');
   vaultWin = new BrowserWindow({
     ...vaultWindowSize(), title: 'cobrowser vault', show: false,
@@ -1390,6 +1393,7 @@ function openVaultWindow() {
   const outside = (url) => { if (/^(https?:|mailto:)/.test(url)) void shell.openExternal(url); };
   vaultWin.webContents.setWindowOpenHandler(({ url }) => { outside(url); return { action: 'deny' }; });
   vaultWin.webContents.on('will-navigate', (e, url) => { e.preventDefault(); outside(url); });
+  vaultWin.webContents.once('did-finish-load', showView);
   void vaultWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(VAULT_HTML));
 }
 
@@ -2624,7 +2628,7 @@ async function handle(ws, state, m) {
           return reply({ logins: v.entries.filter((e) => wsId && allowed(e, wsId)).map((e) => ({ host: siteLabel(e), ...(e.also && e.also.length ? { alsoOn: e.also.map(siteLabel) } : {}), username: e.username, ...(e.password ? {} : { noPassword: true }), ...(e.notes ? { notes: e.notes } : {}) })) });
         }
         case 'vault.lock': { lockVault(); return reply({ ok: true }); }
-        case 'vault.open': { focusApp(); openVaultWindow(); return reply({ ok: true }); }
+        case 'vault.open': { focusApp(); openVaultWindow(m.view === 'cards' ? 'cards' : undefined); return reply({ ok: true }); }
         // Test instances only: drive the vault window and photograph it, for the UI suite.
         case 'vault.window': {
           if (!SKIP_BIOMETRICS) return reply({ error: 'not available' });
@@ -2648,13 +2652,13 @@ async function handle(ws, state, m) {
           // forFill: Cobrowser: Fill Card picking a card; an unlock here confirms that fill.
           const wasLocked = !vault;
           const v = await unlockVault(m.forFill ? 'fill a saved card into the page in front of you' : 'list the cards in the cobrowser vault');
-          if (wasLocked && m.forFill) fillUnlockAt = Date.now();
-          return reply({ cards: (v.cards || []).map(store.publicCard) });
+          if (wasLocked && m.forFill) fillGrant = { token: crypto.randomBytes(12).toString('hex'), at: Date.now() };
+          return reply({ cards: (v.cards || []).map(store.publicCard), ...(wasLocked && m.forFill ? { fillToken: fillGrant.token } : {}) });
         }
         case 'vault.fillCard': {
           const tab = state.workspace?.tabs.get(m.tabId);
           if (!tab) return reply({ filled: [], error: 'no such tab in this workspace' });
-          return reply(await fillCard(tab, { card: m.card, by: m.by === 'agent' ? 'agent' : 'human', workspaceName: path.basename(state.workspace.id) }));
+          return reply(await fillCard(tab, { card: m.card, by: m.by === 'agent' ? 'agent' : 'human', workspaceName: path.basename(state.workspace.id), fillToken: typeof m.fillToken === 'string' ? m.fillToken : undefined }));
         }
         case 'vault.request': {
           if (!state.workspace) return reply({ granted: 'denied', error: 'no workspace' });
@@ -2863,7 +2867,7 @@ function makeTray() {
     if (workspaces.size) items.push({ type: 'separator' });
     const n = (k, what) => `${k} ${what}${k === 1 ? '' : 's'}`;
     items.push({ label: vault ? `Vault: unlocked, ${n(vault.entries.length, 'login')}, ${n((vault.cards || []).length, 'card')}` : 'Vault: locked', enabled: false });
-    items.push({ label: 'Vault…', click: () => openVaultWindow() });
+    items.push({ label: 'Vault…', click: () => { focusApp(); openVaultWindow(); } });
     if (vault) items.push({ label: 'Lock Vault', click: () => lockVault() });
     items.push({ type: 'separator' });
     items.push({ label: 'Quit cobrowser', click: () => app.quit() });

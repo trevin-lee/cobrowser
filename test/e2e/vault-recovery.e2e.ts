@@ -18,6 +18,8 @@ suite('vault-recovery', async (r) => {
 
     const offer = (await L.conn.vaultWindow(`refresh().then(() => [...document.querySelectorAll('#detail button')].map((b) => b.textContent))`, { wait: 600 })).value as string[];
     r.check('the vault window offers to start a new vault', Array.isArray(offer) && offer.includes('Start a new vault'), offer);
+    const hint = (await L.conn.vaultWindow(`document.querySelector('#detail .lockcard .hint')?.textContent || ''`)).value as string;
+    r.check('inside the vault window, the message does not point to the vault window', /cannot be read with this Mac's keychain key\.$/.test(hint) && !/Open Vault/.test(hint), hint);
 
     const res = (await L.conn.vaultWindow(`vault.startOver()`, { wait: 400 })).value as { ok?: boolean; backup?: string };
     const files = fs.readdirSync(data);
