@@ -33,6 +33,13 @@
     "Other"
   ],
   "main": "./dist/extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "In Restricted Mode, the agent always asks before uploading files: Uploads Without Asking is ignored.",
+      "restrictedConfigurations": ["cobrowser.uploadsWithoutAsking"]
+    }
+  },
   "activationEvents": [
     "onStartupFinished",
     "onWebviewPanel:cobrowser"

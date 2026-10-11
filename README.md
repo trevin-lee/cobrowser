@@ -239,6 +239,7 @@ Scripts: `npm run watch` (rebuild on change), `npm run typecheck`.
 - **macOS only.** The pinned Electron is downloaded for macOS (arm64 and x64).
 - **A browser per folder.** A window without a folder gets a panel, but no agent can reach its browser, VS Code's agent there gets no cobrowser tools, and it cannot be bound to your own browser. In a multi-root workspace, the first folder is the one agents reach.
 - **The agent's tools stop at embedded frames.** A video player or widget embedded from another site is listed in `take_snapshot` as `[frame]`, and the agent hands it to you: your own clicks and typing reach inside it, the agent's do not.
+- **In a folder you have not trusted** (Restricted Mode), cobrowser works, but the agent always asks before uploading files: Uploads Without Asking is ignored there.
 - **No find in page.** ⌘F reaches the page, which can use it (some sites open their own search), but there is no browser find bar: an offscreen page has none.
 - **No accessibility tree.** `take_snapshot` tags interactive DOM elements with `uid`s rather than walking the accessibility tree.
 - **`evaluate_script` runs arbitrary JavaScript in the page.** It is the escape hatch, and it is not subject to the click and fill rule below.
