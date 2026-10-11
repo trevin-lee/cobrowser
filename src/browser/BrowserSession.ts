@@ -46,6 +46,31 @@ const WATCH_READ = `() => { const w = window[Symbol.for('cobrowser.watch')]; ret
 /** What fill / fill_form / type_text report: what went in, and any secret field left for the human. */
 export type FillResult = { filled: number; refused?: string[]; needsUserAction?: string; why?: string };
 
+export type KeyModifier = 'Shift' | 'Control' | 'Alt' | 'Meta';
+
+const NAMED_KEYS: Record<string, { code: string; vk: number; text?: string }> = {
+  Enter: { code: 'Enter', vk: 13, text: '\r' }, Escape: { code: 'Escape', vk: 27 }, Tab: { code: 'Tab', vk: 9 },
+  Backspace: { code: 'Backspace', vk: 8 }, Delete: { code: 'Delete', vk: 46 }, Space: { code: 'Space', vk: 32, text: ' ' },
+  ArrowUp: { code: 'ArrowUp', vk: 38 }, ArrowDown: { code: 'ArrowDown', vk: 40 }, ArrowLeft: { code: 'ArrowLeft', vk: 37 }, ArrowRight: { code: 'ArrowRight', vk: 39 },
+  Home: { code: 'Home', vk: 36 }, End: { code: 'End', vk: 35 }, PageUp: { code: 'PageUp', vk: 33 }, PageDown: { code: 'PageDown', vk: 34 },
+  ...Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`F${i + 1}`, { code: `F${i + 1}`, vk: 112 + i }])),
+};
+
+/** A key by name ("Escape", "ArrowDown", "F5", "Space") or one character ("a", "7", "/"). */
+function keySpec(name: string): { key: string; code: string; vk: number; text?: string } | undefined {
+  const named = Object.keys(NAMED_KEYS).find((k) => k.toLowerCase() === String(name).toLowerCase() || (k === 'Escape' && /^esc$/i.test(name)));
+  if (named) return { key: named === 'Space' ? ' ' : named, ...NAMED_KEYS[named] };
+  if ([...String(name)].length !== 1) return undefined;
+  const ch = String(name);
+  const upper = ch.toUpperCase();
+  if (/^[a-z]$/i.test(ch)) return { key: ch, code: `Key${upper}`, vk: upper.charCodeAt(0), text: ch };
+  if (/^[0-9]$/.test(ch)) return { key: ch, code: `Digit${ch}`, vk: ch.charCodeAt(0), text: ch };
+  return { key: ch, code: '', vk: 0, text: ch };
+}
+
+/** ⌘ shortcuts on a Mac, as the editing commands the page needs them to carry. */
+const META_COMMANDS: Record<string, string> = { a: 'selectAll', z: 'undo', 'Shift+z': 'redo', x: 'cut', c: 'copy', v: 'paste' };
+
 /** In-page: whether an element is a secret field (see guards.ts), and a name for it. */
 const SECRET_JS = `const secretInfo = (el, credSrc, auto) => {
   if (!el) return null;
@@ -854,6 +879,39 @@ export class BrowserSession {
     if (info?.secret && !allowCredentials) return { filled: 0, ...credentialRefusal([info.name]) };
     await this.typeInto(p, text, submitKey);
     return { filled: 1 };
+  }
+
+  /**
+   * Press a key, or a combination, in whatever has focus: Escape for a menu or a modal, Tab to
+   * move focus, arrows in a list, a shortcut. A printable key into a secret field is refused,
+   * as fill refuses it. On a Mac, ⌘ shortcuts carry their editing command (select all, undo,
+   * …), which an offscreen page has no Edit menu to supply.
+   */
+  async pressKeys(opts: OnPage & { key: string; modifiers?: KeyModifier[]; times?: number; allowCredentials?: boolean }): Promise<{ pressed: string } | FillResult> {
+    this.markAgent();
+    const p = this.pageFor(opts.pageId);
+    const k = keySpec(opts.key);
+    if (!k) throw new Error(`unknown key "${opts.key}": use a key name (Escape, Tab, Enter, Backspace, Delete, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown, Space, F1–F12) or one character`);
+    const mods = new Set(opts.modifiers ?? []);
+    const mask = (mods.has('Alt') ? 1 : 0) | (mods.has('Control') ? 2 : 0) | (mods.has('Meta') ? 4 : 0) | (mods.has('Shift') ? 8 : 0);
+    const shortcut = mods.has('Meta') || mods.has('Control') || mods.has('Alt');
+    const text = k.text !== undefined && !shortcut ? (mods.has('Shift') ? k.text.toUpperCase() : k.text) : undefined;
+    if (text !== undefined && opts.allowCredentials !== true) {
+      const info = await p.evaluate<{ secret: boolean; name: string } | null>(
+        `(credSrc, auto) => { ${SECRET_JS} const el = document.activeElement; return el && el !== document.body ? secretInfo(el, credSrc, auto) : null; }`,
+        CREDENTIAL.source,
+        SECRET_AUTOCOMPLETE,
+      );
+      if (info?.secret) return { filled: 0, ...credentialRefusal([info.name]) };
+    }
+    const command = mods.has('Meta') && !mods.has('Control') && !mods.has('Alt') ? META_COMMANDS[(mods.has('Shift') ? 'Shift+' : '') + k.key.toLowerCase()] : undefined;
+    const times = Math.max(1, Math.min(Number(opts.times) || 1, 50));
+    for (let i = 0; i < times; i++) {
+      const base = { key: text ?? k.key, code: k.code, windowsVirtualKeyCode: k.vk, nativeVirtualKeyCode: k.vk, modifiers: mask };
+      await p.cdp('Input.dispatchKeyEvent', { type: text ? 'keyDown' : 'rawKeyDown', ...base, ...(text ? { text, unmodifiedText: text } : {}), ...(command ? { commands: [command] } : {}) });
+      await p.cdp('Input.dispatchKeyEvent', { type: 'keyUp', ...base });
+    }
+    return { pressed: [...['Meta', 'Control', 'Alt', 'Shift'].filter((m) => mods.has(m as KeyModifier)), k.key].join('+') + (times > 1 ? ` ×${times}` : '') };
   }
 
   /** Real key events, one character at a time, into whatever has focus. */

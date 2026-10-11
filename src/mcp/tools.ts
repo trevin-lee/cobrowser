@@ -268,6 +268,26 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
   );
 
   server.registerTool(
+    'press_key',
+    {
+      description:
+        "Press a key, or a key with modifiers, in your current tab (or pageId), where focus is: Escape to close a menu or a modal, Tab (Shift+Tab back) to move between fields, ArrowDown/ArrowUp and Enter to choose in a list or an autocomplete, Backspace, Delete, Home, End, PageUp, PageDown, Space, F1–F12, or one character with modifiers for a shortcut (key \"a\" with Meta selects all). Real key events, as a person's. `times` repeats it. To type text, use type_text or fill. A printable key into a password, one-time-code or card field is refused, as fill refuses it, unless allowCredentials (only for a value the human gave you).",
+      inputSchema: {
+        key: z.string().describe('A key name (Escape, Tab, Enter, Backspace, Delete, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Home, End, PageUp, PageDown, Space, F1–F12) or one character'),
+        modifiers: z.array(z.enum(['Shift', 'Control', 'Alt', 'Meta'])).optional(),
+        times: z.number().int().min(1).max(50).optional(),
+        allowCredentials: z.boolean().optional(),
+        pageId,
+      },
+    },
+    async ({ key, modifiers, times, allowCredentials, pageId: id }) => {
+      const s = await getSession();
+      const r = await s.run(() => s.pressKeys({ key, modifiers, times, allowCredentials, pageId: id }), id);
+      return asText('pressed' in r ? `pressed ${r.pressed}` : JSON.stringify(r, null, 2));
+    },
+  );
+
+  server.registerTool(
     'type_text',
     {
       description: 'Type text into the currently-focused element; optionally press Enter. Refuses when the focused field is a password, one-time-code or card field, as fill does, unless allowCredentials.',
