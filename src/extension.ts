@@ -7,7 +7,7 @@ import { execFile } from 'node:child_process';
 import { BrowserSession } from './browser/BrowserSession';
 import { startMcpHttpServer, type McpHttp } from './mcp/server';
 import { BrowserPanel } from './webview/BrowserPanel';
-import { SessionTreeProvider } from './webview/SessionTreeProvider';
+import { SessionTreeProvider, type TreeNode } from './webview/SessionTreeProvider';
 import { writeClientConfigs } from './clients/writeClientConfigs';
 import { snippetFor, type OtherClient } from './clients/agentConfigs';
 import { daemonToken, deregister, ensureDaemon, isOlder, register, registrationState, replaceDaemonToken, tokenReplaced } from './daemon/client';
@@ -67,14 +67,17 @@ const manifestVersion = (dir: string): string | undefined => {
   }
 };
 
-/** Copy the shipped Chrome bridge to CHROME_BRIDGE_DIR: always when installing, otherwise only
- *  to refresh a copy that is already there and out of date. */
-function copyChromeBridge(context: vscode.ExtensionContext, install: boolean): { changed: boolean; from?: string; to?: string } {
+/** Copy the shipped Chrome bridge to CHROME_BRIDGE_DIR: when installing, unless the copy there
+ *  is newer; otherwise only to refresh a copy that is already there and out of date. */
+function copyChromeBridge(context: vscode.ExtensionContext, install: boolean): { changed: boolean; newer?: boolean; from?: string; to?: string } {
   const src = path.join(context.extensionUri.fsPath, 'chrome-extension');
   const to = manifestVersion(src);
   const from = manifestVersion(CHROME_BRIDGE_DIR);
-  // Updated only forward: an editor still on an older cobrowser leaves a newer copy alone.
-  if (!to || (!install && (!from || !isOlder(from, to)))) return { changed: false, from, to };
+  if (!to) return { changed: false, from, to };
+  // Updated only forward, installing too: an editor still on an older cobrowser leaves a newer
+  // copy alone. Installing over the same version repairs the folder.
+  if (from && isOlder(to, from)) return { changed: false, newer: true, from, to };
+  if (!install && (!from || !isOlder(from, to))) return { changed: false, from, to };
   fs.mkdirSync(CHROME_BRIDGE_DIR, { recursive: true });
   fs.cpSync(src, CHROME_BRIDGE_DIR, { recursive: true, force: true });
   return { changed: from !== to, from, to };
@@ -94,11 +97,6 @@ function firefoxContainerFor(context: vscode.ExtensionContext): string {
   return context.workspaceState.get<string>(FIREFOX_CONTAINER_KEY)?.trim() ?? '';
 }
 
-/** Whether to install the virtual WebAuthn authenticator, which makes passkey ceremonies
- *  fail fast so sites fall back to a password. An offscreen page has no window to host the
- *  OS prompt, so a real ceremony would just hang. Read when the browser connects. */
-
-
 /** cobrowser.uploadsWithoutAsking is read from Workspace settings only (src/mcp/tools.ts). A
  *  value in User settings would otherwise do nothing without a word. */
 function warnUserUploadSetting(): void {
@@ -106,6 +104,11 @@ function warnUserUploadSetting(): void {
   void vscode.window.showWarningMessage(
     'Cobrowser: "Uploads Without Asking" is on in your User settings, where it does nothing: it is read from Workspace settings only, so it is never on in every workspace at once. Turn it on in the Workspace settings of the workspace that should upload without asking.',
   );
+}
+
+/** The tab a command acts on: a sidebar row's, or the one in front. */
+function panelFor(node?: TreeNode): BrowserPanel | undefined {
+  return node?.kind === 'tab' ? BrowserPanel.get(node.page.pageId) : BrowserPanel.active;
 }
 
 /** The running build's version, so the daemon and the app can be restarted when stale. */
@@ -502,9 +505,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (!wasRunning && pages.length === 1 && pages[0].url === 'about:blank') return;
       await s.newPage('about:blank', { byAgent: false });
     }),
-    // Browser-chrome shortcuts, bound in package.json while a cobrowser panel is active.
-    vscode.commands.registerCommand('cobrowser.closeTab', () => BrowserPanel.active?.close()),
-    vscode.commands.registerCommand('cobrowser.reloadTab', () => BrowserPanel.active?.navigate('reload')),
+    // Browser-chrome shortcuts, bound in package.json while a cobrowser panel is active. From the
+    // sidebar's right-click menu they act on the row's tab instead.
+    vscode.commands.registerCommand('cobrowser.closeTab', (node?: TreeNode) => panelFor(node)?.close()),
+    vscode.commands.registerCommand('cobrowser.reloadTab', (node?: TreeNode) => panelFor(node)?.navigate('reload')),
     vscode.commands.registerCommand('cobrowser.back', () => BrowserPanel.active?.navigate('back')),
     vscode.commands.registerCommand('cobrowser.forward', () => BrowserPanel.active?.navigate('forward')),
     // The token that reaches every workspace (unscoped agents, the bridge add-ons), replaced:
@@ -549,7 +553,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     vscode.commands.registerCommand('cobrowser.installChromeBridge', async () => {
       try {
-        copyChromeBridge(context, true);
+        const r = copyChromeBridge(context, true);
+        if (r.newer) log(`Chrome bridge ${r.from} in ${CHROME_BRIDGE_DIR} is newer than this editor's ${r.to}: left as is.`);
       } catch (err) {
         void vscode.window.showErrorMessage(`Cobrowser: could not copy the Chrome extension — ${String((err as Error).message ?? err)}`);
         return;

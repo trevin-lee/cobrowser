@@ -177,6 +177,12 @@
           "group": "navigation@100"
         }
       ],
+      "view/item/context": [
+        { "command": "cobrowser.reloadTab", "when": "view == cobrowser.sessions && viewItem == cobrowser.tab", "group": "1_tab@1" },
+        { "command": "cobrowser.closeTab", "when": "view == cobrowser.sessions && viewItem == cobrowser.tab", "group": "1_tab@2" },
+        { "command": "cobrowser.restartBrowser", "when": "view == cobrowser.sessions && viewItem == cobrowser.profile", "group": "1_browser@1" },
+        { "command": "cobrowser.clearBrowsingData", "when": "view == cobrowser.sessions && viewItem == cobrowser.profile", "group": "1_browser@2" }
+      ],
       "view/title": [
         {
           "command": "cobrowser.newTab",
