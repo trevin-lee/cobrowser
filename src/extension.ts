@@ -39,9 +39,9 @@ const WAS_RUNNING_KEY = 'cobrowser.wasRunning';
 // exit disables Chrome's restore) — this is the fallback that actually brings the tabs
 // back, in the split layout they were arranged in.
 const TABS_KEY = 'cobrowser.openTabs';
-// Which Firefox container THIS workspace may drive. Kept in workspaceState rather than the
-// setting so the binding is per-workspace WITHOUT a .vscode/settings.json in the repo; the
-// setting still works and acts as the fallback.
+// The scope THIS workspace's bridge may drive: a Firefox container or a Chrome tab group (the
+// key's name is from when only Firefox had one). Kept in workspaceState, so the binding is
+// per workspace without a file in the repo.
 const FIREFOX_CONTAINER_KEY = 'cobrowser.firefoxContainerBinding';
 /** Which browser the binding above is for: 'firefox' (container) or 'chrome' (tab group). */
 const BRIDGE_BROWSER_KEY = 'cobrowser.bridgeBrowser';
@@ -619,7 +619,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       pick.title = replacing ? `Bind this workspace to one Firefox container (replaces the Chrome tab group "${replacing}")` : 'Bind this workspace to one Firefox container';
       pick.placeholder = containers.length
         ? 'The agent will be able to drive ONLY this container (or type a container\'s name)'
-        : 'No containers found in Firefox or Zen profiles: type a container\'s name, or choose default';
+        : 'No containers found in Firefox or its forks (Zen, LibreWolf, Floorp, Waterfox): type a container\'s name, or choose default';
       const picked = await new Promise<string | undefined>((resolve) => {
         pick.onDidAccept(() => resolve(pick.selectedItems[0]?.label ?? (pick.value.trim() || undefined)));
         pick.onDidHide(() => resolve(undefined));
@@ -715,7 +715,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           () => signElectronForPasskeys(exe, log, { team, bundleId: bundleId.trim() }),
         );
         const until = marker.expires ? ` It lasts until ${new Date(marker.expires).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })} and renews itself before then.` : '';
-        void vscode.window.showInformationMessage(`Cobrowser: passkeys enabled with ${pick.label}.${until} The browser restarts signed the next time a panel opens.`);
+        void vscode.window.showInformationMessage(`Cobrowser: passkeys are on, signed by ${pick.label}.${until} The browser restarts signed the next time a panel opens.`);
       } catch (err) {
         void vscode.window.showErrorMessage(`Cobrowser: could not turn on passkeys — ${String((err as Error).message ?? err)}`);
       }
@@ -769,7 +769,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const devElectron = path.join(context.extensionUri.fsPath, 'app', 'node_modules', 'electron', 'dist', 'Electron.app', 'Contents', 'MacOS', 'Electron');
       const exe = electronExecutable({ cacheDir: path.join(context.globalStorageUri.fsPath, 'electron'), devElectron });
       if (!exe || !readSignedMarker(exe)) {
-        void vscode.window.showInformationMessage('Cobrowser: passkeys are not enabled.');
+        void vscode.window.showInformationMessage('Cobrowser: passkeys are already off.');
         return;
       }
       const ok = await vscode.window.showWarningMessage(

@@ -558,13 +558,13 @@ export class BrowserPanel {
 </head>
 <body style="--cobrowser-agent: #2b5bff">
   <div id="toolbar">
-    <button id="back" class="icon" title="Back" aria-label="Back">
+    <button id="back" class="icon" title="Back (⌘[)" aria-label="Back">
       <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M10 3.5 5.5 8 10 12.5"/></svg>
     </button>
-    <button id="forward" class="icon" title="Forward" aria-label="Forward">
+    <button id="forward" class="icon" title="Forward (⌘])" aria-label="Forward">
       <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5"/></svg>
     </button>
-    <button id="reload" class="icon" title="Reload" aria-label="Reload">
+    <button id="reload" class="icon" title="Reload (⌘R)" aria-label="Reload">
       <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M12.5 8a4.5 4.5 0 1 1-1.32-3.18M12.5 2.5V5H10"/></svg>
     </button>
     <div id="omnibox">

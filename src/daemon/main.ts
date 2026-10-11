@@ -128,7 +128,8 @@ const INSTRUCTIONS = `cobrowser is a real browser inside the human's editor, sha
 - Read with read_page (cheap text); call take_snapshot only to act, and act by its uids, which stay valid while the element exists.
 - Every tab you open appears in the human's editor. Reuse your tab (navigate_page), use background: true when working on your own, and close_page your tabs when the task is done. Never close the human's tabs unless asked.
 - Working in parallel with other agents or subagents in the same browser: each opens its own tab with new_page and an owner name for its task, then passes that tab's pageId to every tool. Once any tab has an owner, a call without pageId is refused.
-- Sign in with fill_credentials (and request_credential when a login is not available here), pay with fill_card: you never see passwords or card numbers, and the human confirms card fills. Do not click a button that pays or places an order unless the human asked you to complete it.
+- Sign in with fill_credentials (and request_credential when a login is not available here), and fill a checkout's card fields with fill_card: you never see passwords or card numbers, and the human confirms card fills. Filling is not paying: do not click a button that pays or places an order unless the human asked you to complete it.
+- press_key sends Escape, Tab, Enter, the arrows and the edit shortcuts. An alert, confirm or prompt a page opens is reported by the action that opened it: answer it with handle_dialog.
 - Attach files (a résumé, a document) with upload_file. The human confirms the files first, unless they turned that off for the workspace; either way they see every upload.
 - When a page misbehaves, list_console_messages and list_network_requests show its errors.`;
 
@@ -287,7 +288,7 @@ function buildServer(scope: Registration | undefined): Server {
     if (isZenTool(name)) {
       if (!target.container) {
         return {
-          content: [{ type: 'text' as const, text: `The "${target.name}" workspace is not bound to a browser. Run "Cobrowser: Bind Firefox Container to This Workspace" or "Cobrowser: Bind Chrome Tab Group to This Workspace" in that editor window.` }],
+          content: [{ type: 'text' as const, text: `The "${target.name}" workspace is not bound to the human's own browser, so the bridge_* tools have nothing to drive. The human binds it with "Cobrowser: Bind Chrome Tab Group to This Workspace" or "Cobrowser: Bind Firefox Container to This Workspace" in that editor window. Until then, use the panel tools (new_page and the rest).` }],
           isError: true,
         };
       }

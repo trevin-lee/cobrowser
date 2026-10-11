@@ -13,7 +13,7 @@ Release notes for earlier versions are on the [GitHub releases page](https://git
 
 ### Changed
 
-- **Command names are consistent:** New Tab and Close Tab (were New Browser Tab, Close Browser Tab), Unbind Chrome or Firefox (was Unbind Your Own Browser), Install Chrome Bridge, Turn On Passkeys (was Enable Passkeys). Keybindings keep working.
+- **Command names are consistent:** New Tab and Close Tab (were New Browser Tab, Close Browser Tab), Unbind Chrome or Firefox (was Unbind Your Own Browser), Install Chrome Bridge (was Install Chrome Bridge Extension), Turn On Passkeys (was Enable Passkeys) to pair with Turn Off Passkeys. Keybindings keep working.
 - **A login's notes may run to 100,000 characters** (were cut at 4,000); longer ones are refused, not cut.
 
 ### Fixed

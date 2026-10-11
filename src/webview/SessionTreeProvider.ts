@@ -33,24 +33,24 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<TreeNode> {
 
   getTreeItem(node: TreeNode): vscode.TreeItem {
     if (node.kind === 'profile') {
-      const running = this.getSession() !== undefined;
+      // The row exists only while the browser runs (getChildren).
       const item = new vscode.TreeItem(node.label, vscode.TreeItemCollapsibleState.Expanded);
-      item.description = running ? 'running' : 'stopped';
+      item.description = 'running';
       item.tooltip = node.tooltip;
-      item.iconPath = new vscode.ThemeIcon(running ? 'vm-active' : 'vm-outline');
+      item.iconPath = new vscode.ThemeIcon('vm-active');
       item.contextValue = 'cobrowser.profile';
       return item;
     }
 
     const p = node.page;
-    const item = new vscode.TreeItem(p.title || hostOf(p.url) || 'New tab');
+    const item = new vscode.TreeItem(p.title || hostOf(p.url) || 'New Tab');
     // Only brings the page's editor tab forward; the panel's own focus handling does the rest,
     // exactly as when its editor tab is clicked.
     item.command = { command: 'cobrowser.showTab', title: 'Show Tab', arguments: [p.pageId] };
     item.description = hostOf(p.url);
     // The row clips a long title; the tooltip carries all of it.
-    item.tooltip = [p.title, p.url, p.selected ? 'The agent is working in this tab.' : ''].filter(Boolean).join('\n');
-    // Filled dot marks the tab the agent is working in; hollow for the rest.
+    item.tooltip = [p.title, p.url, p.selected ? "The agent's tools act in this tab unless told another." : ''].filter(Boolean).join('\n');
+    // Filled dot marks the tab the agent's tools act in by default; hollow for the rest.
     item.iconPath = new vscode.ThemeIcon(p.selected ? 'circle-filled' : 'circle-outline');
     item.contextValue = 'cobrowser.tab';
     return item;

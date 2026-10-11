@@ -218,7 +218,13 @@
     "viewsWelcome": [
       {
         "view": "cobrowser.sessions",
-        "contents": "No browser is running for this workspace. It starts when you open a tab, or when an agent uses a cobrowser tool.\n[Open Browser](command:cobrowser.open)"
+        "contents": "No browser is running for this workspace. It starts when you open a tab, or when an agent uses a cobrowser tool.\n[Open Browser](command:cobrowser.open)",
+        "when": "workbenchState != empty"
+      },
+      {
+        "view": "cobrowser.sessions",
+        "contents": "No browser is running. This window has no folder, so no agent can reach its browser: open a folder for one an agent can use.\n[Open Browser](command:cobrowser.open)",
+        "when": "workbenchState == empty"
       }
     ],
     "mcpServerDefinitionProviders": [

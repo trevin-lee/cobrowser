@@ -172,7 +172,7 @@ export class ZenHub {
       const which = b?.browser === 'chrome' ? 'Chrome' : 'Firefox';
       return Promise.reject(
         new Error(
-          `No ${which} browser is connected for this workspace. Install the Cobrowser Bridge extension in ${which}` +
+          `No ${which} browser is connected for this workspace. Install the Cobrowser Bridge ${b?.browser === 'chrome' ? 'extension' : 'add-on'} in ${which}` +
             (b?.browser === 'chrome'
               ? ' (Cobrowser: Install Chrome Bridge) and paste this workspace\'s bridge URL into it (Cobrowser: Copy Bridge URL).'
               : ' (the cobrowser-bridge-firefox .xpi attached to each cobrowser release on GitHub). It configures itself from the managed manifest the editor writes; if it does not, paste the URL from Cobrowser: Copy Bridge URL into its toolbar popup.'),
