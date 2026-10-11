@@ -65,4 +65,12 @@ function dropWorkspace(store, workspaceId) {
   delete store.workspaces[workspaceId];
 }
 
-module.exports = { permissionKey, load, decision, remember, list, forget, dropWorkspace };
+/** A moved folder's decisions, under its new path. One made at the new path since the move
+ *  wins over the old one's. */
+function moveWorkspace(store, from, to) {
+  const merged = { ...store.workspaces[from], ...store.workspaces[to] };
+  delete store.workspaces[from];
+  if (Object.keys(merged).length) store.workspaces[to] = merged;
+}
+
+module.exports = { permissionKey, load, decision, remember, list, forget, dropWorkspace, moveWorkspace };

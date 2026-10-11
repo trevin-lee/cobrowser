@@ -899,6 +899,37 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         void vscode.window.showErrorMessage(`Cobrowser: could not forget the workspace — ${String((err as Error).message ?? err)}`);
       }
     }),
+    vscode.commands.registerCommand('cobrowser.takeOverWorkspace', async () => {
+      try {
+        // Only a workspace whose folder is gone: one that still exists is opened, not taken over.
+        const gone = (await withApp((c) => c.knownWorkspaces()))
+          .filter((w) => w.id !== workspaceId && !w.open && !w.id.startsWith(context.globalStorageUri.fsPath) && !fs.existsSync(w.id));
+        if (!gone.length) {
+          void vscode.window.showInformationMessage("Cobrowser: no workspace's folder has gone missing, so there is no browser to take over.");
+          return;
+        }
+        const here = path.basename(workspaceId);
+        const pick = await vscode.window.showQuickPick(
+          gone.map((w) => ({ label: path.basename(w.id), description: w.id, id: w.id })),
+          { title: `Take over a moved folder's browser for ${here}`, placeHolder: 'The folder this one was before it was renamed or moved' },
+        );
+        if (!pick) return;
+        const ok = await vscode.window.showWarningMessage(
+          `Take over ${pick.description}'s browser for ${here}?`,
+          { modal: true, detail: `${here} gets its sign-ins, site data, site permissions and the logins allowed there. What ${here}'s browser has had since the move is deleted. Its open tabs reopen in the browser taken over.` },
+          'Take Over',
+        );
+        if (ok !== 'Take Over') return;
+        const saved = context.workspaceState.get<SavedTab[]>(TABS_KEY) ?? [];
+        await disposeSession(context);
+        await context.workspaceState.update(TABS_KEY, saved);
+        await withApp((c) => c.takeOverWorkspace(pick.id));
+        await getSession();
+        void vscode.window.showInformationMessage(`Cobrowser: ${here} now has ${pick.label}'s browser.`);
+      } catch (err) {
+        void vscode.window.showErrorMessage(`Cobrowser: could not take over the browser — ${String((err as Error).message ?? err)}`);
+      }
+    }),
     vscode.commands.registerCommand('cobrowser.restartBrowser', async () => {
       await disposeSession(context);
       await getSession();

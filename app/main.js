@@ -29,6 +29,7 @@ const { TabLog } = require('./capture.js');
 const { checkParams } = require('./protocolGuard.js');
 const uploads = require('./uploads.js');
 const appMigrations = require('./migrations.js');
+const workspaceMoves = require('./workspace-moves.js');
 
 // Overridable so tests can run a second instance beside the real one without clobbering its state.
 const STATE_DIR = process.env.COBROWSER_STATE_DIR || path.join(os.homedir(), '.cobrowser');
@@ -298,6 +299,7 @@ async function unlockVault(reason) {
   await confirmPerson(reason || 'unlock the cobrowser vault'); // rejects on cancel/failure
   vault = opened;
   log(`vault: unlocked (${vault.entries.length} logins)`);
+  moveLoginScopes(); // folders taken over while it was locked
   vaultChanged(); // an open vault window shows it unlocked, whoever unlocked it
   return vault;
 }
@@ -2342,10 +2344,76 @@ document.getElementById('c').onclick=()=>{document.title='cancel'};addEventListe
   }
 }
 
-/** A workspace's browser profile: its session partition, and where that lives on disk. */
+/** A workspace's browser profile: its session partition, and where that lives on disk. A
+ *  renamed or moved folder may have taken over another's (see takeOverWorkspace). */
 function partitionOf(id) {
-  const name = `ws-${crypto.createHash('sha1').update(id).digest('hex').slice(0, 16)}`;
+  const name = workspaceMoves.partitionName(loadMoves(), id);
   return { partition: `persist:${name}`, dir: path.join(DATA_DIR, 'Partitions', name) };
+}
+
+const MOVES_FILE = path.join(DATA_DIR, 'moves.json');
+let moves = null;
+function loadMoves() {
+  if (!moves) {
+    let raw = null; try { raw = JSON.parse(fs.readFileSync(MOVES_FILE, 'utf8')); } catch { /* none yet */ }
+    moves = workspaceMoves.load(raw);
+  }
+  return moves;
+}
+function saveMoves() {
+  fs.writeFileSync(MOVES_FILE, JSON.stringify(moves, null, 2));
+}
+/** The partition folders given up by a take-over, deleted at start before a session holds them. */
+function discardPartitions() {
+  const m = loadMoves();
+  if (!m.discard.length) return;
+  const used = new Set(Object.values(m.partitions));
+  for (const name of m.discard) if (!used.has(name)) fs.rmSync(path.join(DATA_DIR, 'Partitions', name), { recursive: true, force: true });
+  m.discard = [];
+  saveMoves();
+}
+/** Logins allowed in a moved folder are allowed at its new path. Needs the vault unlocked; until
+ *  then the renames wait in moves.json. */
+function moveLoginScopes() {
+  const m = loadMoves();
+  if (!vault || !Object.keys(m.logins).length) return;
+  let changed = 0;
+  for (const e of vault.entries) {
+    const scope = workspaceMoves.renameInScope(e.scope, m.logins);
+    if (JSON.stringify(scope) !== JSON.stringify(e.scope)) { e.scope = scope; changed++; }
+  }
+  if (changed) saveVault();
+  m.logins = {};
+  saveMoves();
+  if (changed) log(`vault: ${changed} login(s) follow their moved folder`);
+}
+
+/**
+ * A renamed or moved folder (`to`, the workspace asking) takes over the browser of the path it
+ * had before (`from`), which no longer exists: its browser data, site permissions, certificate
+ * exceptions and the logins allowed there. What `to` had since the move is given up. Its tabs
+ * are closed; its editor reopens them in the browser taken over.
+ */
+async function takeOverWorkspace(from, to) {
+  if (!knownWorkspaces().includes(from)) throw new Error('no such workspace');
+  if (from === to) throw new Error('a workspace cannot take over its own browser');
+  if (fs.existsSync(from)) throw new Error(`${from} still exists: open it instead`);
+  const old = workspaces.get(from);
+  if (old && old.sockets.size) throw new Error(`${path.basename(from)} is open in an editor window`);
+  if (old) { old.closeAll(); workspaces.delete(from); }
+  const w = workspaceFor(to);
+  w.closeAll();
+  const given = session.fromPartition(w.partition);
+  workspaceMoves.adopt(loadMoves(), from, to);
+  saveMoves();
+  await clearBrowsingData(given); // its folder goes at the next start (discard)
+  w.useSession(partitionOf(to).partition);
+  sitePermissions.moveWorkspace(loadPermissions(), from, to); savePermissions();
+  for (const [k, v] of [...certDecisions]) if (k.startsWith(from + '|')) { certDecisions.delete(k); certDecisions.set(to + k.slice(from.length), v); }
+  fs.writeFileSync(WORKSPACES_FILE, JSON.stringify(knownWorkspaces().filter((x) => x !== from), null, 2));
+  moveLoginScopes();
+  vaultChanged();
+  log(`workspace ${to} took over the browser of ${from}`);
 }
 
 /** Everything a workspace's browser kept: cookies and sign-ins, site storage, cache. */
@@ -2418,13 +2486,26 @@ function errorPageScript(url, error) {
   return `document.documentElement.innerHTML = ${JSON.stringify(html)}; 0`;
 }
 
+/** Which workspace each loaded partition belongs to now: a take-over hands a partition, and
+ *  the session Electron keeps for it, to another workspace. */
+const partitionOwner = new Map();
+
 class Workspace {
   constructor(id) {
     this.id = id;
-    this.partition = partitionOf(id).partition;
     this.tabs = new Map();
     this.sockets = new Set();
-    const ses = session.fromPartition(this.partition);
+    this.useSession(partitionOf(id).partition);
+  }
+
+  /** Browse in this partition. Its session is set up once; its handlers ask who owns it now. */
+  useSession(partition) {
+    this.partition = partition;
+    const known = partitionOwner.has(partition);
+    partitionOwner.set(partition, this.id);
+    if (known) return;
+    const owner = () => partitionOwner.get(partition);
+    const ses = session.fromPartition(partition);
     ses.setUserAgent(USER_AGENT, ACCEPT_LANGUAGES);
     // Downloads go straight to the Downloads folder, like any browser. Without this Electron
     // asks where to save with a sheet on the hidden tab window, pulling it onto the desktop.
@@ -2443,15 +2524,15 @@ class Workspace {
     });
     ses.setPermissionCheckHandler((_wc, permission, origin, details) => {
       if (AUTO_ALLOW.has(permission)) return true;
-      return permissionDecision(id, origin, permission, details) === true;
+      return permissionDecision(owner(), origin, permission, details) === true;
     });
     ses.setPermissionRequestHandler((wc, permission, callback, details) => {
       if (AUTO_ALLOW.has(permission)) return callback(true);
       const origin = details?.requestingUrl ? new URL(details.requestingUrl).origin : (wc && !wc.isDestroyed() ? new URL(wc.getURL()).origin : '');
       if (!origin || origin === 'null') return callback(false);
-      const decided = permissionDecision(id, origin, permission, details);
+      const decided = permissionDecision(owner(), origin, permission, details);
       if (typeof decided === 'boolean') return callback(decided);
-      askPermission(id, origin, permission, details).then(callback, () => callback(false));
+      askPermission(owner(), origin, permission, details).then(callback, () => callback(false));
     });
     // Several passkeys for one site: without a listener Chromium cancels the request. The
     // page is offscreen, so ask with a native dialog instead of in-page UI.
@@ -2608,6 +2689,11 @@ async function handle(ws, state, m) {
         }
         case 'profile.workspaces': {
           return reply({ workspaces: knownWorkspaces().map((id) => ({ id, tabs: workspaces.get(id)?.tabs.size || 0, open: (workspaces.get(id)?.sockets.size || 0) > 0 })) });
+        }
+        case 'profile.takeOverWorkspace': {
+          if (!w) return reply({ error: 'no workspace' });
+          await takeOverWorkspace(String(m.id), w.id);
+          return reply({ ok: true });
         }
         case 'profile.forgetWorkspace': {
           if (!knownWorkspaces().includes(String(m.id))) return reply({ error: 'no such workspace' });
@@ -2784,6 +2870,7 @@ app.whenReady().then(async () => {
   // What an older version left in the data folder, converted once, before it is read.
   const migrated = appMigrations.runMigrations({ dataDir: DATA_DIR, knownWorkspaces, log });
   if (migrated.length) log(`migrations: ${migrated.join(', ')}`);
+  discardPartitions();
   const token = crypto.randomBytes(24).toString('hex');
   const wss = new WebSocketServer({ host: '127.0.0.1', port: 0 });
   wss.on('connection', (ws, req) => {

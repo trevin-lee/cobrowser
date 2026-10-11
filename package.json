@@ -145,6 +145,10 @@
       {
         "command": "cobrowser.forgetWorkspace",
         "title": "Cobrowser: Forget Another Workspace's Browser"
+      },
+      {
+        "command": "cobrowser.takeOverWorkspace",
+        "title": "Cobrowser: Take Over a Moved Folder's Browser"
       }
     ],
     "menus": {

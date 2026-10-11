@@ -339,6 +339,11 @@ export class AppConnection {
   async knownWorkspaces(): Promise<{ id: string; tabs: number; open: boolean }[]> {
     return (await this.profile('workspaces')).workspaces as { id: string; tabs: number; open: boolean }[];
   }
+  /** This workspace (a renamed or moved folder) takes over the browser of the path it had
+   *  before: its browsing data, site permissions and the logins allowed there. */
+  async takeOverWorkspace(id: string): Promise<void> {
+    await this.profile('takeOverWorkspace', { id }, 120000);
+  }
   /** Delete another workspace's browser: tabs, browsing data, permissions (not its logins). */
   async forgetWorkspace(id: string): Promise<void> {
     await this.profile('forgetWorkspace', { id }, 120000);
