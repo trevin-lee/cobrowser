@@ -5,7 +5,7 @@ import { COMMITTING, CREDENTIAL, SECRET_AUTOCOMPLETE, credentialRefusal, payment
 
 /** What click reports: what it clicked (and whether the page visibly reacted), or why it did
  *  not (see guards.ts). */
-export type ClickResult = { clicked: string; noVisibleEffect?: boolean } | ReturnType<typeof paymentRefusal>;
+export type ClickResult = { clicked: string; noVisibleEffect?: boolean; downloads?: { file: string; state: 'started' | 'completed' | 'failed' }[] } | ReturnType<typeof paymentRefusal>;
 export type UploadResult = { uploaded?: string[]; host?: string; error?: string; declined?: boolean } | ReturnType<typeof paymentRefusal>;
 
 /** In-page: watch for DOM changes around a click, so one the page ignored is reported rather
@@ -253,6 +253,7 @@ export class BrowserSession {
     };
 
     app.onFullscreen = (tabId, on) => session.byTab.get(tabId)?.setFullscreen(on);
+    app.onDownload = (tabId, file, state) => session.byTab.get(tabId)?.noteDownload(file, state);
 
     // From here the app closes every tab window on its way out. Those are not closes: the
     // editor keeps its tab list, and restores it when the app comes back.
@@ -672,9 +673,13 @@ export class BrowserSession {
     const box = await this.locate(p, opts);
     if (COMMITTING.test(box.label) && opts.allowPayment !== true) return paymentRefusal(box.label);
     await p.evaluate(EFFECT_START).catch(() => undefined);
+    const t0 = Date.now();
     await this.pressBox(p, box, opts.dblClick === true);
     await delay(400);
     const effect = await p.evaluate<{ changed: boolean }>(EFFECT_READ).catch(() => ({ changed: true }));
+    // A click that starts a download changes nothing on the page: say where the file goes.
+    const downloads = p.downloadsSince(t0);
+    if (downloads.length) return { clicked: box.label || opts.selector || `uid ${opts.uid}`, downloads };
     return { clicked: box.label || opts.selector || `uid ${opts.uid}`, ...(effect.changed ? {} : { noVisibleEffect: true }) };
   }
 

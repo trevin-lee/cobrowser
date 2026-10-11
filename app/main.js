@@ -2534,16 +2534,22 @@ class Workspace {
     ses.setUserAgent(USER_AGENT, ACCEPT_LANGUAGES);
     // Downloads go straight to the Downloads folder, like any browser. Without this Electron
     // asks where to save with a sheet on the hidden tab window, pulling it onto the desktop.
-    ses.on('will-download', (_e, item) => {
+    // The tab's editor hears of it too, so an agent whose click started it is told where it went.
+    ses.on('will-download', (_e, item, wc) => {
       const dir = process.env.COBROWSER_DOWNLOADS_DIR || app.getPath('downloads');
       const target = uniquePath(dir, item.getFilename());
       item.setSavePath(target);
       log(`download: ${item.getURL()} -> ${target}`);
+      const tab = wc ? tabOf(wc) : undefined;
+      const tell = (state) => tab?.workspace.broadcast({ type: 'download', tabId: tab.id, file: target, state });
+      tell('started');
       item.once('done', (_e2, state) => {
         log(`download ${state}: ${target}`);
-        if (state !== 'completed' || SKIP_BIOMETRICS || !Notification.isSupported()) return; // no banners from test instances
-        const n = new Notification({ title: 'Downloaded', body: path.basename(target), silent: true });
-        n.on('click', () => shell.showItemInFolder(target));
+        tell(state === 'completed' ? 'completed' : 'failed');
+        if (SKIP_BIOMETRICS || !Notification.isSupported()) return; // no banners from test instances
+        const done = state === 'completed';
+        const n = new Notification({ title: done ? 'Downloaded' : 'Download failed', body: path.basename(target), silent: done });
+        if (done) n.on('click', () => shell.showItemInFolder(target));
         n.show();
       });
     });

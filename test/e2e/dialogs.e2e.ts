@@ -115,9 +115,10 @@ document.getElementById('file').addEventListener('change',(e)=>window.__files=[.
     await s.run(() => s.closePage(upPage.pageId));
 
     // downloads land in the folder without a dialog, never overwriting
-    await s.run(() => s.click({ selector: '#dl', pageId: main.pageId }), main.pageId); await sleep(800);
+    const told = await s.run(() => s.click({ selector: '#dl', pageId: main.pageId }), main.pageId) as { downloads?: { file: string }[] }; await sleep(800);
     await s.run(() => s.click({ selector: '#dl', pageId: main.pageId }), main.pageId); await sleep(800);
     r.check('downloads save to the folder, the second as "report (1).txt"', JSON.stringify(fs.readdirSync(DL).sort()) === '["report (1).txt","report.txt"]', fs.readdirSync(DL));
+    r.check('the click that started a download says where the file goes', told.downloads?.[0]?.file === path.join(DL, 'report.txt'), told);
 
     // leaving a page with a beforeunload handler asks, and proceeds on "Leave"
     const leave = await s.run(() => s.newPage(`${srv.base}/leave`));

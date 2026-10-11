@@ -144,6 +144,8 @@ export class AppConnection {
   onQuitting?: () => void;
   /** The page went fullscreen inside its tab (or left it). */
   onFullscreen?: (tabId: string, on: boolean) => void;
+  /** A download a tab started: where it is saved, and how it went. */
+  onDownload?: (tabId: string, file: string, state: 'started' | 'completed' | 'failed') => void;
   onClose?: () => void;
 
   private constructor(ws: WebSocket, hello: { version: string; tabs: AppTabInfo[] }) {
@@ -402,6 +404,9 @@ export class AppConnection {
       this.onTabUpdated?.(m as unknown as AppTabInfo);
     } else if (m.type === 'fullscreen') {
       this.onFullscreen?.(String(m.tabId), !!m.on);
+    } else if (m.type === 'download') {
+      const state = m.state === 'completed' || m.state === 'failed' ? m.state : 'started';
+      this.onDownload?.(String(m.tabId), String(m.file), state);
     } else if (m.type === 'quitting') {
       this.onQuitting?.();
     } else if (m.type === 'tabClosed') {

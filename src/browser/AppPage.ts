@@ -62,6 +62,19 @@ export class AppPage {
     for (const cb of this.fullscreenListeners) cb(on);
   }
 
+  /** Downloads this tab started, newest last (a few are kept). */
+  readonly downloads: { file: string; state: 'started' | 'completed' | 'failed'; at: number }[] = [];
+  noteDownload(file: string, state: 'started' | 'completed' | 'failed'): void {
+    const known = this.downloads.find((d) => d.file === file);
+    if (known) known.state = state;
+    else this.downloads.push({ file, state, at: Date.now() });
+    if (this.downloads.length > 10) this.downloads.shift();
+  }
+  /** The downloads started since `t`: what an action set off. */
+  downloadsSince(t: number): { file: string; state: 'started' | 'completed' | 'failed' }[] {
+    return this.downloads.filter((d) => d.at >= t).map(({ file, state }) => ({ file, state }));
+  }
+
   offNavigated(cb: () => void): void {
     this.navListeners.delete(cb);
   }
