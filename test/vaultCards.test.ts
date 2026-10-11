@@ -80,3 +80,13 @@ test('cards export to a CSV of their own and import back whole; a card already s
   assert.deepEqual(store.importCards(back, other), { count: 1, added: 1, replaced: 0, skipped: 1 });
   assert.throws(() => store.importCards(back, 'url,username,password\na.com,me,pw\n'), /card number and expiry/);
 });
+
+test('a card export reads back as it was: a far expiry year, and a blank name never blanks a saved one', () => {
+  const v: Vault = { entries: [] };
+  store.addCard(v, { number: '4242424242424242', exp: '12/2100', name: 'Ada' });
+  const back: Vault = { entries: [] };
+  store.importCards(back, store.exportCards(v));
+  assert.deepEqual([back.cards![0].expMonth, back.cards![0].expYear], [12, 2100]);
+  store.importCards(back, 'number,expiry,name\n4242424242424242,12/2100,\n');
+  assert.equal(back.cards![0].name, 'Ada');
+});

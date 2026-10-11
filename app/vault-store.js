@@ -219,9 +219,11 @@ function parseCsv(text) {
  *  column as cobrowser's own lines at its end, so an export imported back into cobrowser
  *  restores them. Other managers keep them as part of the login's note. */
 const WORKSPACES_NOTE = 'cobrowser-workspaces:';
+const WAS_NOTE = 'cobrowser-workspaces-before-everywhere:';
 const SITES_NOTE = 'cobrowser-sites:';
-function workspacesNote(scope) {
-  return `${WORKSPACES_NOTE} ${JSON.stringify(scope === 'all' ? 'all' : normalizeScope(scope))}`;
+function workspacesNote(scope, was) {
+  const all = scope === 'all';
+  return `${WORKSPACES_NOTE} ${JSON.stringify(all ? 'all' : normalizeScope(scope))}` + (all && was && was.length ? `\n${WAS_NOTE} ${JSON.stringify(normalizeScope(was))}` : '');
 }
 
 /**
@@ -231,23 +233,26 @@ function workspacesNote(scope) {
  */
 function splitNote(note) {
   const lines = String(note || '').replace(/\r\n/g, '\n').split('\n');
-  let workspaces, sites;
+  let workspaces, was, sites;
   while (lines.length) {
     const line = lines[lines.length - 1].trim();
-    const marker = [WORKSPACES_NOTE, SITES_NOTE].find((m) => line.startsWith(m));
+    const marker = [WAS_NOTE, WORKSPACES_NOTE, SITES_NOTE].find((m) => line.startsWith(m));
     if (!marker) break;
     let v;
     try { v = JSON.parse(line.slice(marker.length).trim()); } catch { break; }
     if (marker === WORKSPACES_NOTE) {
       if (workspaces !== undefined || !(v === 'all' || Array.isArray(v))) break;
       workspaces = v === 'all' ? 'all' : normalizeScope(v);
+    } else if (marker === WAS_NOTE) {
+      if (was !== undefined || workspaces !== undefined || !Array.isArray(v)) break;
+      was = normalizeScope(v);
     } else {
       if (sites !== undefined || !Array.isArray(v)) break;
       sites = v.map(String);
     }
     lines.pop();
   }
-  return { notes: normalizeNotes(lines.join('\n')), workspaces, sites };
+  return { notes: normalizeNotes(lines.join('\n')), workspaces, ...(workspaces === 'all' && was ? { was } : {}), sites };
 }
 
 /** Import a CSV export. A row from a cobrowser export carries its workspaces (the note), and a
@@ -256,7 +261,7 @@ function splitNote(note) {
  *  the row has some) from the file and keeps its workspaces, widened by the row's, never narrowed. */
 function importCsv(vault, text, scope) {
   const rows = parseCsv(text);
-  // skipped: rows with no website, or neither a username nor a password, counted and said.
+  // skipped: rows with no website, counted and said.
   const result = { count: 0, added: 0, replaced: 0, skipped: 0 };
   if (rows.length < 2) return result;
   const header = rows[0].map((h) => h.trim().toLowerCase());
@@ -264,16 +269,29 @@ function importCsv(vault, text, scope) {
   const iu = col('url', 'login_uri', 'website'), in_ = col('username', 'login_username', 'user'), ip = col('password', 'login_password'), inote = col('note', 'notes');
   if (iu < 0 || in_ < 0 || ip < 0) throw new Error(`CSV needs url/username/password columns; found: ${header.join(', ')}`);
   for (const r of rows.slice(1)) {
-    const url = r[iu], user = r[in_], pass = r[ip];
-    // A row without a password is an account that signs in with a link or a code; a row with
-    // neither a username nor a password says nothing to keep.
-    if (!url || (!pass && !user)) { result.skipped++; continue; }
-    const { workspaces, sites, notes } = inote >= 0 ? splitNote(r[inote]) : {};
-    const { replaced } = upsertLogin(vault, url, user || '', pass, workspaces === undefined ? scope : workspaces, { mergeScope: true, also: sites, notes });
+    const user = r[in_], pass = r[ip];
+    // A row without a password is an account that signs in with a link or a code. Bitwarden
+    // puts all of a login's websites in one cell: the first is the login's, the rest its others.
+    const [url, ...more] = urlsOf(r[iu]);
+    if (!url) { result.skipped++; continue; }
+    const { workspaces, was, sites, notes } = inote >= 0 ? splitNote(r[inote]) : {};
+    const { replaced, entry } = upsertLogin(vault, url, user || '', pass, workspaces === undefined ? scope : workspaces, { mergeScope: true, also: more.length || sites ? [...more, ...(sites || [])] : undefined, notes });
+    if (was && entry.scope === 'all' && !(entry.scopeWas && entry.scopeWas.length)) entry.scopeWas = was;
     result.count++;
     if (replaced) result.replaced++; else result.added++;
   }
   return result;
+}
+
+/** The websites in one URL cell: one, or several separated by commas or new lines. */
+function urlsOf(cell) {
+  const parts = String(cell || '').split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
+  // A comma inside one URL (a query string) is not a second website: a part that does not start
+  // like a URL or a domain belongs to the one before it.
+  const site = /^([a-z][a-z0-9+.-]*:\/\/|[\w-]+(\.[\w-]+)+|localhost\b)/i;
+  const out = [];
+  for (const p of parts) if (site.test(p) || !out.length) out.push(p); else out[out.length - 1] += ',' + p;
+  return out;
 }
 
 /** Every login as a CSV in Chrome's export format (name,url,username,password,note), which
@@ -290,7 +308,7 @@ function exportCsv(vault) {
     const local = isIp(e.host) || !String(e.host).includes('.');
     const url = /^https?:\/\//.test(label) ? label : `${local ? 'http' : 'https'}://${label}`;
     // The person's notes first (other managers show the note as is), then cobrowser's lines.
-    const note = (e.notes ? e.notes + '\n\n' : '') + workspacesNote(e.scope) + (e.also && e.also.length ? `\n${SITES_NOTE} ${JSON.stringify(e.also.map(siteLabel))}` : '');
+    const note = (e.notes ? e.notes + '\n\n' : '') + workspacesNote(e.scope, e.scopeWas) + (e.also && e.also.length ? `\n${SITES_NOTE} ${JSON.stringify(e.also.map(siteLabel))}` : '');
     rows.push([label, url, e.username || '', e.password || '', note]);
   }
   return rows.map((r) => r.map((c) => q(String(c))).join(',')).join('\n') + '\n';
@@ -395,7 +413,7 @@ const csvLine = (r) => r.map((c) => { const v = String(c ?? ''); return /[",\n\r
  *  cards, which no password manager's login format has room for. */
 function exportCards(vault) {
   const rows = [CARD_COLUMNS];
-  for (const c of vault.cards || []) rows.push([c.label, c.name, c.number, `${String(c.expMonth).padStart(2, '0')}/${String(c.expYear).slice(-2)}`, c.cvc || '', c.notes || '']);
+  for (const c of vault.cards || []) rows.push([c.label, c.name, c.number, `${String(c.expMonth).padStart(2, '0')}/${c.expYear}`, c.cvc || '', c.notes || '']);
   return rows.map(csvLine).join('\n') + '\n';
 }
 
@@ -416,7 +434,7 @@ function importCards(vault, text) {
   if (inum < 0 || (iexp < 0 && (imon < 0 || iyear < 0))) throw new Error(`CSV needs card number and expiry columns; found: ${rows[0].join(', ')}`);
   const at = (r, i) => (i >= 0 ? String(r[i] ?? '').trim() : undefined);
   for (const r of rows.slice(1)) {
-    const fields = { number: at(r, inum), name: at(r, iname), label: at(r, ilabel) || undefined };
+    const fields = { number: at(r, inum), name: at(r, iname) || undefined, label: at(r, ilabel) || undefined };
     if (iexp >= 0) fields.exp = at(r, iexp); else { fields.expMonth = at(r, imon); fields.expYear = at(r, iyear); }
     const code = at(r, icode), notes = at(r, inotes);
     if (code) fields.cvc = code;

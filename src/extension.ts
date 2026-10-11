@@ -723,9 +723,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return;
       }
       // A cobrowser export names each login's workspaces; other logins become usable here.
-      const skipped = r.skipped ? ` ${r.skipped} row${r.skipped === 1 ? ' was' : 's were'} skipped, with no website or neither a username nor a password: keep the file to check them.` : '';
+      const skipped = r.skipped ? ` ${r.skipped} row${r.skipped === 1 ? ' was' : 's were'} skipped, with no website: keep the file to check them.` : '';
       const del = await vscode.window.showInformationMessage(
-        `Cobrowser: imported ${r.count} login${r.count === 1 ? '' : 's'} (${r.added} new, ${r.replaced} replaced), usable in this workspace or in the workspaces the file names for them.${skipped} The CSV holds the passwords in plain text — move it to the Trash?`,
+        `Cobrowser: imported ${r.count} login${r.count === 1 ? '' : 's'} (${r.added} new, ${r.replaced} updated), usable in this workspace or in the workspaces the file names for them.${skipped} The CSV holds the passwords in plain text — move it to the Trash?`,
         'Move the CSV to the Trash',
         'Keep',
       );

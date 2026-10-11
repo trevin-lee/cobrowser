@@ -246,11 +246,11 @@ test('saving a login again without a password keeps the saved one; only an edit 
 test('a CSV row without a password imports as a login without one, and survives the round trip', () => {
   const v = empty();
   const r = store.importCsv(v, 'url,username,password\nhttps://magic.example,me@example.com,\nhttps://nothing.example,,\nhttps://pw.example,u,p\n', 'all');
-  assert.equal(r.count, 2, 'a row with neither a username nor a password is skipped');
-  assert.deepEqual(v.entries.map((e) => [e.host, e.password]), [['magic.example', ''], ['pw.example', 'p']]);
+  assert.equal(r.count, 3, 'a row with only a website is a login too, as the vault window saves one');
+  assert.deepEqual(v.entries.map((e) => [e.host, e.password]), [['magic.example', ''], ['nothing.example', ''], ['pw.example', 'p']]);
   const back = empty();
   store.importCsv(back, store.exportCsv(v), 'all');
-  assert.deepEqual(back.entries.map((e) => [e.host, e.username, e.password]), [['magic.example', 'me@example.com', ''], ['pw.example', 'u', 'p']]);
+  assert.deepEqual(back.entries.map((e) => [e.host, e.username, e.password]), [['magic.example', 'me@example.com', ''], ['nothing.example', '', ''], ['pw.example', 'u', 'p']]);
 });
 
 test('a CSV with a quote never closed is refused whole, naming the line, instead of losing the rows after it', () => {
@@ -263,7 +263,7 @@ test('a CSV with a quote never closed is refused whole, naming the line, instead
 test('rows an import cannot use are counted, not silently dropped', () => {
   const v = empty();
   const r = store.importCsv(v, 'url,username,password\n,u,p\nhttps://ok.example,u,p\nhttps://empty.example,,\n', 'all');
-  assert.deepEqual(r, { count: 1, added: 1, replaced: 0, skipped: 2 });
+  assert.deepEqual(r, { count: 2, added: 2, replaced: 0, skipped: 1 }, 'only the row with no website is skipped');
 });
 
 test('turning Everywhere on keeps the workspaces a login had, and turning it off gives them back', () => {
@@ -287,4 +287,26 @@ test('notes may be long, and ones too long are refused rather than cut', () => {
   assert.equal((v.entries[0] as Entry & { notes?: string }).notes, long);
   assert.throws(() => store.upsertLogin(v, 'b.com', 'me', 'pw', 'all', { notes: 'x'.repeat(100001) } as never), /limited to 100,000 characters/);
   assert.equal(v.entries.length, 1);
+});
+
+test('an export reads back whole: a login with only a website, what Everywhere remembers, and its websites', () => {
+  const v = empty();
+  store.upsertLogin(v, 'bare.example', '', '', ['/w']);
+  store.upsertLogin(v, 'every.example', 'me', 'pw', ['/w1', '/w2']);
+  store.setScope(v, 'every.example', 'me', 'all');
+  const back = empty();
+  const r = store.importCsv(back, store.exportCsv(v), ['/default']);
+  assert.deepEqual([r.count, r.skipped], [2, 0]);
+  const every = store.findEntry(back, 'every.example', 'me') as Entry & { scopeWas?: string[] };
+  assert.deepEqual([every.scope, every.scopeWas], ['all', ['/w1', '/w2']]);
+  assert.deepEqual(store.findEntry(back, 'bare.example', '')?.scope, ['/w']);
+});
+
+test("Bitwarden's several websites in one cell become the login's websites, and a comma in a query stays in its URL", () => {
+  const v = empty();
+  store.importCsv(v, 'login_uri,login_username,login_password\n"https://a.example.com/login,https://b.other.com",me,pw\n"https://c.example/?x=1,2",you,pw\n', ['/w']);
+  const a = store.findEntry(v, 'a.example.com', 'me')!;
+  assert.deepEqual(store.publicEntry(a).also, ['b.other.com']);
+  const c = store.findEntry(v, 'c.example', 'you')!;
+  assert.deepEqual(store.publicEntry(c).also, []);
 });
