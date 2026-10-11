@@ -26,8 +26,8 @@ test/**
 dist-test/**
 esbuild.test.mjs
 dist-e2e/**
-# Built and released on their own (the Chrome zip and the signed Firefox .xpi are release
-# assets); the extension only copies chrome-extension/ for Install Chrome Bridge.
+# Released on its own (the signed Firefox .xpi is a release asset). chrome-extension/ is
+# packaged: Install Chrome Bridge copies it.
 firefox-extension/**
 web-ext-artifacts/**
 *.xpi

@@ -1,11 +1,10 @@
 name: Release
 
-# A pushed v* tag becomes a GitHub Release carrying everything cobrowser ships:
-#   - cobrowser-<version>.vsix                    the editor extension, for installing by hand
-#   - cobrowser-darwin-{arm64,x64}-<version>.vsix the same, per Mac, as the stores get them
-#   - cobrowser-bridge-chrome-<version>.zip       the Chrome bridge (loaded unpacked)
+# A pushed v* tag, on a commit that passed CI, becomes a GitHub Release carrying:
+#   - cobrowser-darwin-{arm64,x64}-<version>.vsix the editor extension, per Mac, as the stores get it
 #   - cobrowser-bridge-firefox-<version>.xpi      the Firefox bridge, signed by Mozilla
 #   - firefox-updates.json                        where installed Firefox add-ons look for updates
+# (The Chrome bridge ships inside the extension: Cobrowser: Install Chrome Bridge.)
 # then publish-extension.yml publishes the release's macOS packages to the Visual Studio
 # Marketplace and Open VSX. It runs on macOS: the vault's Touch-ID-or-password helper is built
 # with Xcode's Swift.
@@ -35,6 +34,7 @@ on:
 
 permissions:
   contents: write
+  actions: read # the commit's CI runs
 
 env:
   TAG: ${{ inputs.tag || github.ref_name }}
@@ -48,6 +48,27 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ env.TAG }}
+
+      # Nothing is released from a commit CI has not passed. CI for main starts with the push
+      # that comes just before the tag, so a run still going is waited for.
+      - name: The commit passed CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha="$(git rev-parse HEAD)"
+          for i in $(seq 1 90); do
+            runs="$(gh run list --workflow ci.yml --commit "$sha" --json status,conclusion)"
+            passed="$(echo "$runs" | jq '[.[] | select(.conclusion == "success")] | length')"
+            going="$(echo "$runs" | jq '[.[] | select(.status != "completed")] | length')"
+            total="$(echo "$runs" | jq 'length')"
+            if [ "$passed" -gt 0 ]; then echo "CI passed for $sha."; exit 0; fi
+            if [ "$going" = 0 ] && { [ "$total" -gt 0 ] || [ "$i" -gt 5 ]; }; then
+              echo "::error::no passing CI run for $sha. Run ci.yml on it (or re-run the failed one), then run this workflow by hand with the tag."
+              exit 1
+            fi
+            sleep 60
+          done
+          echo "::error::CI for $sha did not finish within 90 minutes"; exit 1
 
       - uses: actions/setup-node@v7
         with:
