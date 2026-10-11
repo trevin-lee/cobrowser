@@ -59,3 +59,11 @@ test("site permissions move with the folder; one decided at the new path since w
   perms.moveWorkspace(empty, '/a', '/b');
   assert.deepEqual(empty.workspaces, {});
 });
+
+test('a forgotten workspace is taken off logins, including ones on their way to it', () => {
+  const m = moves.load(null);
+  moves.adopt(m, '/a', '/b');
+  (moves as unknown as { forget: (m: Moves, id: string) => void }).forget(m, '/b');
+  assert.deepEqual(m.logins, { '/a': '', '/b': '' });
+  assert.deepEqual(moves.renameInScope(['/a', '/b', '/x'], m.logins), ['/x']);
+});

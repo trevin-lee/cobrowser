@@ -36,6 +36,7 @@ suite('profile', async (r) => {
     try { await L.conn.forgetWorkspace(A); refused = ''; } catch (e) { refused = (e as Error).message; }
     r.check('nor can the one asking', /open in an editor window/.test(refused), refused);
 
+    await b.vaultAdd('only-b.example', 'u', 'pw', [B]);
     b.close(); await sleep(300);
     await L.conn.forgetWorkspace(B);
     const known = (await L.conn.knownWorkspaces()).map((w) => w.id);
@@ -43,6 +44,8 @@ suite('profile', async (r) => {
     const { conn: b2, tabs, forgotten } = await AppConnection.connect(readAppState()!, B);
     const tB2 = await b2.openTab(srv.base + '/', 800, 600); await sleep(600);
     r.check('opening it again starts a fresh browser: no tabs, signed out, no permissions', tabs.length === 0 && (await cookie(b2, tB2.tabId)) === '' && (await notif(b2, tB2.tabId)) === 'denied' && (await b2.sitePermissions()).length === 0, { tabs: tabs.length });
+    const loginsThere = await b2.vaultList();
+    r.check('and no login is allowed there any more', loginsThere.length === 0, loginsThere);
     b2.close(); await sleep(200);
     const { conn: b3, forgotten: again } = await AppConnection.connect(readAppState()!, B);
     const { conn: a2, forgotten: other } = await AppConnection.connect(readAppState()!, A);

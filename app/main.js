@@ -2383,8 +2383,8 @@ function discardPartitions() {
   m.discard = [];
   saveMoves();
 }
-/** Logins allowed in a moved folder are allowed at its new path. Needs the vault unlocked; until
- *  then the renames wait in moves.json. */
+/** Logins allowed in a moved folder are allowed at its new path, and no longer in a forgotten
+ *  one. Needs the vault unlocked; until then the changes wait in moves.json. */
 function moveLoginScopes() {
   const m = loadMoves();
   if (!vault || !Object.keys(m.logins).length) return;
@@ -2397,7 +2397,7 @@ function moveLoginScopes() {
   if (changed) saveVault();
   m.logins = {};
   saveMoves();
-  if (changed) log(`vault: ${changed} login(s) follow their moved folder`);
+  if (changed) log(`vault: ${changed} login(s) follow a moved or forgotten folder`);
 }
 
 /**
@@ -2412,6 +2412,12 @@ async function takeOverWorkspace(from, to) {
   if (fs.existsSync(from)) throw new Error(`${from} still exists: open it instead`);
   const old = workspaces.get(from);
   if (old && old.sockets.size) throw new Error(`${path.basename(from)} is open in an editor window`);
+  // Its logins move to another workspace: a change to the vault, confirmed like any other. A
+  // vault this Mac cannot read moves them when it can (moves.json).
+  if (fs.existsSync(VAULT_FILE)) {
+    try { await confirmFresh(`let "${path.basename(to)}" use the logins allowed in "${path.basename(from)}", which it was before it moved`); }
+    catch (e) { if (e.message !== UNREADABLE) throw e; }
+  }
   if (old) { old.closeAll(); workspaces.delete(from); }
   const w = workspaceFor(to);
   w.closeAll();
@@ -2424,6 +2430,8 @@ async function takeOverWorkspace(from, to) {
   for (const [k, v] of [...certDecisions]) if (k.startsWith(from + '|')) { certDecisions.delete(k); certDecisions.set(to + k.slice(from.length), v); }
   fs.writeFileSync(WORKSPACES_FILE, JSON.stringify(knownWorkspaces().filter((x) => x !== from), null, 2));
   moveLoginScopes();
+  // A folder made at the old path later starts fresh: its editor drops the tabs it saved.
+  writeForgotten([...new Set([...readForgotten(), from])]);
   vaultChanged();
   log(`workspace ${to} took over the browser of ${from}`);
 }
@@ -2438,8 +2446,8 @@ async function clearBrowsingData(ses) {
 
 /**
  * Forget a workspace: its tabs, browsing data, site permissions and certificate exceptions,
- * and its place in the list. Its logins stay in the vault (a login may be allowed in several
- * workspaces; the vault window changes that). Refused while an editor window has it open.
+ * the logins' permission to be used there (the logins stay in the vault), and its place in the
+ * list. Refused while an editor window has it open.
  */
 async function forgetWorkspace(id) {
   const w = workspaces.get(id);
@@ -2454,6 +2462,9 @@ async function forgetWorkspace(id) {
   }
   sitePermissions.dropWorkspace(loadPermissions(), id); savePermissions();
   for (const k of [...certDecisions.keys()]) if (k.startsWith(id + '|')) certDecisions.delete(k);
+  // Logins allowed there no longer are: a folder opened at that path later starts with none.
+  workspaceMoves.forget(loadMoves(), id); saveMoves();
+  moveLoginScopes();
   const list = knownWorkspaces().filter((x) => x !== id);
   fs.writeFileSync(WORKSPACES_FILE, JSON.stringify(list, null, 2));
   vaultChanged();

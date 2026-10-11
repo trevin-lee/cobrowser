@@ -218,6 +218,12 @@ export async function registrationState(port: number, id: string, dev = false): 
   return h.workspaces.some((w) => w.id === id) ? 'ok' : 'missing';
 }
 
+/** The folders open in an editor window now (every editor's, started browser or not); empty
+ *  when the daemon cannot be reached. */
+export async function openWorkspaces(port: number, dev = false): Promise<string[]> {
+  return (await health(port, daemonToken(dev)))?.workspaces.map((w) => w.id) ?? [];
+}
+
 export async function deregister(port: number, id: string, dev = false): Promise<void> {
   await post(port, daemonToken(dev), '/deregister', { id });
 }

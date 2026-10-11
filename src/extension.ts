@@ -10,7 +10,8 @@ import { BrowserPanel } from './webview/BrowserPanel';
 import { SessionTreeProvider, type TreeNode } from './webview/SessionTreeProvider';
 import { writeClientConfigs } from './clients/writeClientConfigs';
 import { snippetFor, type OtherClient } from './clients/agentConfigs';
-import { daemonToken, deregister, ensureDaemon, isOlder, register, registrationState, replaceDaemonToken, tokenReplaced } from './daemon/client';
+import { daemonToken, deregister, ensureDaemon, isOlder, openWorkspaces, register, registrationState, replaceDaemonToken, tokenReplaced } from './daemon/client';
+import { forgetBinding, takeForgottenBinding } from './forgottenBindings';
 import { DEFAULT_DAEMON_PORT, DEV_DAEMON_PORT, bridgeEndpointUrl } from './daemon/protocol';
 import { AppConnection, readAppState, type AppState } from './app/AppClient';
 import { ensureApp, electronExecutable } from './app/ensureApp';
@@ -106,6 +107,19 @@ function warnUserUploadSetting(): void {
   );
 }
 
+/** The browser of a window without a folder, in any editor (each keeps its own under its
+ *  extension storage): never a folder that moved. */
+function isNoFolderWorkspace(id: string): boolean {
+  return /[\\/]globalStorage[\\/]trevin-lee\.cobrowser[\\/]default$/i.test(id);
+}
+
+/** A workspace forgotten or taken over from this window: its Firefox endpoint goes now, and its
+ *  own window unbinds when it next opens (forgottenBindings). */
+function forgetBridge(id: string): void {
+  unregisterEndpoint(id, (m) => output.appendLine(m));
+  forgetBinding(id);
+}
+
 /** The tab a command acts on: a sidebar row's, or the one in front. */
 function panelFor(node?: TreeNode): BrowserPanel | undefined {
   return node?.kind === 'tab' ? BrowserPanel.get(node.page.pageId) : BrowserPanel.active;
@@ -190,6 +204,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // The app keeps one browser profile (partition) per workspace, keyed by this path, so
   // logins and tabs are isolated per project. A window with no folder shares a default.
   const workspaceId = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? path.join(context.globalStorageUri.fsPath, 'default');
+  // Forgotten, or taken over by a moved folder, from another window: the binding goes too.
+  if (takeForgottenBinding(workspaceId) && context.workspaceState.get<string>(FIREFOX_CONTAINER_KEY)) {
+    await context.workspaceState.update(FIREFOX_CONTAINER_KEY, '');
+    log("This workspace's browser was forgotten from another window: it is no longer bound to Chrome or Firefox.");
+  }
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('cobrowser.uploadsWithoutAsking')) warnUserUploadSetting();
@@ -481,11 +500,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   /** Binding needs a workspace: a window without a folder has none for an agent to work in.
    *  Says so and answers false there. */
-  const hasWorkspace = (): boolean => {
+  const hasWorkspace = (why = 'so it cannot be bound to Chrome or Firefox.'): boolean => {
     if (vscode.workspace.workspaceFolders?.length) return true;
-    void vscode.window.showWarningMessage('Cobrowser: open a folder first. A window without one has no workspace for an agent to work in, so it cannot be bound to your own browser.');
+    void vscode.window.showWarningMessage(`Cobrowser: open a folder first. A window without one has no workspace for an agent to work in, ${why}`);
     return false;
   };
+  const NO_FOLDER_LOGINS = 'so a login added here could only be used in its browser, which no agent reaches. Add it in the vault window (Cobrowser: Open Vault) and choose its workspaces there.';
 
   context.subscriptions.push(
     // Open Browser (the launcher on every other editor's title bar, the welcome view): back to
@@ -692,6 +712,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
     }),
     vscode.commands.registerCommand('cobrowser.addLogin', async () => {
+      if (!hasWorkspace(NO_FOLDER_LOGINS)) return;
       const site = await vscode.window.showInputBox({ prompt: 'Site (URL or host)', placeHolder: 'https://example.com' });
       if (!site) return;
       const username = await vscode.window.showInputBox({ prompt: `Username for ${site}` });
@@ -712,6 +733,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
     }),
     vscode.commands.registerCommand('cobrowser.importLoginsCsv', async () => {
+      if (!hasWorkspace(NO_FOLDER_LOGINS)) return;
       const picked = await vscode.window.showOpenDialog({ canSelectMany: false, filters: { CSV: ['csv'] }, title: 'Import logins (Apple Passwords / Bitwarden / Chrome CSV export)' });
       if (!picked?.[0]) return;
       let r: { count: number; added: number; replaced: number; skipped: number };
@@ -878,37 +900,43 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     vscode.commands.registerCommand('cobrowser.forgetWorkspace', async () => {
       try {
-        const all = (await withApp((c) => c.knownWorkspaces())).filter((w) => w.id !== workspaceId);
+        // Open in a window: the app knows a window whose browser has started; the daemon knows
+        // every window with a folder, started or not.
+        const windows = new Set(await openWorkspaces(daemonPort, dev));
+        const all = (await withApp((c) => c.knownWorkspaces())).filter((w) => w.id !== workspaceId).map((w) => ({ ...w, open: w.open || windows.has(w.id) }));
         if (!all.length) {
           void vscode.window.showInformationMessage('Cobrowser: no other workspace has a browser.');
           return;
         }
         const pick = await vscode.window.showQuickPick(
           all.map((w) => ({ label: path.basename(w.id), description: w.id, detail: w.open ? 'open in an editor window: clear its data from there instead' : w.tabs ? `${w.tabs} tab${w.tabs === 1 ? '' : 's'} open in the app` : undefined, id: w.id, open: w.open })),
-          { title: "Forget a workspace's browser", placeHolder: 'Its tabs, cookies, sign-ins, site data and permissions are deleted' },
+          { title: "Forget another workspace's browser", placeHolder: 'Its tabs, cookies, sign-ins, site data and permissions are deleted' },
         );
         if (!pick) return;
         if (pick.open) {
-          void vscode.window.showInformationMessage(`Cobrowser: ${pick.label} is open in another editor window. Run Clear Browsing Data for This Workspace there.`);
+          void vscode.window.showInformationMessage(`Cobrowser: ${pick.label} is open in another editor window. To start its browser over, run Clear Browsing Data for This Workspace there and forget its site permissions.`);
           return;
         }
         const ok = await vscode.window.showWarningMessage(
           `Forget ${pick.label}'s browser?`,
-          { modal: true, detail: `Its tabs, cookies, sign-ins, site data, cache and site permissions are deleted, and it leaves the workspace list. Logins in the vault are kept: change where they may be used in the vault. Opening ${pick.label} again starts its browser signed out of every site.` },
+          { modal: true, detail: `Its tabs, cookies, sign-ins, site data, cache and site permissions are deleted, it leaves the workspace list, and logins in the vault are no longer allowed there (the logins themselves are kept). Its binding to Chrome or Firefox ends. Opening ${pick.label} again starts its browser signed out of every site.` },
           'Forget',
         );
         if (ok !== 'Forget') return;
         await withApp((c) => c.forgetWorkspace(pick.id));
+        forgetBridge(pick.id);
         void vscode.window.showInformationMessage(`Cobrowser: forgot ${pick.label}'s browser.`);
       } catch (err) {
         void vscode.window.showErrorMessage(`Cobrowser: could not forget the workspace — ${String((err as Error).message ?? err)}`);
       }
     }),
     vscode.commands.registerCommand('cobrowser.takeOverWorkspace', async () => {
+      if (!hasWorkspace("so there is no moved folder to take a browser over for: run it in the renamed folder's window.")) return;
       try {
         // Only a workspace whose folder is gone: one that still exists is opened, not taken over.
+        // A window without a folder (any editor's) is not a folder that moved.
         const gone = (await withApp((c) => c.knownWorkspaces()))
-          .filter((w) => w.id !== workspaceId && !w.open && !w.id.startsWith(context.globalStorageUri.fsPath) && !fs.existsSync(w.id));
+          .filter((w) => w.id !== workspaceId && !w.open && !isNoFolderWorkspace(w.id) && !fs.existsSync(w.id));
         if (!gone.length) {
           void vscode.window.showInformationMessage("Cobrowser: no workspace's folder has gone missing, so there is no browser to take over.");
           return;
@@ -921,7 +949,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         if (!pick) return;
         const ok = await vscode.window.showWarningMessage(
           `Take over ${pick.description}'s browser for ${here}?`,
-          { modal: true, detail: `${here} gets its sign-ins, site data, site permissions and the logins allowed there. What ${here}'s browser has had since the move is deleted. Its open tabs reopen in the browser taken over.` },
+          { modal: true, detail: `${here} gets its sign-ins, site data, site permissions and the logins allowed there (you confirm that with Touch ID). What ${here}'s browser has had since the move is deleted. Its open tabs reopen in the browser taken over. A binding to Chrome or Firefox does not move: the bridge URL names the folder, so bind ${here} again.` },
           'Take Over',
         );
         if (ok !== 'Take Over') return;
@@ -929,8 +957,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         await disposeSession(context);
         await context.workspaceState.update(TABS_KEY, saved);
         await withApp((c) => c.takeOverWorkspace(pick.id));
+        forgetBridge(pick.id);
         await getSession();
-        void vscode.window.showInformationMessage(`Cobrowser: ${here} now has ${pick.label}'s browser.`);
+        void vscode.window.showInformationMessage(`Cobrowser: ${here} now has ${pick.label}'s browser. If ${pick.label} used Chrome or Firefox through the bridge, bind ${here} again; for Chrome, paste its new bridge URL into the popup and remove the old one.`);
       } catch (err) {
         void vscode.window.showErrorMessage(`Cobrowser: could not take over the browser — ${String((err as Error).message ?? err)}`);
       }

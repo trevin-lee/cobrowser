@@ -10,7 +10,7 @@
  *   partitions: { [workspaceId]: partitionName }, for a workspace that does not use the
  *     partition named after its path (it took over another's, or gave its own away);
  *   logins: { [oldId]: newId }, renames not yet made in the vault's scopes because it was
- *     locked, made at the next unlock;
+ *     locked, made at the next unlock; newId '' takes the workspace off (it was forgotten);
  *   discard: partition folders no workspace uses any more, deleted at the next start, before
  *     any session holds their files.
  */
@@ -48,10 +48,16 @@ function adopt(moves, from, to) {
   for (const [k, v] of Object.entries(moves.logins)) if (k === v) delete moves.logins[k];
 }
 
-/** A login's scope with the moved workspaces renamed. */
-function renameInScope(scope, logins) {
-  if (!Array.isArray(scope)) return scope;
-  return [...new Set(scope.map((w) => logins[w] || w))];
+/** A forgotten workspace: logins allowed there, or on their way there, no longer are. */
+function forget(moves, id) {
+  for (const [k, v] of Object.entries(moves.logins)) if (v === id) moves.logins[k] = '';
+  moves.logins[id] = '';
 }
 
-module.exports = { load, ownPartition, partitionName, adopt, renameInScope };
+/** A login's scope with the moved workspaces renamed, and the forgotten ones taken off. */
+function renameInScope(scope, logins) {
+  if (!Array.isArray(scope)) return scope;
+  return [...new Set(scope.map((w) => (w in logins ? logins[w] : w)).filter(Boolean))];
+}
+
+module.exports = { load, ownPartition, partitionName, adopt, forget, renameInScope };

@@ -21,7 +21,7 @@ suite('moved-folder', async (r) => {
     const tOld = await old.openTab(srv.base + '/', 800, 600); await sleep(600);
     await old.cdp(tOld.tabId, 'Runtime.evaluate', { expression: 'document.cookie = "signedin=1; max-age=3600"' });
     await old.vaultAdd('moved.example', 'ada', 'pw', [OLD]);
-    await old.vaultLock(); // the logins move when the vault is next unlocked
+    await old.vaultLock(); // taking over unlocks it, with the confirmation
     // The renamed folder, opened before taking over: what it does now is given up.
     const tNew = await L.conn.openTab(srv.base + '/', 800, 600); await sleep(600);
     await L.conn.cdp(tNew.tabId, 'Runtime.evaluate', { expression: 'document.cookie = "since=1; max-age=3600"' });
@@ -33,14 +33,16 @@ suite('moved-folder', async (r) => {
     r.check('a folder that still exists, or is open in a window, is not taken over', /still exists/.test(exists) && /open in an editor window/.test(open), { exists, open });
     old.close(); await sleep(300);
 
+    const asks = () => fs.readFileSync(path.join(SCRATCH, 'data', 'app.log'), 'utf8').split('confirmation skipped for: let "app-renamed" use the logins').length - 1;
     await L.conn.takeOverWorkspace(OLD);
     await sleep(300);
+    r.check('taking over the logins allowed there is confirmed, as any change to the vault is', asks() === 1, asks());
     r.check("the renamed folder's tabs are closed, for its editor to reopen", !(await L.conn.listTabs()).some((t) => t.tabId === tNew.tabId));
     const t = await L.conn.openTab(srv.base + '/', 800, 600); await sleep(600);
     r.check('it is signed in where the old folder was, and nothing from since the rename', (await cookie(L.conn, t.tabId)) === 'signedin=1', await cookie(L.conn, t.tabId));
     r.check("it has the old folder's site permissions", (await notif(L.conn, t.tabId)) === 'granted' && (await L.conn.sitePermissions()).length === 1);
     const logins = await L.conn.vaultList();
-    r.check('logins allowed in the old folder are allowed in it (renamed at the unlock)', logins.some((l) => l.host === 'moved.example' && l.username === 'ada'), logins);
+    r.check('logins allowed in the old folder are allowed in it', logins.some((l) => l.host === 'moved.example' && l.username === 'ada'), logins);
     const known = (await L.conn.knownWorkspaces()).map((w) => w.id);
     r.check('the old path leaves the workspace list', !known.includes(OLD) && known.includes(NEW), known);
 
