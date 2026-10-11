@@ -243,7 +243,7 @@ async function handleMessage(conn, msg) {
 function withTimeout(promise, ms) {
   return Promise.race([
     promise,
-    new Promise((_, reject) => setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms)),
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`timed out after ${ms}ms. If the page opened an alert, confirm or prompt, the bridge cannot answer it: ask the human to answer it in their browser`)), ms)),
   ]);
 }
 

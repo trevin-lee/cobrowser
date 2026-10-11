@@ -188,7 +188,7 @@ export class ZenHub {
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         c.pending.delete(id);
-        reject(new Error(`bridge call "${method}" timed out after ${timeoutMs}ms`));
+        reject(new Error(`bridge call "${method}" timed out after ${timeoutMs}ms. If the page opened an alert, confirm or prompt, the bridge cannot answer it: ask the human to answer it in their browser`));
       }, timeoutMs);
       c.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer });
       c.ws.send(JSON.stringify({ type: 'req', id, method, params }));

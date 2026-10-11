@@ -474,7 +474,9 @@ Allowing lets that workspace's agent fill this login into the page; it never see
       message: `The agent in "${name}" asks to use a login on ${label} — which one?`,
       detail: `${why}
 
-The agent never sees the password. Workspace: ${workspaceId}`,
+The agent never sees the password. Workspace: ${workspaceId}${matches.length > names.length ? `
+
+${matches.length - names.length} more login${matches.length - names.length === 1 ? '' : 's'} for this site ${matches.length - names.length === 1 ? 'is' : 'are'} not shown here: to give one to this workspace, tick the workspace in the vault window.` : ''}`,
       buttons: [...names, 'Deny'], defaultId: names.length, cancelId: names.length,
       checkboxLabel: 'Allow in this workspace from now on (otherwise, just this once)',
       checkboxChecked: false,
