@@ -2,6 +2,35 @@
 
 Release notes for earlier versions are on the [GitHub releases page](https://github.com/trevin-lee/cobrowser/releases).
 
+## 0.9.31
+
+### Removed
+
+- **The payment guard.** `click`, `upload_file` and `bridge_click` no longer refuse a button labelled like a payment, and `allowPayment` is gone. It caught only a few common labels ("Pay now", "Place order"), so it promised more than it held. Agents are still told not to click a button that pays unless you asked them to complete it; the README says plainly that nothing stops one.
+
+### Added
+
+- **Cobrowser: Install Firefox Bridge** opens this version's signed add-on in the Firefox (or fork) you pick. Binding a container offers it.
+- **Binding Chrome lists its open tab groups** when Chrome is connected for any workspace, and `bridge_list_containers` answers before a workspace is bound.
+- **The vault window filters cards**, and the Logins filter matches a login's other websites and its notes.
+- **A card fill with several cards and none named** lets you pick one, instead of spending the unlock on an error.
+
+### Changed
+
+- **`get_activity` says who did it by who acted on the tab last**: you, when you did it in the panel, the agent otherwise. It was a guess from timing. Its cursor is never reused, so one from before a reload no longer hides newer events.
+- **Forget Another Workspace's Browser asks for Touch ID**, since it takes the workspace off your logins.
+- **Importing a cobrowser export no longer asks for workspaces**: every row names its own. Only rows that name none need some chosen.
+- **The bridge calls the bound scope `profile` or `default`**, as it is bound, everywhere.
+- **Zoom is per workspace**: a site zoomed before stays zoomed only in the workspaces that were in use then (a dated migration), not in new ones.
+
+### Fixed
+
+- **Removing a card's saved security code** clears and locks the code field, so a code typed there can no longer replace it instead.
+- **The click tool returns a download's location**, which 0.9.30 dropped on the way to the agent.
+- **After Replace Agent Token, Firefox reconnects at once**, rather than showing "URL out of date" for up to half a minute; its popup warns that a URL pasted there is not updated.
+- **An out-of-date Chrome extension is told only to reload**; Chrome's popup and Forget say to remove the URL of a folder that is gone.
+- Starting a new vault says logins and cards are two exports. Tool descriptions and the READMEs say what the tools do (`close_page`, `take_snapshot`'s limit, `pageId`, what counts toward the bridge's 100, `bridge_new_tab` coming to the front), and errors say tab.
+
 ## 0.9.30
 
 ### Changed
