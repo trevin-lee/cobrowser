@@ -74,6 +74,7 @@ suite('core', async (r) => {
     r.check('activity has navigations and tab events', act.events.some((e) => e.type === 'navigated') && act.events.some((e) => e.type === 'tab-opened'), act.events.map((e) => e.type));
     // Who did it is whoever acted on the tab last: the agent's click, however late the page
     // moves, or the human's own click in the panel.
+    const before = (await s.listPages()).find((p) => p.selected)!.pageId;
     const slow = await s.run(() => s.newPage(srv.base + '/slow')); await sleep(500);
     const mark = s.getActivity().latest;
     await s.run(() => s.click({ selector: '#later', pageId: slow.pageId }), slow.pageId);
@@ -86,6 +87,8 @@ suite('core', async (r) => {
     await sleep(1500);
     const mine = s.getActivity(mark2).events.filter((e) => e.type === 'navigated' && e.pageId === slow.pageId);
     r.check("a navigation is the agent's after its click, however late, and the human's after theirs", late.length === 1 && late[0].source === 'agent' && mine.length === 1 && mine[0].source === 'human', { late, mine });
+    await s.run(() => s.closePage(slow.pageId), slow.pageId);
+    await s.selectPage(before); // the checks below work in the tab they were in
     let threw = '';
     try { await s.run(() => s.navigate('url', 'http://127.0.0.1:1/')); } catch (e) { threw = String((e as Error).message); }
     r.check('navigation to a dead host throws with the error', /ERR_CONNECTION_REFUSED|failed/.test(threw), threw);
