@@ -184,6 +184,18 @@ export class ZenHub {
         new Error(c.lastError ?? `${browserName(c.browser)} is connected but this workspace is not bound to a scope yet.`),
       );
     }
+    return this.request<T>(c, method, params, timeoutMs);
+  }
+
+  /** What could be bound, before a workspace is: the containers or tab groups of each browser
+   *  connected for any workspace (they are the browser's, not the workspace's). */
+  async scopesAnywhere(): Promise<{ browser: BridgeBrowser; scopes: unknown }[]> {
+    const seen = new Map<BridgeBrowser, Conn>();
+    for (const c of this.conns.values()) if (c.ws.readyState === WebSocket.OPEN && !seen.has(c.browser)) seen.set(c.browser, c);
+    return Promise.all([...seen].map(async ([browser, c]) => ({ browser, scopes: await this.request(c, 'listContainers', {}, CALL_TIMEOUT_MS) })));
+  }
+
+  private request<T>(c: Conn, method: string, params: Record<string, unknown>, timeoutMs: number): Promise<T> {
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {

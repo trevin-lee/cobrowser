@@ -225,7 +225,7 @@ async function handleMessage(conn, msg) {
       // Unbound here: say why, and which browser the workspace uses instead, if any.
       if (!msg.container) {
         // Its editor window is closed: nothing to bind until the folder is open again.
-        if (msg.windowClosed) throw new Error('this workspace\'s editor window is closed: open its folder in the editor');
+        if (msg.windowClosed) throw new Error('this workspace\'s editor window is closed: open its folder in the editor, or remove this URL if the folder was forgotten, moved or deleted');
         throw new Error(msg.boundTo ? `this workspace is bound to ${msg.boundTo === 'firefox' ? 'Firefox' : 'Chrome'}, not Chrome` : 'this workspace is not bound to Chrome: run "Cobrowser: Bind Chrome Tab Group to This Workspace" in its editor window');
       }
       conn.scope = await resolveScope(msg.container);
@@ -261,7 +261,8 @@ function withTimeout(promise, ms) {
 // ------------------------------------------------------------------ scoping
 
 /** The whole profile, or one tab group by title. Chrome's answer to a Firefox container. */
-const PROFILE = { name: 'This Chrome profile', groupId: null, cookieStoreId: 'chrome-profile', color: null };
+// Named as it is bound: the agent and the popup see the same word the bind command takes.
+const PROFILE = { name: 'profile', groupId: null, cookieStoreId: 'chrome-profile', color: null };
 
 /** What a workspace can be bound to, each with the name the bind command takes (bindAs): an
  *  untitled group has none until it is named in Chrome, since binding finds a group by name. */

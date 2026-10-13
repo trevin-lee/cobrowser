@@ -72,12 +72,12 @@ export const ZEN_TOOLS: Tool[] = [
   {
     name: 'bridge_list_containers',
     description:
-      'List the scopes available in the connected browser — Firefox containers, or Chrome tab groups plus "profile" (names only; this does NOT grant access to their tabs). It works once the workspace is bound and the add-on is connected: use it to tell the human what else they could bind this workspace to.',
+      'List the scopes available in the connected browser — Firefox containers, or Chrome tab groups plus "profile" (names only; this does NOT grant access to their tabs). Use it to tell the human what they could bind this workspace to. Before the workspace is bound, it lists what a browser connected for another workspace has; with none connected, it says how to bind.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
     name: 'bridge_new_tab',
-    description: "Open a new tab inside the bound container / tab group, optionally at a URL. It is yours: close it with bridge_close_tab when you no longer need it, so the human's browser is not left full of your tabs.",
+    description: "Open a new tab inside the bound container / tab group, optionally at a URL. It is yours: close it with bridge_close_tab when you no longer need it, so the human's browser is not left full of your tabs. It comes to the front of the human's browser unless you pass active: false (the opposite of the panel's new_page, which takes background).",
     inputSchema: { type: 'object', properties: { url: str, active: bool } },
   },
   {
@@ -153,9 +153,6 @@ export function isZenTool(name: string): boolean {
 
 type Content = { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string };
 
-/** The Firefox add-on already installed predates the rename of these tools and still names
- *  them firefox_* in its messages; re-signing it is a separate step, so the names are fixed
- *  on the way through. */
 const asJson = (v: unknown): { content: Content[] } => ({ content: [{ type: 'text', text: JSON.stringify(v, null, 2) }] });
 
 /** When the add-on is older than this editor, what to tell the human. A newer one needs nothing. */
@@ -163,7 +160,7 @@ function staleNote(hub: ZenHub, workspace: string): string | undefined {
   const a = hub.addon?.(workspace);
   if (!a?.stale) return undefined;
   const how = a.browser === 'chrome'
-    ? 'update cobrowser, then reload Cobrowser Bridge in chrome://extensions'
+    ? 'reload Cobrowser Bridge in chrome://extensions: the editor has already updated its folder'
     : 'install cobrowser-bridge-firefox .xpi from the latest cobrowser release, or in about:addons use Check for Updates';
   return `The Cobrowser Bridge ${a.browser === 'chrome' ? 'extension in Chrome' : 'add-on in Firefox'} is ${a.version ? `version ${a.version}` : 'an older version'}; this editor expects ${a.expected}. Some tools may not work until the human updates it (${how}).`;
 }

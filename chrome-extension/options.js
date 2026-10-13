@@ -56,7 +56,7 @@ async function refreshStatus() {
     const state = el('div', 'state');
     if (bound) {
       const known = groups.find((g) => g.name === s.container);
-      state.append(chip(s.container === 'This Chrome profile' ? 'profile' : s.container, known && known.color));
+      state.append(chip(s.container, known && known.color));
     } else {
       // A few words here; the whole message on hover.
       state.textContent = stateWords(s.connected, s.error);

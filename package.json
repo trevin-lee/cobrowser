@@ -110,6 +110,10 @@
         "title": "Cobrowser: Lock Vault"
       },
       {
+        "command": "cobrowser.installFirefoxBridge",
+        "title": "Cobrowser: Install Firefox Bridge"
+      },
+      {
         "command": "cobrowser.installChromeBridge",
         "title": "Cobrowser: Install Chrome Bridge"
       },

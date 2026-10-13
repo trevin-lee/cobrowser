@@ -51,7 +51,7 @@ async function refreshStatus() {
     const state = el('div', 'state');
     if (bound) {
       const known = containers.find((c) => c.name === s.container);
-      state.append(chip(s.container === 'Default (no container)' ? 'default' : s.container, known && known.colorCode));
+      state.append(chip(s.container, known && known.colorCode));
     } else {
       // A few words here; the whole message on hover.
       state.textContent = stateWords(s.connected, s.error);
@@ -103,10 +103,11 @@ $('reset').addEventListener('click', () => void resetCap());
 void loadEndpoints();
 void refreshContainers().then(refreshStatus);
 void refreshUsage();
-setInterval(() => { void refreshStatus(); void refreshUsage(); }, 3000);
+// Containers too: one made or renamed while the popup is open shows without reopening it.
+setInterval(() => { void refreshContainers().then(refreshStatus); void refreshUsage(); }, 3000);
 
-/** A workspace's state in a few words. "Not bound" first: the unbound message, "this workspace
- *  is not bound to Chrome", also contains "bound to Chrome". */
+/** A workspace's state in a few words. "Not bound" first: the unbound message ("… is not
+ *  bound to Firefox") also contains "bound to Firefox". */
 function stateWords(connected, error) {
   const e = error || '';
   if (!connected) return /token was replaced/i.test(e) ? 'URL out of date' : 'Not running';

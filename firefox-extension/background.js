@@ -181,8 +181,13 @@ function connect(url) {
   ws.onclose = (event) => {
     conn.ws = null;
     conn.scope = null;
-    // 4003: cobrowser is running, but this URL's token was replaced (Replace Agent Token).
-    if (event && event.code === 4003) conn.error = 'this URL\'s token was replaced: paste the new one from "Cobrowser: Copy Bridge URL"';
+    // 4003: cobrowser is running, but this URL's token was replaced (Replace Agent Token). The
+    // editor has already rewritten its own URLs: read them now rather than at the next poll, so
+    // only a URL pasted by hand stays out of date.
+    if (event && event.code === 4003) {
+      conn.error = 'this URL\'s token was replaced: if you pasted it here, paste the new one from "Cobrowser: Copy Bridge URL"';
+      void reconcile();
+    }
     updateBadge();
     scheduleRetry(conn);
   };
@@ -211,7 +216,7 @@ async function handleMessage(conn, msg) {
       // Unbound here: say why, and which browser the workspace uses instead, if any.
       if (!msg.container) {
         // Its editor window is closed: nothing to bind until the folder is open again.
-        if (msg.windowClosed) throw new Error('this workspace\'s editor window is closed: open its folder in the editor');
+        if (msg.windowClosed) throw new Error('this workspace\'s editor window is closed: open its folder in the editor, or remove this URL if the folder was forgotten, moved or deleted');
         throw new Error(msg.boundTo ? `this workspace is bound to ${msg.boundTo === 'chrome' ? 'Chrome' : 'Firefox'}, not Firefox` : 'this workspace is not bound to Firefox: run "Cobrowser: Bind Firefox Container to This Workspace" in its editor window');
       }
       conn.scope = await resolveContainer(msg.container);
@@ -251,7 +256,8 @@ async function resolveContainer(name) {
   const wanted = String(name ?? '').trim();
   if (!wanted) throw new Error('no container configured for this workspace');
   if (wanted.toLowerCase() === 'default') {
-    return { name: 'Default (no container)', cookieStoreId: 'firefox-default', color: null, icon: null };
+    // Named as it is bound: the agent and the popup see the same word the bind command takes.
+    return { name: 'default', cookieStoreId: 'firefox-default', color: null, icon: null };
   }
   const all = await api.contextualIdentities.query({});
   const hit = all.find((c) => c.name.toLowerCase() === wanted.toLowerCase());

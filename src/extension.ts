@@ -10,7 +10,7 @@ import { BrowserPanel } from './webview/BrowserPanel';
 import { SessionTreeProvider, type TreeNode } from './webview/SessionTreeProvider';
 import { writeClientConfigs } from './clients/writeClientConfigs';
 import { snippetFor, type OtherClient } from './clients/agentConfigs';
-import { daemonToken, deregister, ensureDaemon, isOlder, openWorkspaces, register, registrationState, replaceDaemonToken, tokenReplaced } from './daemon/client';
+import { connectedScopes, daemonToken, deregister, ensureDaemon, isOlder, openWorkspaces, register, registrationState, replaceDaemonToken, tokenReplaced } from './daemon/client';
 import { forgetBinding, takeForgottenBinding } from './forgottenBindings';
 import { DEFAULT_DAEMON_PORT, DEV_DAEMON_PORT, bridgeEndpointUrl } from './daemon/protocol';
 import { AppConnection, readAppState, type AppState } from './app/AppClient';
@@ -583,6 +583,25 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         : bridgeBrowser() === 'firefox' ? `${firefox[0].toUpperCase()}${firefox.slice(1)}.` : `${chrome[0].toUpperCase()}${chrome.slice(1)}.`;
       void vscode.window.showInformationMessage(`Cobrowser: bridge URL copied. ${where} It changes when the agent token is replaced, when the port setting changes, and when this folder is renamed or moved.`);
     }),
+    // The Firefox add-on is signed by Mozilla and attached to each release: open this version's
+    // in the Firefox (or fork) you use, which offers to install it.
+    vscode.commands.registerCommand('cobrowser.installFirefoxBridge', async () => {
+      const version = extensionVersion(context);
+      const url = `https://github.com/trevin-lee/cobrowser/releases/download/v${version}/cobrowser-bridge-firefox-${version}.xpi`;
+      const apps = ['Firefox', 'Zen', 'LibreWolf', 'Floorp', 'Waterfox']
+        .map((name) => [name, ...['/Applications', path.join(os.homedir(), 'Applications')].map((d) => path.join(d, `${name}.app`))])
+        .map(([name, ...paths]) => ({ name, app: paths.find((p) => fs.existsSync(p)) }))
+        .filter((a): a is { name: string; app: string } => !!a.app);
+      const pick = apps.length > 1
+        ? await vscode.window.showQuickPick(apps.map((a) => ({ label: a.name, app: a.app })), { title: 'Install the Firefox bridge in which browser?' })
+        : apps[0] && { label: apps[0].name, app: apps[0].app };
+      if (apps.length > 1 && !pick) return;
+      if (pick) execFile('open', ['-a', pick.app, url], () => undefined);
+      else await vscode.env.openExternal(vscode.Uri.parse(url));
+      void vscode.window.showInformationMessage(
+        `Cobrowser: ${pick ? `${pick.label} opens` : 'your browser opens'} the Cobrowser Bridge add-on${pick ? ' and asks to add it: click Add' : ': open it in Firefox (or a fork) to install it'}. Then run "Cobrowser: Bind Firefox Container to This Workspace"; the add-on finds the workspace by itself. It updates itself after each release.`,
+      );
+    }),
     vscode.commands.registerCommand('cobrowser.installChromeBridge', async () => {
       try {
         const r = copyChromeBridge(context, true);
@@ -634,7 +653,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await context.workspaceState.update(FIREFOX_CONTAINER_KEY, picked);
       await context.workspaceState.update(BRIDGE_BROWSER_KEY, 'firefox');
       syncBridge(); // takes effect now: the daemon re-hellos the add-on's socket, no reload
-      void vscode.window.showInformationMessage(`Cobrowser: this workspace is bound to the "${picked}" container${replacing ? ` instead of the Chrome tab group "${replacing}"` : ''}.`);
+      void vscode.window.showInformationMessage(`Cobrowser: this workspace is bound to the "${picked}" container${replacing ? ` instead of the Chrome tab group "${replacing}"` : ''}. The add-on connects by itself within half a minute once it is installed.`, 'Install Firefox Bridge')
+        .then((next) => { if (next) void vscode.commands.executeCommand('cobrowser.installFirefoxBridge'); });
       log(`Firefox bridge: bound to container "${picked}".`);
     }),
     vscode.commands.registerCommand('cobrowser.bindChromeTabGroup', async () => {
@@ -643,11 +663,27 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const bound = context.workspaceState.get<string>(FIREFOX_CONTAINER_KEY)?.trim() ?? '';
       const current = bridgeBrowser() === 'chrome' ? bound : '';
       const replacing = bridgeBrowser() === 'firefox' ? bound : '';
-      const next = await vscode.window.showInputBox({
-        title: replacing ? `Bind this workspace to a Chrome tab group (replaces the Firefox container "${replacing}")` : 'Bind this workspace to a Chrome tab group',
+      const title = replacing ? `Bind this workspace to a Chrome tab group (replaces the Firefox container "${replacing}")` : 'Bind this workspace to a Chrome tab group';
+      // Chrome's open tab groups, when Chrome is connected for any workspace; otherwise a name.
+      const chrome = (await connectedScopes(daemonPort, dev)).find((b) => b.browser === 'chrome');
+      const named = (chrome?.scopes ?? []).filter((s): s is { name: string; description?: string } => !!s.name);
+      let next: string | undefined;
+      if (named.length) {
+        const TYPE = 'Type a group name…';
+        const choice = await vscode.window.showQuickPick(
+          [...named.map((s) => ({ label: s.name, description: s.description ?? (s.name === current ? 'bound now' : 'open tab group') })), { label: TYPE, description: 'a group that is not open now' }],
+          { title, placeHolder: 'Chrome\'s open tab groups, and "profile" for every tab' },
+        );
+        if (!choice) return;
+        next = choice.label === TYPE ? undefined : choice.label;
+      }
+      next ??= await vscode.window.showInputBox({
+        title,
         prompt: 'The tab group\'s name as shown in Chrome\'s tab strip, or "profile" for every tab. To unbind, run "Cobrowser: Unbind Chrome or Firefox".',
         value: current,
         placeHolder: 'profile',
+        // "default" is Firefox's name for tabs in no container; Chrome's whole profile is "profile".
+        validateInput: (v) => (v.trim().toLowerCase() === 'default' ? 'In Chrome, every tab is "profile"; "default" is Firefox\'s name for tabs in no container.' : undefined),
       });
       if (next === undefined) return;
       // An empty box (Return, as if the placeholder were a default) changes nothing: unbinding
@@ -936,7 +972,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         if (ok !== 'Forget') return;
         await withApp((c) => c.forgetWorkspace(pick.id));
         forgetBridge(pick.id);
-        void vscode.window.showInformationMessage(`Cobrowser: forgot ${pick.label}'s browser.`);
+        void vscode.window.showInformationMessage(`Cobrowser: forgot ${pick.label}'s browser. If its bridge URL is in the Chrome extension's popup, remove it there.`);
       } catch (err) {
         vaultFailed('forget the workspace', err);
       }

@@ -59,6 +59,17 @@ export function tokenReplaced(port: number, dev = false): Promise<boolean> {
   return post(port, daemonToken(dev), '/token-replaced', {});
 }
 
+/** The scopes (Chrome tab groups, Firefox containers) of the browsers connected for any
+ *  workspace, by browser; empty when none is, or the daemon cannot be reached. */
+export async function connectedScopes(port: number, dev = false): Promise<{ browser: 'chrome' | 'firefox'; scopes: { name: string | null; description?: string }[] }[]> {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/scopes`, { headers: { authorization: `Bearer ${daemonToken(dev)}` }, signal: AbortSignal.timeout(3000) });
+    return res.ok ? ((await res.json()) as { browsers: [] }).browsers : [];
+  } catch {
+    return [];
+  }
+}
+
 async function health(port: number, token: string): Promise<HealthResponse | undefined> {
   try {
     const res = await fetch(`http://127.0.0.1:${port}/health`, {

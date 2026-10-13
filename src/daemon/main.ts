@@ -286,6 +286,12 @@ function buildServer(scope: Registration | undefined): Server {
     delete args.workspace; // the window's tools never saw this parameter
 
     if (isZenTool(name)) {
+      // Before binding, what there is to bind to is what is worth knowing: from any browser
+      // already connected for another workspace.
+      if (!target.container && name === 'bridge_list_containers') {
+        const found = await zen.scopesAnywhere().catch(() => []);
+        if (found.length) return { content: [{ type: 'text' as const, text: JSON.stringify({ bound: false, note: `The "${target.name}" workspace is not bound yet: the human binds it to one of these with "Cobrowser: Bind Chrome Tab Group to This Workspace" or "Cobrowser: Bind Firefox Container to This Workspace".`, browsers: found }, null, 2) }] };
+      }
       if (!target.container) {
         return {
           content: [{ type: 'text' as const, text: `The "${target.name}" workspace is not bound to the human's own browser, so the bridge_* tools have nothing to drive. The human binds it with "Cobrowser: Bind Chrome Tab Group to This Workspace" or "Cobrowser: Bind Firefox Container to This Workspace" in that editor window. Until then, use the panel tools (new_page and the rest).` }],
@@ -364,6 +370,11 @@ const httpServer = http.createServer((req, res) => {
       return;
     }
 
+    // The tab groups and containers a bind command can offer (names only, no tab access).
+    if (req.method === 'GET' && url === '/scopes') {
+      json(res, 200, { browsers: await zen.scopesAnywhere().catch(() => []) });
+      return;
+    }
     if (req.method === 'GET' && url === '/health') {
       const body: HealthResponse = {
         version: VERSION,
