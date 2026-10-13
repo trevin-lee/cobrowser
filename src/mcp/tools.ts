@@ -200,13 +200,13 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'click',
     {
       description:
-        'Click an element by uid (from take_snapshot; valid while the element exists) OR a CSS selector. A real input click (the cursor moves there, presses, releases) that frameworks (React etc.) accept as genuine — unlike element.click() from evaluate_script, which fires untrusted events sites may ignore. Check the outcome with read_page, not a fresh full snapshot. If the click opens a page dialog (alert, confirm, prompt), you are told at once what it asks: answer it with handle_dialog, or leave it to the human, who sees it too. If it starts a download, the result says where the file is saved (downloads, with started, completed or failed). A file picker is shown to the human (to attach files yourself, use upload_file). REFUSES buttons that pay or place an order (it reports the button instead of clicking), since the human owns that click; pass allowPayment only if they asked you to complete that payment.',
-      inputSchema: { uid: z.string().optional(), selector: z.string().optional(), dblClick: z.boolean().optional(), allowPayment: z.boolean().optional(), pageId },
+        'Click an element by uid (from take_snapshot; valid while the element exists) OR a CSS selector. A real input click (the cursor moves there, presses, releases) that frameworks (React etc.) accept as genuine — unlike element.click() from evaluate_script, which fires untrusted events sites may ignore. Check the outcome with read_page, not a fresh full snapshot. If the click opens a page dialog (alert, confirm, prompt), you are told at once what it asks: answer it with handle_dialog, or leave it to the human, who sees it too. If it starts a download, the result says where the file is saved (downloads, with started, completed or failed). A file picker is shown to the human (to attach files yourself, use upload_file). Do not click a button that pays or places an order unless the human asked you to complete it.',
+      inputSchema: { uid: z.string().optional(), selector: z.string().optional(), dblClick: z.boolean().optional(), pageId },
     },
-    async ({ uid, selector, dblClick, allowPayment, pageId: id }) => {
+    async ({ uid, selector, dblClick, pageId: id }) => {
       const s = await getSession();
-      const r = await s.run(() => s.click({ uid, selector, dblClick, allowPayment, pageId: id }), id);
-      if (!('clicked' in r)) return asText(JSON.stringify(r, null, 2));
+      const r = await s.run(() => s.click({ uid, selector, dblClick, pageId: id }), id);
+      if (r.downloads) return asText(JSON.stringify(r, null, 2));
       return asText(
         r.noVisibleEffect
           ? `clicked ${JSON.stringify(r.clicked)}, but nothing on the page changed within half a second — it may have missed its target or the page may still be working. Check with read_page or take_snapshot before repeating it.`
@@ -427,7 +427,7 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'fill_card',
     {
       description:
-        "Fill one of the human's saved cards (list_credentials shows them: label, brand, last four digits) into the card fields of your current tab (or pageId), including fields inside a payment provider's frames. The human confirms every fill in the cobrowser app (Touch ID or their Mac password), so this waits for them. You never see the number: it is masked in everything returned to you, and card fields read as (filled) in snapshots. Pass `card` (its label or last four digits) when several are saved. Filling is not paying: do not click the pay or place-order button unless the human asked you to complete the purchase (click refuses it without allowPayment).",
+        "Fill one of the human's saved cards (list_credentials shows them: label, brand, last four digits) into the card fields of your current tab (or pageId), including fields inside a payment provider's frames. The human confirms every fill in the cobrowser app (Touch ID or their Mac password), so this waits for them. You never see the number: it is masked in everything returned to you, and card fields read as (filled) in snapshots. Pass `card` (its label or last four digits) when several are saved. Filling is not paying: do not click the pay or place-order button unless the human asked you to complete the purchase.",
       inputSchema: { card: z.string().optional(), pageId },
     },
     async (opts) => {

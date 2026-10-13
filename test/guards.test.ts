@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { COMMITTING as SHARED_COMMITTING, CREDENTIAL as SHARED_CREDENTIAL, SECRET_AUTOCOMPLETE as SHARED_SECRET_AUTOCOMPLETE } from '../src/browser/guards';
+import { CREDENTIAL as SHARED_CREDENTIAL, SECRET_AUTOCOMPLETE as SHARED_SECRET_AUTOCOMPLETE } from '../src/browser/guards';
 
 /**
- * One rule for both browsers the agent drives (src/browser/guards.ts): no clicking a button
- * that pays or places an order, no typing a password, one-time code or card number. The
+ * One rule for both browsers the agent drives (src/browser/guards.ts): no typing a password,
+ * one-time code or card number. The
  * browser extensions run in pages and carry copies of the patterns, read here out of their
  * source; the copies must equal the shared ones, so the two tool families cannot drift.
  */
@@ -26,11 +26,9 @@ function patternIn(source: string, name: string): RegExp {
 }
 
 const CREDENTIAL = SHARED_CREDENTIAL;
-const COMMITTING = SHARED_COMMITTING;
 
 test('both extensions carry exactly the shared patterns', () => {
   for (const { dir, src: source } of EXTENSIONS) {
-    assert.equal(patternIn(source, 'COMMITTING').source, SHARED_COMMITTING.source, `${dir}: COMMITTING`);
     assert.equal(patternIn(source, 'CREDENTIAL').source, SHARED_CREDENTIAL.source, `${dir}: CREDENTIAL`);
     const list = /^const SECRET_AUTOCOMPLETE = (\[.*\]);$/m.exec(source);
     assert.ok(list, `${dir}: SECRET_AUTOCOMPLETE not found`);
@@ -40,21 +38,10 @@ test('both extensions carry exactly the shared patterns', () => {
   }
 });
 
-test('sign-out and delete-account controls are not refused in either extension (never part of the rule)', () => {
+test('no click is held back in either extension: not sign-out, not a pay button', () => {
   for (const { dir, src: source } of EXTENSIONS) {
-    assert.ok(!/DESTRUCTIVE|found\.destructive/.test(source), `${dir} still carries the sign-out guard`);
+    assert.ok(!/DESTRUCTIVE|found\.destructive|COMMITTING|allowPayment/.test(source), `${dir} still carries a click guard`);
   }
-  for (const label of ['Sign out', 'Log out', 'Delete account', 'Cancel subscription']) {
-    assert.ok(!COMMITTING.test(label), `${label} is not a payment`);
-  }
-});
-
-test('money-moving buttons are held back for the human', () => {
-  for (const label of ['Pay now', 'Confirm payment', 'Place order', 'Send money', 'Transfer now']) {
-    assert.ok(COMMITTING.test(label), `${label} is the human's click`);
-  }
-  assert.ok(!COMMITTING.test('View payment history'), 'reading is not committing');
-  assert.ok(!COMMITTING.test('Payment methods'), 'browsing settings is not committing');
 });
 
 test('credential fields are refused by what they call themselves', () => {

@@ -1,5 +1,5 @@
-/* The rule (src/browser/guards.ts) in the panel's tools: no payment clicks, no typed secrets,
- * each with its override — and nothing else is held back. */
+/* The rule (src/browser/guards.ts) in the panel's tools: no typed secrets, with its override —
+ * and nothing else is held back: a pay button is clicked like any other. */
 import { suite, launch, serve, html, sleep } from './harness';
 
 const PAGE = `<!doctype html><title>checkout</title><body>
@@ -15,13 +15,8 @@ suite('guards', async (r) => {
     const clicks = async () => (await s.evaluateScript('() => window.__clicks')) as string[];
     const val = async (id: string) => (await s.evaluateScript(`() => document.getElementById(${JSON.stringify(id)}).value`)) as string;
 
-    const pay = await s.run(() => s.click({ selector: '#pay' }));
-    r.check('a payment button is refused and reported, not clicked', 'refused' in pay && pay.refused === 'payment' && pay.label === 'Pay now' && (await clicks()).length === 0, pay);
-    const paid = await s.run(() => s.click({ selector: '#pay', allowPayment: true }));
-    r.check('allowPayment clicks it', 'clicked' in paid && JSON.stringify(await clicks()) === '["pay"]', paid);
-    await s.run(() => s.click({ selector: '#next' }));
-    await s.run(() => s.click({ selector: '#out' }));
-    r.check('ordinary buttons, and sign-out, are clicked (sign-out was never part of the rule)', JSON.stringify(await clicks()) === '["pay","next","out"]', await clicks());
+    for (const id of ['pay', 'next', 'out']) await s.run(() => s.click({ selector: '#' + id }));
+    r.check('every button is clicked, a pay button and sign-out included: no click is held back', JSON.stringify(await clicks()) === '["pay","next","out"]', await clicks());
 
     const pw = await s.run(() => s.fill({ selector: '#pw', value: 'hunter2' }));
     r.check('fill refuses a password field and points to fill_credentials', pw.filled === 0 && pw.refused?.[0] === 'password' && /fill_credentials/.test(pw.needsUserAction ?? '') && (await val('pw')) === '', pw);

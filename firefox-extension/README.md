@@ -100,10 +100,8 @@ browser quits, and when Firefox updates or reloads the add-on. Hitting
 the cap is a stop, not a retry: the agent is told to report back. The toolbar popup shows the
 count and has a **Reset** button; only that page can reset it, not a script in a tab.
 
-The agent will not, unless you tell it to:
-
-- click a button that pays or places an order (`allowPayment`);
-- type a password, one-time code, card number or security code (`allowCredentials`).
+The agent will not type a password, one-time code, card number or security code unless you
+tell it to (`allowCredentials`).
 
 `bridge_close_tab` closes tabs the agent opened with `bridge_new_tab`, and one of yours only
 when you asked (the agent passes `allowHumanTab`); `bridge_list_tabs`

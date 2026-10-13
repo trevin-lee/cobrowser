@@ -11,14 +11,6 @@ function fakeHub(answer: (params: Record<string, unknown>, n: number) => unknown
 }
 const text = (r: { content: { type: string; text?: string }[] }) => JSON.parse(r.content[0].text!);
 
-test('allowPayment reaches the add-on only when given', async () => {
-  const { hub, calls } = fakeHub(() => ({ clicked: true }));
-  await callZenTool(hub, '/ws', 'bridge_click', { tabId: 1, uid: 'cb1', allowPayment: true });
-  await callZenTool(hub, '/ws', 'bridge_click', { tabId: 1, uid: 'cb1' });
-  assert.equal(calls[0].allowPayment, true);
-  assert.equal(calls[1].allowPayment, false);
-});
-
 test('a click that changed nothing comes back pointing at the panel, where input is real', async () => {
   const { hub } = fakeHub(() => ({ clicked: 'cb3', noVisibleEffect: true }));
   const r = text(await callZenTool(hub, '/ws', 'bridge_click', { tabId: 1, ref: 'cb3' }));

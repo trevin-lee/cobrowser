@@ -113,10 +113,10 @@ export const ZEN_TOOLS: Tool[] = [
   {
     name: 'bridge_click',
     description:
-      "Click an element by `uid` (from bridge_snapshot), CSS `selector`, or visible `text` — text is usually what you want, e.g. {text: 'Load more orders', exact: true}. Sees into open shadow roots. REFUSES buttons that pay or place an order, returning `needsUserAction` so you can hand that click to the human; pass allowPayment only if they asked you to complete the payment. Input here is synthetic (isTrusted: false) — no browser extension can send real clicks — and some sites ignore it: Google's and Cloudflare's consoles, among others. The result says noVisibleEffect when nothing on the page changed. When that happens, do the task in the cobrowser panel instead (new_page, then click/fill there), where input is real; the human signs in there once (fill_credentials for the password, the human for 2FA).",
+      "Click an element by `uid` (from bridge_snapshot), CSS `selector`, or visible `text` — text is usually what you want, e.g. {text: 'Load more orders', exact: true}. Sees into open shadow roots. Do not click a button that pays or places an order unless the human asked you to complete it. Input here is synthetic (isTrusted: false) — no browser extension can send real clicks — and some sites ignore it: Google's and Cloudflare's consoles, among others. The result says noVisibleEffect when nothing on the page changed. When that happens, do the task in the cobrowser panel instead (new_page, then click/fill there), where input is real; the human signs in there once (fill_credentials for the password, the human for 2FA).",
     inputSchema: {
       type: 'object',
-      properties: { tabId, uid: str, selector: str, text: str, exact: bool, allowPayment: bool },
+      properties: { tabId, uid: str, selector: str, text: str, exact: bool },
       required: ['tabId'],
     },
   },
@@ -245,8 +245,8 @@ async function runZenTool(
       return asJson(withUids(await hub.call(workspace, 'snapshot', { tabId, options })));
     }
     case 'bridge_click': {
-      const { tabId: _t, allowPayment, uid: _u, ...others } = args;
-      const result = await hub.call<{ refused?: string; label?: string; noVisibleEffect?: boolean; hint?: string }>(workspace, 'click', { tabId, ...others, ref: args.uid, allowPayment: allowPayment === true });
+      const { tabId: _t, uid: _u, ...others } = args;
+      const result = await hub.call<{ noVisibleEffect?: boolean; hint?: string }>(workspace, 'click', { tabId, ...others, ref: args.uid });
       if (result && result.noVisibleEffect) {
         result.hint = 'Nothing on the page changed after this click. The site may ignore synthetic input, which is all these tools can send. Do this step in the cobrowser panel (new_page, then click there), where input is real, or hand it to the human.';
       }

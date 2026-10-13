@@ -79,8 +79,6 @@ function noteRefusal(status, bodyText) {
 const CREDENTIAL = /\b(password|passcode|pin|otp|one[-\s]?time|2fa|mfa|security\s+code|verification\s+code|cvv|cvc|card\s+number|ssn|social\s+security)\b/i;
 /** Autocomplete tokens that mark a field as a secret whatever it is called (src/browser/guards.ts). */
 const SECRET_AUTOCOMPLETE = ['current-password', 'new-password', 'one-time-code', 'cc-number', 'cc-csc', 'cc-exp'];
-/** Buttons that move money or place an order. */
-const COMMITTING = /\b(pay\s+now|confirm\s+(payment|order|purchase)|place\s+order|submit\s+payment|send\s+money|transfer\s+now|buy\s+now)\b/i;
 
 /** How long an activity marker stays visible after an agent action. */
 const ACTIVITY_MS = 2500;
@@ -409,14 +407,6 @@ async function dispatch(conn, method, params) {
           `"${params.text}" matches ${found.count} elements: ${found.samples.join(' | ')}. ` +
             'Pass exact:true, a more specific text, or use a uid from bridge_snapshot.',
         );
-      }
-      if (found && found.committing && params.allowPayment !== true) {
-        return {
-          refused: 'payment',
-          label: found.label,
-          needsUserAction: `the human should click "${found.label}" themselves; re-issue with allowPayment: true only if they asked you to complete this payment`,
-          why: 'This submits a payment or places an order. The human owns that click.',
-        };
       }
       await runInTab(params.tabId, PAGE_SCRIPTS.effectStart, []).catch(() => null);
       const clicked = await runInTab(params.tabId, PAGE_SCRIPTS.click, [found ? found.ref : (params.ref ?? null), params.selector ?? null]);
@@ -940,13 +930,11 @@ const PAGE_SCRIPTS = {
   },
 
   /**
-   * Find one element by ref, selector, or visible text — and report what it looks like it
-   * does, so the caller can refuse before activating it. Text matching is what the agent
+   * Find one element by ref, selector, or visible text. Text matching is what the agent
    * actually wants ("Load more orders"); CSS-only forced broad fallbacks that hit the wrong
    * element.
    */
   locate: (ref, selector, text, exact) => {
-    const COMMITTING = /\b(pay\s+now|confirm\s+(payment|order|purchase)|place\s+order|submit\s+payment|send\s+money|transfer\s+now|buy\s+now)\b/i;
     const labelOf = (el) =>
       ((el.getAttribute && el.getAttribute('aria-label')) ||
         (el.innerText || '') ||
@@ -994,7 +982,6 @@ const PAGE_SCRIPTS = {
       label,
       tag: el.tagName.toLowerCase(),
       href: el.tagName === 'A' ? el.href : undefined,
-      committing: COMMITTING.test(label),
     };
   },
 
