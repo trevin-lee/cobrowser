@@ -310,3 +310,12 @@ test("Bitwarden's several websites in one cell become the login's websites, and 
   const c = store.findEntry(v, 'c.example', 'you')!;
   assert.deepEqual(store.publicEntry(c).also, []);
 });
+
+test("a cobrowser export names every login's workspaces, so it needs none chosen; another manager's file does", () => {
+  const v = empty();
+  store.upsertLogin(v, 'a.example', 'me', 'pw', ['/w']);
+  store.upsertLogin(v, 'b.example', 'me', 'pw', 'all');
+  const count = (store as unknown as { rowsNamingNoWorkspace: (t: string) => number }).rowsNamingNoWorkspace;
+  assert.equal(count(store.exportCsv(v)), 0);
+  assert.equal(count('url,username,password\nhttps://c.example,u,p\nhttps://d.example,u,p\n'), 2);
+});

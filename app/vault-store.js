@@ -283,6 +283,14 @@ function importCsv(vault, text, scope) {
   return result;
 }
 
+/** How many of a CSV's logins name no workspace (they are not from a cobrowser export), and so
+ *  take the ones chosen for the import. */
+function rowsNamingNoWorkspace(text) {
+  const probe = { entries: [] };
+  importCsv(probe, text, ['\u0000']);
+  return probe.entries.filter((e) => Array.isArray(e.scope) && e.scope.includes('\u0000')).length;
+}
+
 /** The websites in one URL cell: one, or several separated by commas or new lines. */
 function urlsOf(cell) {
   const parts = String(cell || '').split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
@@ -455,5 +463,5 @@ module.exports = {
   cardBrand, publicCard, addCard, findCard, updateCard, removeCard, exportCards, importCards,
   normalizeScope, allowed, mergeScope, applyScopeChange, publicEntry, findEntry, upsertLogin, updateLogin, setScope, removeLogin,
   normalizeSites, sitesOf, loginMatches, matchRank, closestPerUsername,
-  parseCsv, importCsv, exportCsv, splitNote,
+  parseCsv, importCsv, exportCsv, splitNote, rowsNamingNoWorkspace,
 };

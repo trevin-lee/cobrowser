@@ -335,7 +335,7 @@ async function startOverVault() {
     const { response } = await dialog.showMessageBox(vaultWin && !vaultWin.isDestroyed() ? vaultWin : undefined, {
       type: 'warning',
       message: 'Start a new, empty vault?',
-      detail: `The vault cannot be read with this Mac's keychain key, so its logins and cards are out of reach. The file is kept as ${path.basename(backup)} in ${DATA_DIR}, never deleted, and a new, empty vault takes its place. Import your last CSV export to fill it again.`,
+      detail: `The vault cannot be read with this Mac's keychain key, so its logins and cards are out of reach. The file is kept as ${path.basename(backup)} in ${DATA_DIR}, never deleted, and a new, empty vault takes its place. Import your last exports to fill it again: the logins file in Logins, the cards file in Cards.`,
       buttons: ['Start a new vault', 'Cancel'], defaultId: 1, cancelId: 1,
     });
     ok = response === 0;
@@ -738,7 +738,16 @@ async function fillCard(tab, { card: which, by, workspaceName, fillToken }) {
   const wasLocked = !vault;
   const named = which ? `your card "${which}"` : 'a saved card';
   const v = await unlockVault(by === 'agent' ? `let the agent in "${workspaceName}" fill ${named} on ${host}` : `fill ${named} on ${host}`);
-  const card = store.findCard(v, which);
+  let card = store.findCard(v, which);
+  // Several cards and none named: the person who just confirmed picks one, rather than the
+  // confirmation going to waste on an error.
+  if (!card && !which && (v.cards || []).length > 1 && !SKIP_BIOMETRICS) {
+    const labels = v.cards.map((c) => { const p = store.publicCard(c); return `${p.label} (•••• ${p.last4})`; });
+    focusApp();
+    const { response } = await dialog.showMessageBox({ type: 'question', message: `Which card should be filled on ${host}?`, buttons: [...labels, 'Cancel'], cancelId: labels.length, defaultId: labels.length });
+    if (response === labels.length) return { filled: [], error: 'the human cancelled the card choice' };
+    card = v.cards[response];
+  }
   if (!card) {
     const have = (v.cards || []).map((c) => store.publicCard(c).label);
     return { filled: [], error: have.length ? (which ? `no saved card "${which}"` : 'several cards are saved: name one') : 'no card is saved in the vault', cards: have };
@@ -1013,10 +1022,11 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
   }
 
   let shown = []; // the logins the filter lets through, in the order listed
+  let shownCards = []; // and the cards
   function renderList() {
     const q = $('q').value.trim().toLowerCase();
     const list = $('list'); list.innerHTML = '';
-    shown = rows.filter((r) => !q || (r.host + ' ' + r.username + ' ' + scopeText(r.scope)).toLowerCase().includes(q));
+    shown = rows.filter((r) => !q || [r.host, ...(r.also || []), r.username, scopeText(r.scope), r.notes || ''].join(' ').toLowerCase().includes(q));
     if (!unlocked) { list.append(el('div', 'empty', 'Locked.')); return; }
     if (!rows.length) { list.append(el('div', 'empty', 'No logins yet. Add one, or import a CSV export from Passwords, Bitwarden or Chrome.')); return; }
     if (!shown.length) { list.append(el('div', 'empty', 'Nothing matches “' + q + '”.')); return; }
@@ -1084,7 +1094,7 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
       if (/cannot be read with this Mac/.test(lastError) && !unlocking) {
         const fresh = el('button', 'quiet danger', 'Start a new vault');
         fresh.onclick = async () => {
-          try { const r = await vault.startOver(); if (r && r.ok) { lastError = ''; say('A new, empty vault: the old file is kept as ' + base(r.backup) + '. Import your last export to fill it.'); render(); } else if (r && r.error) say(r.error); } catch (e) { say(failed(e)); }
+          try { const r = await vault.startOver(); if (r && r.ok) { lastError = ''; say('A new, empty vault: the old file is kept as ' + base(r.backup) + '. Import your last exports to fill it: the logins file here in Logins, the cards file in Cards.'); render(); } else if (r && r.error) say(r.error); } catch (e) { say(failed(e)); }
         };
         lc.append(el('p', 'hint', 'The old file is kept, renamed with the date, and a new, empty vault takes its place.'), fresh);
       }
@@ -1093,7 +1103,7 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
     if (mode === 'add' || mode === 'import' || mode === 'edit') {
       const importing = mode === 'import', editing = mode === 'edit';
       const t = el('div', 'title'); const id = el('div', 'id'); id.append(el('h2', null, importing ? 'Import logins' : editing ? 'Edit login' : 'New login')); t.append(id); wrap.append(t);
-      if (importing) wrap.append(el('p', 'hint', 'Logins exported from cobrowser keep the workspaces the file notes for them; the others get the ones you choose here. A login already in the vault gets the password (and the notes, if the file has some) from the file, keeps its workspaces and gains the new ones. You can change each one afterwards.'));
+      if (importing) wrap.append(el('p', 'hint', 'Logins exported from cobrowser keep the workspaces the file notes for them, so a cobrowser export needs nothing chosen here; logins from another manager get the ones you choose. A login already in the vault gets the password (and the notes, if the file has some) from the file, keeps its workspaces and gains the new ones. You can change each one afterwards.'));
       else {
         const go = () => { if (canSave()) (editing ? saveEdit : save)(); };
         const f = el('div', 'fields');
@@ -1164,7 +1174,8 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
   const sync = () => {
     const b = $('save'); if (!b) return;
     const scoped = draft.scope === 'all' || draft.scope.length > 0;
-    b.disabled = mode === 'add' || mode === 'edit' ? !canSave() : !scoped;
+    // Importing needs workspaces only for rows that name none: the app says so if it does.
+    b.disabled = mode === 'add' || mode === 'edit' ? !canSave() : false;
     // Adding a login that already exists replaces it: say so before, not after, and start from
     // its workspaces, so saving changes only what is changed here.
     const existing = mode === 'add' ? existingFor() : undefined;
@@ -1177,7 +1188,7 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
     }
     if (mode === 'add') b.textContent = replacing ? 'Replace login' : 'Save login';
     // Say why Save is off, once the rest is filled in — the missing piece is otherwise invisible.
-    const st = $('status'); if (st && (mode !== 'add' || cleanSites().length)) st.textContent = !scoped ? 'Choose a workspace, or Everywhere.' : replacing ? 'This site and username are already saved: saving ' + (draft.pass ? 'replaces the password' : 'keeps its password') + ', and the workspaces shown are the ones it has now.' : '';
+    const st = $('status'); if (st && (mode !== 'add' || cleanSites().length)) st.textContent = !scoped ? (mode === 'import' ? "For a cobrowser export, nothing to choose. For another manager's file, choose its workspaces, or Everywhere." : 'Choose a workspace, or Everywhere.') : replacing ? 'This site and username are already saved: saving ' + (draft.pass ? 'replaces the password' : 'keeps its password') + ', and the workspaces shown are the ones it has now.' : '';
   };
   async function save() {
     try {
@@ -1210,13 +1221,15 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
     $('k-logins').classList.toggle('on', !cardsOn); $('k-cards').classList.toggle('on', cardsOn);
     $('sub').textContent = cardsOn ? 'filled into checkout pages, always with your confirmation' : 'what the agent may sign in with, and where';
     $('new').textContent = cardsOn ? 'Add card' : 'Add login';
-    $('q').parentElement.hidden = cardsOn;
   }
   function renderCards() {
     const list = $('list'); list.innerHTML = '';
     if (!unlocked) list.append(el('div', 'empty', 'Locked.'));
     else if (!cards.length) list.append(el('div', 'empty', 'No cards yet. Add one, and it can be filled into a checkout page: by you, or by the agent, each time after you confirm.'));
-    else for (const c of cards) {
+    const q = $('q').value.trim().toLowerCase();
+    shownCards = unlocked ? cards.filter((c) => !q || [c.label, c.brand, c.last4, c.name || '', c.notes || ''].join(' ').toLowerCase().includes(q)) : [];
+    if (unlocked && cards.length && !shownCards.length) list.append(el('div', 'empty', 'No card matches.'));
+    for (const c of shownCards) {
       const it = el('div', 'item' + (selCard && selCard.id === c.id ? ' sel' : ''));
       const id = el('div', 'id'); id.append(el('b', null, c.label), el('span', 'mono', cardLine(c)));
       it.append(id); it.onclick = () => { selCard = c; cardMode = 'view'; render(); };
@@ -1229,8 +1242,8 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
       const editing = cardMode === 'edit';
       const t = el('div', 'title'); const id = el('div', 'id'); id.append(el('h2', null, editing ? 'Edit card' : 'New card')); t.append(id); wrap.append(t);
       const f = el('div', 'fields');
-      for (const [key, label, ph, type] of [['label', 'Label', 'optional, e.g. Personal Visa', 'text'], ['name', 'Name on card', '', 'text'], ['number', 'Card number', editing ? 'unchanged' : '', 'text'], ['exp', 'Expiry', 'MM/YY', 'text'], ['cvc', 'Security code', editing ? 'unchanged' : '3 or 4 digits', 'password']]) {
-        const row = el('div', 'field'); const inp = el('input', key === 'name' || key === 'label' ? '' : 'mono'); inp.type = type; inp.placeholder = ph; inp.value = cdraft[key]; inp.autocomplete = 'off'; inp.spellcheck = false;
+      for (const [key, label, ph, type] of [['label', 'Label', 'optional, e.g. Personal Visa', 'text'], ['name', 'Name on card', '', 'text'], ['number', 'Card number', editing ? 'unchanged' : '', 'text'], ['exp', 'Expiry', 'MM/YY', 'text'], ['cvc', 'Security code', !editing ? '3 or 4 digits' : cdraft.forgetCode ? 'removed: typed at checkout' : cdraft.hadCode ? 'unchanged' : 'none: typed at checkout', 'password']]) {
+        const row = el('div', 'field'); const inp = el('input', key === 'name' || key === 'label' ? '' : 'mono'); inp.type = type; inp.placeholder = ph; inp.value = cdraft[key]; inp.autocomplete = 'off'; inp.spellcheck = false; inp.disabled = key === 'cvc' && cdraft.forgetCode;
         inp.oninput = () => { cdraft[key] = inp.value; }; inp.onkeydown = (e) => { if (e.key === 'Enter') saveCard(); };
         row.append(el('label', null, label), inp); f.append(row);
       }
@@ -1238,7 +1251,7 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
       // A saved code can be taken off again: from then on it is typed at checkout.
       if (editing && cdraft.hadCode) {
         const forget = el('button', 'quiet', cdraft.forgetCode ? 'The saved code will be removed · Keep it' : 'Remove the saved security code');
-        forget.onclick = () => { cdraft.forgetCode = !cdraft.forgetCode; render(); };
+        forget.onclick = () => { cdraft.forgetCode = !cdraft.forgetCode; if (cdraft.forgetCode) cdraft.cvc = ''; render(); };
         const line = el('div', 'actions'); line.append(forget); wrap.append(line);
       }
       const notes = notesEditor(() => cdraft.notes, (v) => { cdraft.notes = v; });
@@ -1268,7 +1281,7 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
   async function saveCard() {
     const fields = { label: cdraft.label, name: cdraft.name, exp: cdraft.exp, notes: cdraft.notes };
     if (cdraft.number.trim()) fields.number = cdraft.number;
-    if (cdraft.cvc.trim()) fields.cvc = cdraft.cvc; else if (cdraft.forgetCode) fields.cvc = null;
+    if (cdraft.forgetCode) fields.cvc = null; else if (cdraft.cvc.trim()) fields.cvc = cdraft.cvc;
     try {
       const saved = cardMode === 'edit' ? await vault.updateCard(cdraft.id, fields) : await vault.addCard(fields);
       resetCard(); cardMode = 'view'; cards = await vault.cards(); selCard = cards.find((c) => c.id === saved.id) || null; render();
@@ -1287,7 +1300,7 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
     render();
   }
   const ensureUnlocked = async () => { if (!unlocked) await refresh(); return unlocked; };
-  $('q').oninput = renderList;
+  $('q').oninput = () => { if (kind === 'cards') renderCards(); else renderList(); };
   $('new').onclick = async () => {
     if (!(await ensureUnlocked())) return;
     if (kind === 'cards') { resetCard(); cardMode = 'add'; selCard = null; } else { mode = 'add'; sel = null; }
@@ -1327,7 +1340,7 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
   // ↑/↓ move the selection through the list as shown: the filtered logins, or the cards.
   $('list').addEventListener('keydown', (e) => {
     if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
-    const items = kind === 'cards' ? cards : shown; if (!items.length) return;
+    const items = kind === 'cards' ? shownCards : shown; if (!items.length) return;
     e.preventDefault();
     const at = kind === 'cards' ? items.findIndex((c) => selCard && c.id === selCard.id) : items.indexOf(sel);
     const next = items[Math.max(0, Math.min(items.length - 1, at + (e.key === 'ArrowDown' ? 1 : -1)))];
@@ -1464,6 +1477,8 @@ ipcMain.handle('vault:importCsv', async (_e, { scope } = {}) => {
   if (r.canceled || !r.filePaths[0]) return null;
   const text = fs.readFileSync(r.filePaths[0], 'utf8');
   store.importCsv({ entries: [] }, text, scope); // a file that cannot be read is said before Touch ID
+  const unscoped = (scope === 'all' || (Array.isArray(scope) && scope.length)) ? 0 : store.rowsNamingNoWorkspace(text);
+  if (unscoped) throw new Error(`${unscoped} login${unscoped === 1 ? '' : 's'} in the file name${unscoped === 1 ? 's' : ''} no workspace (not from a cobrowser export): choose where ${unscoped === 1 ? 'it' : 'they'} may be used, then Choose CSV… again`);
   await confirmFresh('import logins from a CSV file');
   const res = importCsv(text, scope); saveVault();
   await offerToTrashCsv(r.filePaths[0], `Imported ${res.count} login${res.count === 1 ? '' : 's'} (${res.added} new, ${res.replaced} updated)${res.skipped ? `; ${res.skipped} row${res.skipped === 1 ? '' : 's'} skipped, with no website` : ''}.`, res.skipped ? 'Some rows were not imported: keep the file to check them. It holds the passwords in plain text.' : 'The CSV holds the passwords in plain text. Move it to the Trash?');
@@ -2455,6 +2470,11 @@ async function clearBrowsingData(ses) {
 async function forgetWorkspace(id) {
   const w = workspaces.get(id);
   if (w && w.sockets.size) throw new Error(`${path.basename(id)} is open in an editor window; use Clear Browsing Data there instead`);
+  // Logins allowed there no longer will be: a change to the vault, confirmed like any other.
+  if (fs.existsSync(VAULT_FILE)) {
+    try { await confirmFresh(`stop the logins allowed in "${path.basename(id)}" from being used there, and forget its browser`); }
+    catch (e) { if (e.message !== UNREADABLE) throw e; }
+  }
   if (w) {
     w.closeAll();
     await clearBrowsingData(session.fromPartition(w.partition));
