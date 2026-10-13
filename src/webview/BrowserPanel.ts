@@ -392,13 +392,12 @@ export class BrowserPanel {
   }
 
   /** A site's zoom, per workspace: each workspace is its own browser, as with its cookies and
-   *  site permissions. Zoom set before it was per workspace (the shared map) still applies
-   *  until the site is zoomed here. */
+   *  site permissions (zoom from before, src/migrations.ts: zoom-per-workspace). */
   private zoomMap(): Record<string, number> {
     return this.context.workspaceState.get<Record<string, number>>('cobrowser.zoom') ?? {};
   }
   private getZoom(): number {
-    return this.zoomMap()[this.origin] ?? this.context.globalState.get<Record<string, number>>('cobrowser.zoom')?.[this.origin] ?? 1;
+    return this.zoomMap()[this.origin] ?? 1;
   }
   private async setZoom(z: number): Promise<void> {
     const map = this.zoomMap();

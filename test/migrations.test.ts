@@ -118,3 +118,17 @@ test('Firefox endpoints from before the daemon are dropped, current ones kept', 
   assert.deepEqual(data.workspaces, { '/a': now });
   assert.deepEqual(data.endpoints, [now]);
 });
+
+test('zoom from the shared map stays with workspaces that were in use, and a new one starts at 100%', async () => {
+  const used = env();
+  used.machine.data['cobrowser.zoom'] = { 'https://a.example': 1.25, 'https://b.example': 0.9 };
+  used.workspace.data['cobrowser.lastPageId'] = 7;
+  used.workspace.data['cobrowser.zoom'] = { 'https://b.example': 1.1 };
+  await runMigrations(used, one('zoom-per-workspace'));
+  assert.deepEqual(used.workspace.data['cobrowser.zoom'], { 'https://a.example': 1.25, 'https://b.example': 1.1 });
+
+  const fresh = env();
+  fresh.machine.data['cobrowser.zoom'] = { 'https://a.example': 1.25 };
+  await runMigrations(fresh, one('zoom-per-workspace'));
+  assert.equal(fresh.workspace.data['cobrowser.zoom'], undefined);
+});

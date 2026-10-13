@@ -48,8 +48,22 @@ const DONE_KEY = 'cobrowser.migrationsDone';
 const TABS_KEY = 'cobrowser.openTabs';
 const BINDING_KEY = 'cobrowser.firefoxContainerBinding';
 const BRIDGE_BROWSER_KEY = 'cobrowser.bridgeBrowser';
+const ZOOM_KEY = 'cobrowser.zoom';
 
 export const MIGRATIONS: Migration[] = [
+  {
+    // Zoom was one map for the whole machine before each workspace had its own. A workspace
+    // that was in use then (it has handed out page ids) keeps what it saw: the old map is
+    // copied under its own, below anything zoomed in it since. A new one starts at 100%.
+    id: 'zoom-per-workspace',
+    added: '2026-10-13',
+    scope: 'workspace',
+    run: async ({ machine, workspace }) => {
+      const old = machine.get<Record<string, number>>(ZOOM_KEY);
+      if (!old || !Object.keys(old).length || !workspace.get<number>('cobrowser.lastPageId')) return;
+      await workspace.update(ZOOM_KEY, { ...old, ...(workspace.get<Record<string, number>>(ZOOM_KEY) ?? {}) });
+    },
+  },
   {
     // Saved tabs were bare URLs; now { url, col, by }.
     id: 'saved-tabs-as-objects',
