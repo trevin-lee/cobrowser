@@ -68,7 +68,7 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'new_page',
     {
       description:
-        "Open a new tab, optionally at a URL. It becomes your current tab and returns its pageId. It is shown in the human's editor unless background: true — use background when you are working on your own so you do not pull their view away. Every tab you open is a tab in the human's editor, and leaving them behind is the top complaint — so: prefer navigate_page on your current tab when you are simply following a link; reuse a tab you opened earlier instead of opening another (list_pages shows which are yours via openedBy); keep at most one tab per task; and close_page your tabs the moment their work is done. Working alongside other agents (subagents, parallel tasks)? Pass owner, a short name for your task (\"research-2\"), and then pass this tab's pageId to every tool: once any tab has an owner, a call without pageId is refused rather than risk acting in another agent's tab, and close_page only closes your owner's tabs.",
+        "Open a new tab, optionally at a URL. It becomes your current tab and returns its pageId. It is shown in the human's editor unless background: true — use background when you are working on your own so you do not pull their view away. Every tab you open is a tab in the human's editor, and leaving them behind is the top complaint — so: prefer navigate_page on your current tab when you are simply following a link; reuse a tab you opened earlier instead of opening another (list_pages shows which are yours via openedBy); keep at most one tab per task; and close_page your tabs the moment their work is done. Working alongside other agents (subagents, parallel tasks)? Pass owner, a short name for your task (\"research-2\"), and then pass this tab's pageId to every tool: once any tab has an owner, a call without pageId is refused rather than risk acting in another agent's tab, and close_page refuses a tab another owner opened.",
       inputSchema: { url: z.string().optional(), background: z.boolean().optional(), owner: z.string().optional() },
     },
     async ({ url, background, owner }) => {
@@ -102,7 +102,7 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
       const s = await getSession();
       const pages = await s.listPages();
       const page = pages.find((p) => p.pageId === id);
-      if (!page) throw new Error(`No open page with id ${id} — list_pages shows the open tabs.`);
+      if (!page) throw new Error(`No open tab with pageId ${id} — list_pages shows the open tabs.`);
       // Another agent's task tab is that agent's to close: pass the owner you opened it with.
       if (page.owner && page.owner !== owner) {
         return asText(JSON.stringify({ refused: 'other-agent-tab', owner: page.owner, why: `This tab belongs to "${page.owner}", another agent's task. Close only your own: pass the owner you gave new_page.` }, null, 2));
@@ -116,7 +116,7 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
       }
       s.agentOn(id); // closePage is the human's too (the panel's ×); this one is the agent's
       await s.run(() => s.closePage(id), id);
-      return asText(`closed page ${id}`);
+      return asText(`closed tab ${id}`);
     },
   );
 
@@ -149,7 +149,7 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
         textContains: z.string().optional(),
         role: z.string().optional(),
         labeledOnly: z.boolean().optional(),
-        limit: z.number().optional(),
+        limit: z.number().optional().describe('The most elements to list (200 when not given); the snapshot says when it stopped short.'),
         pageId,
       },
     },

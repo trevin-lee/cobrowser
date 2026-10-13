@@ -42,7 +42,8 @@ const agentTabs = new Set();
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/** Called before anything that reaches a site. Throws rather than silently proceeding. */
+/** Called before each call on a page or a site (a read of the open page and a blank new tab
+ *  too). Throws rather than silently proceeding. */
 async function pace() {
   if (requestCount >= SESSION_REQUEST_CAP) {
     throw new Error(

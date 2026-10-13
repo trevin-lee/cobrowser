@@ -33,7 +33,7 @@ suite('tabs', async (r) => {
     pages = await s.listPages();
     r.check('pageId reads and clicks another tab and leaves the agent where it was', rb.text.includes('page B') && (await s.evaluateScript('() => window.__clicks', [], B)) === 1 && pages.find((p) => p.pageId === A)!.selected, { rb: rb.text });
     let err = ''; try { await s.run(() => s.readPage({ pageId: '999' })); } catch (e) { err = String((e as Error).message); }
-    r.check('an unknown pageId is a clear error', /No open page with id 999/.test(err), err);
+    r.check('an unknown pageId is a clear error', /No open tab with pageId 999/.test(err), err);
 
     const t0 = Date.now(); let slowDone = 0, fastDone = 0;
     // Blocking, not speed: the click (a pointer path and a short wait for the page's response)

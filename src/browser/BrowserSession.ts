@@ -349,7 +349,7 @@ export class BrowserSession {
       const tabs = [...this.pages.values()].filter((p) => !p.isClosed() && this.owners.has(p)).map((p) => `${p.id} (${this.owners.get(p)})`);
       throw new Error(`Agents are working in parallel in this browser (${owners.join(', ')}), so pass pageId: the tab you opened for your task, or the tab you are working in. Their tabs: ${tabs.join(', ')}. Close tabs whose task is done (close_page) to work without pageId again.`);
     }
-    if (!this.agentActive || this.agentActive.isClosed()) throw new Error('no open page — call new_page first');
+    if (!this.agentActive || this.agentActive.isClosed()) throw new Error('no open tab — call new_page first');
     return this.agentActive;
   }
 
@@ -368,7 +368,7 @@ export class BrowserSession {
   private pageFor(pageId?: string): AppPage {
     if (pageId === undefined || pageId === '') return this.current();
     const p = this.pageById(pageId);
-    if (!p) throw new Error(`No open page with id ${pageId} — list_pages shows the open tabs.`);
+    if (!p) throw new Error(`No open tab with pageId ${pageId} — list_pages shows the open tabs.`);
     return p;
   }
 

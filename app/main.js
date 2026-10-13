@@ -477,7 +477,7 @@ Allowing lets that workspace's agent fill this login into the page; it never see
 
 The agent never sees the password. Workspace: ${workspaceId}${matches.length > names.length ? `
 
-${matches.length - names.length} more login${matches.length - names.length === 1 ? '' : 's'} for this site ${matches.length - names.length === 1 ? 'is' : 'are'} not shown here: to give one to this workspace, tick the workspace in the vault window.` : ''}`,
+${matches.length - names.length} more login${matches.length - names.length === 1 ? '' : 's'} for this site ${matches.length - names.length === 1 ? 'is' : 'are'} not shown here: to give one to this workspace, click the workspace in the vault window.` : ''}`,
       buttons: [...names, 'Deny'], defaultId: names.length, cancelId: names.length,
       checkboxLabel: 'Allow in this workspace from now on (otherwise, just this once)',
       checkboxChecked: false,
@@ -1028,7 +1028,7 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
     const list = $('list'); list.innerHTML = '';
     shown = rows.filter((r) => !q || [r.host, ...(r.also || []), r.username, scopeText(r.scope), r.notes || ''].join(' ').toLowerCase().includes(q));
     if (!unlocked) { list.append(el('div', 'empty', 'Locked.')); return; }
-    if (!rows.length) { list.append(el('div', 'empty', 'No logins yet. Add one, or import a CSV export from Passwords, Bitwarden or Chrome.')); return; }
+    if (!rows.length) { list.append(el('div', 'empty', 'No logins yet. Add one, or import a CSV export from Apple Passwords, Bitwarden or Chrome.')); return; }
     if (!shown.length) { list.append(el('div', 'empty', 'Nothing matches “' + q + '”.')); return; }
     for (const r of shown) {
       const it = el('div', 'item' + (sel === r ? ' sel' : ''));

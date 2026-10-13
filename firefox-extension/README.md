@@ -32,7 +32,7 @@ for every tag (see *Signing* below).
 
 `.github/workflows/release.yml` signs the add-on when a release is tagged, using two repository
 secrets from <https://addons.mozilla.org/developers/addon/api/key/>, created by the account that
-owns the add-on: `AMO_JWT_ISSUER` and `AMO_JWT_SECRET`. Without them the release fails, since a
+owns the add-on: `AMO_JWT_ISSUER` and `AMO_JWT_SECRET`. Without them the release stops as a draft, since a
 release with no `firefox-updates.json` leaves installed add-ons with nothing to update from; add
 them and run the workflow by hand with the tag. To release anyway (Mozilla's signing is down), run
 it by hand with `allow_unsigned_firefox`: the previous release's `firefox-updates.json` is carried
@@ -93,8 +93,8 @@ behind a login. Cross-origin is refused.
 
 ## Pace, and what it will not do
 
-Everything that reaches a site waits 1 to 3 seconds, stops at 100 requests in a browser
-session, and pauses for a minute when a site answers `bridge_fetch` with 429 or 403 or a challenge. The
+Every bridge call on a page or a site (reading the open page and a blank new tab included)
+waits 1 to 3 seconds, counts toward 100 in a browser session, stops there, and pauses for a minute when a site answers `bridge_fetch` with 429 or 403 or a challenge. The
 count, the pause and which tabs the agent opened are kept in memory: they start over when the
 browser quits, and when Firefox updates or reloads the add-on. Hitting
 the cap is a stop, not a retry: the agent is told to report back. The toolbar popup shows the
