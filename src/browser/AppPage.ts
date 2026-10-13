@@ -84,9 +84,16 @@ export class AppPage {
     return this.app.cdp<T>(this.tabId, method, params, timeoutMs);
   }
 
+  /** Who acted on this tab last: what happens in it next is theirs (get_activity). */
+  lastActor: 'agent' | 'human' | undefined;
+  actedBy(who: 'agent' | 'human'): void {
+    this.lastActor = who;
+  }
+
   /** The human's own input from the panel. Marked so the app can give a native <select>
    *  its menu (an offscreen page cannot show one); agent input is never intercepted. */
   humanInput<T = Record<string, unknown>>(method: string, params?: unknown): Promise<T> {
+    this.actedBy('human');
     return this.app.cdp<T>(this.tabId, method, params, 30000, { human: true });
   }
 

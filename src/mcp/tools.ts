@@ -55,7 +55,7 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
     'get_activity',
     {
       description:
-        'Recent browser activity — page navigations and tab open/close/activate — each tagged source "agent" or "human". Call it to catch up on anything the human did MANUALLY since your last action, so you act on the current state instead of a stale view. Pass `since` (a seq from a prior call) to get only newer events.',
+        'Recent browser activity — page navigations and tab open/close/activate — each tagged source "human" when the human did it in the panel, and "agent" otherwise (what a tab does follows whoever acted on it last). Call it to catch up on anything the human did MANUALLY since your last action, so you act on the current state instead of a stale view. Pass `since` (the `latest` from a prior call) to get only newer events; seq numbers are never reused, across restarts too.',
       inputSchema: { since: z.number().optional() },
     },
     async ({ since }) => {
@@ -114,7 +114,7 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
       if (pages.length <= 1) {
         return asText('refused: cannot close the last remaining tab (open another first)');
       }
-      s.markAgent(); // closePage is the human's too (the panel's ×); this one is the agent's
+      s.agentOn(id); // closePage is the human's too (the panel's ×); this one is the agent's
       await s.run(() => s.closePage(id), id);
       return asText(`closed page ${id}`);
     },

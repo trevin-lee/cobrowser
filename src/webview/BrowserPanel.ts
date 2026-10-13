@@ -382,6 +382,7 @@ export class BrowserPanel {
 
   /** Keyboard-shortcut commands act on the active panel. */
   async navigate(kind: 'back' | 'forward' | 'reload'): Promise<void> {
+    this.page.actedBy('human');
     const go = kind === 'back' ? () => this.page.goBack() : kind === 'forward' ? () => this.page.goForward() : () => this.page.reload();
     await this.session.run(() => go().then(() => undefined).catch(() => undefined), this.id).catch(() => undefined);
   }
@@ -413,6 +414,9 @@ export class BrowserPanel {
     if (typeof m?.type !== 'string') return;
 
     if (m.type.startsWith('extension.')) {
+      // The human acting on this tab (the toolbar, the address bar, the edit keys): what it does
+      // next is theirs. Showing the panel or resizing it does nothing to the page.
+      if (!['extension.ready', 'extension.viewport', 'extension.contextinfo', 'extension.copy', 'extension.copylink', 'extension.zoom'].includes(m.type)) this.page.actedBy('human');
       try {
         switch (m.type) {
           case 'extension.ready':
@@ -598,6 +602,7 @@ export class BrowserPanel {
     // session teardown (window reload), leave the pages open in the app so the reconnect
     // finds them again.
     if (!this.session.isDisposing) {
+      this.page.actedBy('human');
       void this.session.run(() => this.session.closePage(this.id), this.id).catch(() => undefined);
     }
     for (const d of this.disposables) d.dispose();

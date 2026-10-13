@@ -18,6 +18,7 @@ suite('core', async (r) => {
       q.url === '/missing' ? [404, { 'content-type': 'text/plain' }, 'nope'] as const
       : q.url === '/dest' ? html('<title>DEST</title>arrived')
       : q.url === '/second' ? html('<title>second</title>two')
+      : q.url === '/slow' ? html('<title>slow</title><button id=later onclick="setTimeout(() => location.href = \'/dest\', 4000)" style="position:absolute;left:10px;top:10px;width:100px;height:30px">later</button><a id=now href="/second" style="position:absolute;left:10px;top:60px;width:100px;height:30px;display:block">now</a>')
       : html(PAGE);
     res.writeHead(status, headers); res.end(body);
   });
@@ -71,6 +72,20 @@ suite('core', async (r) => {
     await s.run(() => s.typeText('hello\n'));
     const act = s.getActivity();
     r.check('activity has navigations and tab events', act.events.some((e) => e.type === 'navigated') && act.events.some((e) => e.type === 'tab-opened'), act.events.map((e) => e.type));
+    // Who did it is whoever acted on the tab last: the agent's click, however late the page
+    // moves, or the human's own click in the panel.
+    const slow = await s.run(() => s.newPage(srv.base + '/slow')); await sleep(500);
+    const mark = s.getActivity().latest;
+    await s.run(() => s.click({ selector: '#later', pageId: slow.pageId }), slow.pageId);
+    await sleep(5000);
+    const late = s.getActivity(mark).events.filter((e) => e.type === 'navigated' && e.pageId === slow.pageId);
+    await s.run(() => s.navigate('url', srv.base + '/slow', 30000, slow.pageId), slow.pageId); await sleep(500);
+    const mark2 = s.getActivity().latest;
+    const tab = (s as unknown as { pageFor: (id: string) => { humanInput: (m: string, p: unknown) => Promise<unknown> } }).pageFor(slow.pageId);
+    for (const type of ['mousePressed', 'mouseReleased']) await tab.humanInput('Input.dispatchMouseEvent', { type, x: 40, y: 75, button: 'left', clickCount: 1 });
+    await sleep(1500);
+    const mine = s.getActivity(mark2).events.filter((e) => e.type === 'navigated' && e.pageId === slow.pageId);
+    r.check("a navigation is the agent's after its click, however late, and the human's after theirs", late.length === 1 && late[0].source === 'agent' && mine.length === 1 && mine[0].source === 'human', { late, mine });
     let threw = '';
     try { await s.run(() => s.navigate('url', 'http://127.0.0.1:1/')); } catch (e) { threw = String((e as Error).message); }
     r.check('navigation to a dead host throws with the error', /ERR_CONNECTION_REFUSED|failed/.test(threw), threw);

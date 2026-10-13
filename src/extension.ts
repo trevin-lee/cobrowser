@@ -55,6 +55,7 @@ interface SavedTab {
 }
 /** The last page id this workspace handed out, so ids stay unique across reloads. */
 const PAGE_ID_KEY = 'cobrowser.lastPageId';
+const EVENT_SEQ_KEY = 'cobrowser.lastEventSeq';
 
 /** Where Chrome loads the bridge from: a fixed folder, so "Load unpacked" survives updates
  *  (this extension's own install folder is renamed with every version). */
@@ -151,6 +152,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const log = (m: string) => output.appendLine(m);
   BrowserSession.lastPageId = context.workspaceState.get<number>(PAGE_ID_KEY, 0);
   BrowserSession.onPageId = (id) => void context.workspaceState.update(PAGE_ID_KEY, id);
+  BrowserSession.lastEventSeq = context.workspaceState.get<number>(EVENT_SEQ_KEY, 0);
+  BrowserSession.onEventSeq = (seq) => void context.workspaceState.update(EVENT_SEQ_KEY, seq);
 
   // Keep an installed Chrome bridge in step with this release. Chrome picks the new files up
   // when it restarts, or at once with the extension's reload button.

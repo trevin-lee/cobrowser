@@ -172,11 +172,12 @@ export class BrowserSession {
   /** Soft advisory flag; the FIFO queue is the real serialization mechanism. */
   inputOwner: InputOwner = null;
 
-  /** Ring buffer of recent activity so the agent can re-sync after manual actions, and a
-   *  timestamp of the last agent tool call to attribute navigations to agent vs human. */
+  /** Ring buffer of recent activity so the agent can re-sync after manual actions. Its seq,
+   *  like page ids, is never reused (the extension keeps it: lastEventSeq / onEventSeq), so a
+   *  cursor from before a restart never hides newer events. */
   private events: ActivityEvent[] = [];
-  private eventSeq = 0;
-  private agentActivityAt = 0;
+  static lastEventSeq = 0;
+  static onEventSeq: ((seq: number) => void) | undefined;
 
   private disposing = false;
   /** The app announced it is quitting: its tabs are not being closed by anyone. */
@@ -235,7 +236,7 @@ export class BrowserSession {
       void (async () => {
         const page = session.adopt(t);
         const opener = t.opener ? session.byTab.get(t.opener) : undefined;
-        const agentFollows = !session.agentActive || (!!opener && opener === session.agentActive && Date.now() - session.agentActivityAt < 3000);
+        const agentFollows = !session.agentActive || (!!opener && opener === session.agentActive && opener.lastActor !== 'human');
         // A popup from a named agent's tab is that agent's too, whichever tab is "current".
         const owner = opener ? session.owners.get(opener) : undefined;
         if (owner) session.owners.set(page, owner);
@@ -243,7 +244,7 @@ export class BrowserSession {
           session.agentPages.add(page);
           session.app.markTab(page.tabId, 'agent', owner);
         }
-        session.pushEvent('tab-opened', page.id, page.url(), agentFollows && opener ? 'agent' : 'human');
+        session.pushEvent('tab-opened', page, agentFollows && opener ? 'agent' : 'human');
         await session.prepPage(page); // fail-fast passkeys before any site script runs
         if (agentFollows) session.setAgentTarget(page, 'agent');
         const reveal = !session.humanActive || !opener || opener === session.humanActive;
@@ -264,7 +265,7 @@ export class BrowserSession {
       if (!page) return;
       const navigated = page.url() !== t.url;
       page.update(t.url, t.title, navigated);
-      if (navigated) session.pushEvent('navigated', page.id, t.url);
+      if (navigated) session.pushEvent('navigated', page);
       session.pagesChangedCb?.();
     };
 
@@ -278,7 +279,7 @@ export class BrowserSession {
       session.byTab.delete(tabId);
       session.pages.delete(page.id);
       if (session.disposing) return; // intentional teardown does its own cleanup
-      session.pushEvent('tab-closed', page.id, page.url());
+      session.pushEvent('tab-closed', page);
       session.pageClosedCb?.(page.id);
       session.pagesChangedCb?.();
       if (session.humanActive === page) session.humanActive = undefined;
@@ -327,7 +328,7 @@ export class BrowserSession {
   private setAgentTarget(page: AppPage, source: ActivityEvent['source']): void {
     if (this.agentActive === page) return;
     this.agentActive = page;
-    this.pushEvent('tab-activated', page.id, page.url(), source);
+    this.pushEvent('tab-activated', page, source);
     this.pagesChangedCb?.(); // refresh the sidebar's marker
   }
 
@@ -494,21 +495,27 @@ export class BrowserSession {
     return result;
   }
 
-  /** Mark that the agent is acting now, so the resulting navigation is attributed to it
-   *  (human navigation happens while the agent is idle, so it's attributed to the human). */
-  markAgent(): void {
-    this.agentActivityAt = Date.now();
+  /** The page an agent tool acts on, marked as the agent's to act on last: what happens in it
+   *  next (a navigation, a popup) is the agent's doing until the human acts there. */
+  agentOn(pageId?: string): AppPage {
+    const p = this.pageFor(pageId);
+    p.actedBy('agent');
+    return p;
   }
 
-  private pushEvent(type: ActivityType, pageId: string, url: string, known?: ActivityEvent['source']): void {
-    const source: ActivityEvent['source'] = known ?? (Date.now() - this.agentActivityAt < 3000 ? 'agent' : 'human');
-    this.events.push({ seq: ++this.eventSeq, time: new Date().toISOString(), type, pageId, url, source });
+  /** An event, the agent's or the human's: whoever acted last on its tab, and the agent unless
+   *  that was the human (the panel says when the human acts: AppPage.actedBy). */
+  private pushEvent(type: ActivityType, page: AppPage, known?: ActivityEvent['source']): void {
+    const source: ActivityEvent['source'] = known ?? (page.lastActor === 'human' ? 'human' : 'agent');
+    const seq = ++BrowserSession.lastEventSeq;
+    BrowserSession.onEventSeq?.(seq);
+    this.events.push({ seq, time: new Date().toISOString(), type, pageId: page.id, url: page.url(), source });
     if (this.events.length > 300) this.events.splice(0, this.events.length - 300);
   }
 
   /** Recent activity after `since` (a seq cursor), plus the latest seq to poll from next. */
   getActivity(since = 0): { events: ActivityEvent[]; latest: number } {
-    return { events: this.events.filter((e) => e.seq > since), latest: this.eventSeq };
+    return { events: this.events.filter((e) => e.seq > since), latest: BrowserSession.lastEventSeq };
   }
 
   // ----- tool-facing operations (uid model mirrors chrome-devtools-mcp naming) -----
@@ -540,9 +547,9 @@ export class BrowserSession {
     // human's act, but a tab the agent had opened is still the agent's to tidy up.
     const openedBy = opts?.openedBy ?? (byAgent ? 'agent' : 'human');
     const owner = opts?.owner?.trim() || undefined;
-    if (byAgent) this.markAgent();
     const [w, h] = this.defaultSize;
     const page = this.adopt(await this.app.openTab('about:blank', w, h, openedBy, owner));
+    page.actedBy(byAgent ? 'agent' : 'human');
     if (openedBy === 'agent') this.agentPages.add(page);
     await this.prepPage(page); // fail-fast passkeys before navigating anywhere
     if (url) await page.goto(url).catch(() => undefined);
@@ -566,8 +573,7 @@ export class BrowserSession {
 
   /** Set the agent's current tab. The human's view moves only with bringToFront. */
   async selectPage(pageId: string, bringToFront = false): Promise<void> {
-    this.markAgent();
-    const page = this.pageFor(pageId);
+    const page = this.agentOn(pageId);
     this.setAgentTarget(page, 'agent');
     if (bringToFront) this.pageRevealCb?.(pageId);
   }
@@ -578,7 +584,7 @@ export class BrowserSession {
     const page = this.pageById(pageId);
     if (!page || this.humanActive === page) return;
     this.humanActive = page;
-    this.pushEvent('tab-activated', page.id, page.url(), 'human');
+    this.pushEvent('tab-activated', page, 'human');
     if (!this.agentActive || this.agentActive.isClosed()) this.agentActive = page;
     this.pagesChangedCb?.();
   }
@@ -595,8 +601,7 @@ export class BrowserSession {
     timeout = 30000,
     pageId?: string,
   ): Promise<{ url: string; title: string }> {
-    this.markAgent();
-    const p = this.pageFor(pageId);
+    const p = this.agentOn(pageId);
     if (type === 'url') {
       if (!url) throw new Error('navigate: url is required for type "url"');
       await p.goto(url, timeout);
@@ -668,8 +673,7 @@ export class BrowserSession {
   }
 
   async click(opts: Target & OnPage & { dblClick?: boolean; allowPayment?: boolean }): Promise<ClickResult> {
-    this.markAgent();
-    const p = this.pageFor(opts.pageId);
+    const p = this.agentOn(opts.pageId);
     const box = await this.locate(p, opts);
     if (COMMITTING.test(box.label) && opts.allowPayment !== true) return paymentRefusal(box.label);
     await p.evaluate(EFFECT_START).catch(() => undefined);
@@ -691,8 +695,7 @@ export class BrowserSession {
    * that opens takes the files instead of showing.
    */
   async uploadFile(opts: Target & OnPage & { filePaths: string[]; ask?: boolean }): Promise<UploadResult> {
-    this.markAgent();
-    const p = this.pageFor(opts.pageId);
+    const p = this.agentOn(opts.pageId);
     const selector = this.selectorFor(opts);
     const el = await p.evaluate<{ count: number; fileInput: boolean; multiple: boolean; inputs: number }>(
       `(sel) => { ${FIND_JS}
@@ -736,8 +739,7 @@ export class BrowserSession {
 
   /** Answer the page's alert, confirm or prompt in a tab, as the human would in its window. */
   handleDialog(opts: OnPage & { accept: boolean; text?: string }) {
-    this.markAgent();
-    return this.app.answerDialog(this.pageFor(opts.pageId).tabId, opts.accept, opts.text);
+    return this.app.answerDialog(this.agentOn(opts.pageId).tabId, opts.accept, opts.text);
   }
 
   /** Move to an element and click it (the input half of click, without its rule). */
@@ -786,8 +788,7 @@ export class BrowserSession {
   }
 
   async fill(opts: Target & OnPage & { value: string; allowCredentials?: boolean }): Promise<FillResult> {
-    this.markAgent();
-    const p = this.pageFor(opts.pageId);
+    const p = this.agentOn(opts.pageId);
     // The rule (guards.ts): a secret field is the human's to type, or the vault's to fill.
     const info = await p.evaluate<{ secret: boolean; name: string } | null>(
       `(sel, credSrc, auto) => { ${FIND_JS} ${SECRET_JS} return secretInfo(find(sel)[0], credSrc, auto); }`,
@@ -880,8 +881,7 @@ export class BrowserSession {
 
   /** Type into the focused element with real key events — unless it is a secret field. */
   async typeText(text: string, submitKey = false, pageId?: string, allowCredentials = false): Promise<FillResult> {
-    this.markAgent();
-    const p = this.pageFor(pageId);
+    const p = this.agentOn(pageId);
     const info = await p.evaluate<{ secret: boolean; name: string } | null>(
       `(credSrc, auto) => { ${SECRET_JS} const el = document.activeElement; return el && el !== document.body ? secretInfo(el, credSrc, auto) : null; }`,
       CREDENTIAL.source,
@@ -899,8 +899,7 @@ export class BrowserSession {
    * …), which an offscreen page has no Edit menu to supply.
    */
   async pressKeys(opts: OnPage & { key: string; modifiers?: KeyModifier[]; times?: number; allowCredentials?: boolean }): Promise<{ pressed: string } | FillResult> {
-    this.markAgent();
-    const p = this.pageFor(opts.pageId);
+    const p = this.agentOn(opts.pageId);
     const k = keySpec(opts.key);
     if (!k) throw new Error(`unknown key "${opts.key}": use a key name (Escape, Tab, Enter, Backspace, Delete, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown, Space, F1–F12) or one character`);
     const mods = new Set(opts.modifiers ?? []);
@@ -1032,8 +1031,7 @@ export class BrowserSession {
   /** Fill a saved card into the page's card fields. The human confirms every fill in the app;
    *  the number and code are typed by the app and never come back. */
   fillCard(opts: OnPage & { card?: string }) {
-    this.markAgent();
-    return this.app.vaultFillCard(this.pageFor(opts.pageId).tabId, opts.card, 'agent');
+    return this.app.vaultFillCard(this.agentOn(opts.pageId).tabId, opts.card, 'agent');
   }
 
   listCards() {
@@ -1041,14 +1039,12 @@ export class BrowserSession {
   }
 
   fillCredentials(opts: OnPage & { usernameUid?: string; passwordUid?: string; username?: string }) {
-    this.markAgent();
     const { pageId, ...rest } = opts;
-    return this.app.vaultFill(this.pageFor(pageId).tabId, rest);
+    return this.app.vaultFill(this.agentOn(pageId).tabId, rest);
   }
 
   /** Ask the human to grant this workspace a login for a site. Answered in the app. */
   requestCredential(opts: { site: string; username?: string; reason?: string }) {
-    this.markAgent();
     return this.app.vaultRequest(opts.site, opts.username, opts.reason);
   }
 
@@ -1058,9 +1054,9 @@ export class BrowserSession {
   }
 
   async evaluateScript(fn: string, args: unknown[] = [], pageId?: string): Promise<unknown> {
-    this.markAgent(); // a navigation the script causes is the agent's
-    // The function expression is evaluated in the page's global scope with the JSON args.
-    return this.pageFor(pageId).evaluate(fn, ...args);
+    // The function expression is evaluated in the page's global scope with the JSON args. A
+    // navigation the script causes is the agent's.
+    return this.agentOn(pageId).evaluate(fn, ...args);
   }
 
   /** Current pages (stable id + URL) in creation order, synchronously — for persisting the
