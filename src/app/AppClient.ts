@@ -47,6 +47,15 @@ export interface SitePermission {
   label: string;
 }
 
+export interface CreatedLogin {
+  created: boolean;
+  username?: string;
+  host?: string;
+  filled?: string[];
+  replaced?: string;
+  error?: string;
+}
+
 export interface AppTabInfo {
   tabId: string;
   url: string;
@@ -321,6 +330,11 @@ export class AppConnection {
   async vaultRequest(site: string, username: string | undefined, reason: string | undefined): Promise<{ granted: 'workspace' | 'once' | 'already' | 'denied'; host?: string; username?: string; error?: string }> {
     // Long timeout: Touch ID plus a dialog the human may take a while to notice.
     return (await this.request({ type: 'vault.request', site, username, reason }, 300000)) as unknown as { granted: 'workspace' | 'once' | 'already' | 'denied'; host?: string; username?: string; error?: string };
+  }
+  /** A new password made up in the app, saved with the username and typed into the page's
+   *  password field(s); never returned. */
+  async vaultCreateLogin(tabId: string, opts: { username: string; usernameUid?: string; passwordUid: string; confirmUid?: string; length?: number; symbols?: boolean }): Promise<CreatedLogin> {
+    return (await this.request({ type: 'vault.createLogin', tabId, ...opts }, 120000)) as unknown as CreatedLogin;
   }
   async vaultFill(tabId: string, opts: { usernameUid?: string; passwordUid?: string; username?: string }): Promise<{ filled: string[]; username?: string; error?: string; candidates?: string[] }> {
     return (await this.request({ type: 'vault.fill', tabId, ...opts }, 120000)) as unknown as { filled: string[]; username?: string; error?: string; candidates?: string[] };

@@ -30,7 +30,7 @@ export function humanTabRefusal(tab: string | number): { refused: 'human-tab'; t
 export function credentialRefusal(fields: string[]): { refused: string[]; needsUserAction: string; why: string } {
   return {
     refused: fields,
-    needsUserAction: `the human should type ${fields.join(', ')} themselves — or, for a saved login, use fill_credentials, which fills it without showing it to you. Pass allowCredentials: true only for a value the human gave you for this purpose.`,
+    needsUserAction: `the human should type ${fields.join(', ')} themselves — or, for a saved login, use fill_credentials, which fills it without showing it to you, and for a new account, create_login, which makes one up the same way. Pass allowCredentials: true only for a value the human gave you for this purpose.`,
     why: 'Passwords, one-time codes and card numbers are not typed by the agent.',
   };
 }

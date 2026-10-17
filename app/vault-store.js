@@ -159,6 +159,7 @@ function updateLogin(vault, from, fields) {
   entry.username = username;
   if (fields.password === null) entry.password = ''; // now signs in with a link or a code
   else if (fields.password) entry.password = fields.password;
+  if (fields.password !== undefined) delete entry.generatedAt; // the person's password now, not the agent's to make up again
   if (fields.scope !== undefined) assignScope(entry, fields.scope);
   if (fields.also !== undefined) entry.also = normalizeSites(fields.also, entry);
   if (note !== undefined) { if (note) entry.notes = note; else delete entry.notes; }
@@ -192,6 +193,25 @@ function removeLogin(vault, host, username) {
   const target = findEntry(vault, host, username);
   vault.entries = vault.entries.filter((e) => e !== target);
   return before - vault.entries.length;
+}
+
+/**
+ * A new password nobody has seen: for an account the agent signs up for (create_login). Drawn
+ * with the OS's cryptographic randomness, with at least one of each kind of character it may
+ * use (sites often demand them), from letters and digits only when a site refuses symbols.
+ * Length 8 to 64, 20 when not given; a field that takes fewer characters (maxLength) gets that
+ * many, never a password the field would cut.
+ */
+const PASSWORD_SETS = { lower: 'abcdefghijkmnopqrstuvwxyz', upper: 'ABCDEFGHJKLMNPQRSTUVWXYZ', digit: '23456789', symbol: '!#$%&*+-=?@^_~' };
+function generatePassword({ length = 20, symbols = true, maxLength = 0 } = {}) {
+  let n = Math.round(Number(length) || 20);
+  if (maxLength > 0) n = Math.min(n, maxLength);
+  if (n < 8 || n > 64) throw new Error(maxLength > 0 && maxLength < 8 ? `the password field takes at most ${maxLength} characters, too few for a strong password: leave this one to the human` : 'a generated password is 8 to 64 characters');
+  const sets = [PASSWORD_SETS.lower, PASSWORD_SETS.upper, PASSWORD_SETS.digit, ...(symbols ? [PASSWORD_SETS.symbol] : [])];
+  const all = sets.join('');
+  const chars = [...sets.map((s) => s[crypto.randomInt(s.length)]), ...Array.from({ length: n - sets.length }, () => all[crypto.randomInt(all.length)])];
+  for (let i = chars.length - 1; i > 0; i--) { const j = crypto.randomInt(i + 1); [chars[i], chars[j]] = [chars[j], chars[i]]; }
+  return chars.join('');
 }
 
 /** Minimal RFC 4180 CSV → rows of strings. Apple Passwords, Bitwarden and Chrome exports
@@ -463,5 +483,5 @@ module.exports = {
   cardBrand, publicCard, addCard, findCard, updateCard, removeCard, exportCards, importCards,
   normalizeScope, allowed, mergeScope, applyScopeChange, publicEntry, findEntry, upsertLogin, updateLogin, setScope, removeLogin,
   normalizeSites, sitesOf, loginMatches, matchRank, closestPerUsername,
-  parseCsv, importCsv, exportCsv, splitNote, rowsNamingNoWorkspace,
+  parseCsv, importCsv, exportCsv, splitNote, rowsNamingNoWorkspace, generatePassword,
 };

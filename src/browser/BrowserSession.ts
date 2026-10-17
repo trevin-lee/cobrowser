@@ -1031,6 +1031,11 @@ export class BrowserSession {
     return this.app.vaultCards();
   }
 
+  createLogin(opts: OnPage & { username: string; usernameUid?: string; passwordUid: string; confirmUid?: string; length?: number; symbols?: boolean }) {
+    const { pageId, ...rest } = opts;
+    return this.app.vaultCreateLogin(this.agentOn(pageId).tabId, rest);
+  }
+
   fillCredentials(opts: OnPage & { usernameUid?: string; passwordUid?: string; username?: string }) {
     const { pageId, ...rest } = opts;
     return this.app.vaultFill(this.agentOn(pageId).tabId, rest);

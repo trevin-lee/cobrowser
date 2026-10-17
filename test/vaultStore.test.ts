@@ -319,3 +319,19 @@ test("a cobrowser export names every login's workspaces, so it needs none chosen
   assert.equal(count(store.exportCsv(v)), 0);
   assert.equal(count('url,username,password\nhttps://c.example,u,p\nhttps://d.example,u,p\n'), 2);
 });
+
+test('a generated password is long, varied, unpredictable, and fits the field', () => {
+  const gen = (store as unknown as { generatePassword: (o?: { length?: number; symbols?: boolean; maxLength?: number }) => string }).generatePassword;
+  const seen = new Set<string>();
+  for (let i = 0; i < 200; i++) {
+    const p = gen();
+    assert.equal(p.length, 20);
+    assert.ok(/[a-z]/.test(p) && /[A-Z]/.test(p) && /[0-9]/.test(p) && /[^A-Za-z0-9]/.test(p), p);
+    seen.add(p);
+  }
+  assert.equal(seen.size, 200, 'no repeats');
+  assert.match(gen({ symbols: false, length: 32 }), /^[A-Za-z0-9]{32}$/);
+  assert.equal(gen({ maxLength: 16 }).length, 16, 'never longer than the field takes');
+  assert.throws(() => gen({ maxLength: 6 }), /at most 6 characters/);
+  assert.throws(() => gen({ length: 100 }), /8 to 64/);
+});

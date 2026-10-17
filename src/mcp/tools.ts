@@ -424,6 +424,27 @@ export function registerTools(server: McpServer, getSession: GetSession): void {
   );
 
   server.registerTool(
+    'create_login',
+    {
+      description:
+        "Sign up for an account without ever seeing its password: the cobrowser app makes up a strong one (20 characters, letters, digits and symbols, unless you say otherwise), saves it in the human's vault with the username for the CURRENT site, usable in this workspace, and types it into the password field and its confirmation field (uids from take_snapshot). The human confirms the save (Touch ID or their Mac password), so this waits for them. Then submit the form; later, sign in with fill_credentials. If the site refuses the password (too long, a symbol it does not take), call it again within 30 minutes with length or symbols: false, and it makes up another for the same account. It never gives a saved account a new password: changing a password is the human's to do.",
+      inputSchema: {
+        username: z.string().describe('The account name the site will know it by, usually the email typed into the form (empty for a site with no username).'),
+        passwordUid: z.string(),
+        confirmUid: z.string().optional().describe('The "confirm password" field, when the form has one.'),
+        usernameUid: z.string().optional().describe('The username field, to type the username into it too.'),
+        length: z.number().optional().describe('8 to 64; 20 when not given, and never more than the field takes.'),
+        symbols: z.boolean().optional().describe('false for a site that takes only letters and digits.'),
+        pageId,
+      },
+    },
+    async (opts) => {
+      const s = await getSession();
+      return asText(JSON.stringify(await s.run(() => s.createLogin(opts), opts.pageId)));
+    },
+  );
+
+  server.registerTool(
     'fill_card',
     {
       description:

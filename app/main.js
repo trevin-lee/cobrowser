@@ -644,6 +644,71 @@ async function fillCredentials(tab, { usernameUid, passwordUid, username }) {
 }
 
 
+/** A field the agent named by uid (from take_snapshot), looked for in the page and its open
+ *  shadow roots: whether it is there, whether it is a password field, how many characters it
+ *  takes. `focus` also focuses it and selects what is in it, ready to be typed over. */
+async function fieldByUid(dbg, uid, focus) {
+  const { result } = await dbg.sendCommand('Runtime.evaluate', {
+    expression: `(() => { const sel = '[data-cobrowser-uid=${JSON.stringify(String(uid))}]'; let el = document.querySelector(sel); const visit = (root, d) => { for (const n of root.querySelectorAll('*')) { if (el) return; if (n.shadowRoot) { el = n.shadowRoot.querySelector(sel); if (!el && d < 8) visit(n.shadowRoot, d + 1); } } }; if (!el) visit(document, 0); if (!el) return { found: false }; if (${focus ? 'true' : 'false'}) { el.focus(); if (el.select) el.select(); } return { found: true, password: el instanceof HTMLInputElement && el.type === 'password', maxLength: el.maxLength > 0 ? el.maxLength : 0 }; })()`,
+    returnByValue: true,
+  });
+  return result.value || { found: false };
+}
+
+/** How long after the agent made up a password it may make up another for the same account:
+ *  the site refused the first (too long, a symbol it does not take) before the account existed. */
+const REGENERATE_MS = 30 * 60_000;
+
+/**
+ * The agent signs up for an account: a new password is made up here, saved in the vault with
+ * the username for this site (this workspace may use it), and typed into the page's password
+ * field, and its confirmation field when there is one. The agent never sees it. Saving is a
+ * change to the vault, so the person confirms it; it is saved before it is typed, so an account
+ * the site creates always has its password in the vault.
+ */
+async function createLogin(tab, { username = '', usernameUid, passwordUid, confirmUid, length, symbols }, workspaceName) {
+  const page = parseSite(tab.win.webContents.getURL());
+  const host = siteLabel(page);
+  if (!page.host) return { created: false, error: 'this tab has no website to save a login for' };
+  if (!passwordUid) return { created: false, error: 'pass the password field\'s uid (passwordUid) from take_snapshot' };
+  const dbg = tab.win.webContents.debugger;
+  // Mistakes are said before the person is asked to confirm.
+  const fields = [[passwordUid, 'password'], ...(confirmUid ? [[confirmUid, 'confirmation']] : [])];
+  let maxLength = 0;
+  for (const [uid, label] of fields) {
+    const f = await fieldByUid(dbg, uid, false);
+    if (!f.found) return { created: false, error: `uid ${uid} not found — take a fresh snapshot` };
+    if (!f.password) return { created: false, error: `uid ${uid} (the ${label}) is not a password field: the password goes only into one (an input of type password)` };
+    if (f.maxLength) maxLength = maxLength ? Math.min(maxLength, f.maxLength) : f.maxLength;
+  }
+  if (usernameUid && !(await fieldByUid(dbg, usernameUid, false)).found) return { created: false, error: `uid ${usernameUid} not found — take a fresh snapshot` };
+  let password;
+  try { password = store.generatePassword({ length, symbols: symbols !== false, maxLength }); } catch (e) { return { created: false, error: e.message }; }
+  const reason = `save a new password for ${username || 'an account'} on ${host}, made up by the agent in "${workspaceName}"`;
+  const wasLocked = !vault;
+  const v = await unlockVault(reason);
+  // An account already saved is never given a new password here (that is changing a password,
+  // the person's to do), unless the agent made this one up moments ago and the site refused it.
+  const existing = v.entries.find((e) => e.host === page.host && (e.port || '') === page.port && e.username === username);
+  const regenerating = existing && existing.generatedAt && Date.now() - existing.generatedAt < REGENERATE_MS && allowed(existing, tab.workspace.id);
+  if (existing && !regenerating) return { created: false, error: `a login for ${username || 'that account'} on ${host} cannot be made up here: changing a saved password is the human's to do, in the vault window` };
+  // Unlocking asked; a vault that was already open asks now. Either way, one confirmation.
+  if (!wasLocked) await confirmFresh(reason);
+  const { entry } = store.upsertLogin(v, host, username, password, [tab.workspace.id], { mergeScope: true });
+  entry.generatedAt = Date.now();
+  saveVault();
+  log(`vault: the agent in ${workspaceName} made up ${regenerating ? 'another ' : 'a '}password for ${username || '(no username)'} on ${host}`);
+  tab.boost();
+  const filled = [];
+  for (const [uid, value, label] of [[usernameUid, username, 'username'], [passwordUid, password, 'password'], [confirmUid, password, 'confirmation']]) {
+    if (!uid || !value) continue;
+    if (!(await fieldByUid(dbg, uid, true)).found) return { created: true, username, host, filled, error: `the login is saved, but uid ${uid} is gone: take a fresh snapshot and fill it with fill_credentials` };
+    await dbg.sendCommand('Input.insertText', { text: value }); // trusted keystrokes, never page JS
+    filled.push(label);
+  }
+  return { created: true, username, host, filled, ...(regenerating ? { replaced: 'the password made up a moment ago' } : {}) };
+}
+
 /**
  * The card fields on a page, in one frame: marked with data-cobrowser-card so the fill can find
  * them again, and described (what each holds, input or select). Visible, enabled fields only: a
@@ -2705,6 +2770,11 @@ async function handle(ws, state, m) {
           return reply(await requestCredential(state.workspace.id, m));
         }
         case 'vault.scrub': return reply({ text: scrubSecrets(m.text) });
+        case 'vault.createLogin': {
+          const tab = state.workspace?.tabs.get(m.tabId);
+          if (!tab) return reply({ created: false, error: 'no such tab in this workspace' });
+          return reply(await createLogin(tab, { username: typeof m.username === 'string' ? m.username : '', usernameUid: m.usernameUid, passwordUid: m.passwordUid, confirmUid: m.confirmUid, length: m.length, symbols: m.symbols }, path.basename(state.workspace.id)));
+        }
         case 'vault.fill': {
           const tab = state.workspace?.tabs.get(m.tabId);
           if (!tab) return reply({ filled: [], error: 'no such tab in this workspace' });
