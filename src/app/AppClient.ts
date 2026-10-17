@@ -334,10 +334,12 @@ export class AppConnection {
   /** A new password made up in the app, saved with the username and typed into the page's
    *  password field(s); never returned. */
   async vaultCreateLogin(tabId: string, opts: { username: string; usernameUid?: string; passwordUid: string; confirmUid?: string; length?: number; symbols?: boolean }): Promise<CreatedLogin> {
-    return (await this.request({ type: 'vault.createLogin', tabId, ...opts }, 120000)) as unknown as CreatedLogin;
+    const { requestId: _id, ...r } = await this.request({ type: 'vault.createLogin', tabId, ...opts }, 120000);
+    return r as unknown as CreatedLogin;
   }
   async vaultFill(tabId: string, opts: { usernameUid?: string; passwordUid?: string; username?: string }): Promise<{ filled: string[]; username?: string; error?: string; candidates?: string[] }> {
-    return (await this.request({ type: 'vault.fill', tabId, ...opts }, 120000)) as unknown as { filled: string[]; username?: string; error?: string; candidates?: string[] };
+    const { requestId: _id, ...r } = await this.request({ type: 'vault.fill', tabId, ...opts }, 120000);
+    return r as unknown as { filled: string[]; username?: string; error?: string; candidates?: string[] };
   }
   private async profile(type: string, extra: Record<string, unknown> = {}, timeoutMs = 30000): Promise<Record<string, unknown>> {
     const r = await this.request({ type: `profile.${type}`, ...extra }, timeoutMs);
