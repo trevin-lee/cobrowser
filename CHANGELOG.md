@@ -2,6 +2,12 @@
 
 Release notes for earlier versions are on the [GitHub releases page](https://github.com/trevin-lee/cobrowser/releases).
 
+## 0.9.32
+
+### Added
+
+- **`create_login`: an agent signs up for an account without ever seeing its password.** The app makes up a strong one (20 characters of letters, digits and symbols; fewer if the field takes fewer, or letters and digits only if the site asks), saves it in the vault with the username for that site and workspace once you confirm with Touch ID, and types it into the form's password and confirmation fields. It is saved before it is typed, so an account the site creates always has its password in the vault. It never gives an account already in the vault a new password, except one it made up in the last 30 minutes that the site refused.
+
 ## 0.9.31
 
 ### Removed
