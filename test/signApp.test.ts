@@ -45,3 +45,49 @@ test('the signing is renewed only once it has expired (Xcode returns the same pr
   assert.equal(signingState(now, now), 'expired');
   assert.equal(signingState(days(-1), now), 'expired');
 });
+
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { usableIdentityLines, certificateProblemIn, type SignedMarker } from '../src/app/signApp';
+import { keepSigningValid } from '../src/app/ensureApp';
+
+test('a revoked or expired certificate is never chosen to sign with, though find-identity lists it', () => {
+  // As macOS printed it on 2026-11-04, after Xcode made a new certificate for the team.
+  const out = `  1) 28296766B66416D04F6CEEF79111462DE1DD595C "Apple Development: trevin.lee@icloud.com (WWQ79295AJ)"
+  2) 885F5792A0575EE31DACF76383CC0E287D3BBBB5 "Apple Development: KIBECK TREVIN LEE (66X884T2YN)" (CSSMERR_TP_CERT_REVOKED)
+  3) 63D93BCA55F9C1BA3B304319EC6B4FFB2F9802AE "Apple Development: Trevin Lee (7BZANV53NX)"
+  4) 1111111111111111111111111111111111111111 "Apple Development: Old (AAAAAAAAAA)" (CSSMERR_TP_CERT_EXPIRED)
+     3 valid identities found`;
+  assert.deepEqual(usableIdentityLines(out).map((i) => i.name), ['Apple Development: trevin.lee@icloud.com (WWQ79295AJ)', 'Apple Development: Trevin Lee (7BZANV53NX)']);
+  assert.equal(certificateProblemIn('/x/cobrowser.app: CSSMERR_TP_CERT_REVOKED\nIn architecture: arm64'), 'revoked');
+  assert.equal(certificateProblemIn('/x/cobrowser.app: CSSMERR_TP_CERT_EXPIRED'), 'expired');
+  assert.equal(certificateProblemIn(''), undefined, 'a signature that verifies');
+});
+
+test('a revoked certificate is signed again with the same team before the app starts, or the app starts unsigned', async () => {
+  const cache = fs.mkdtempSync(path.join(os.tmpdir(), 'cobrowser-sign-'));
+  const exe = path.join(cache, 'electron-v44', 'cobrowser.app', 'Contents', 'MacOS', 'Electron');
+  fs.mkdirSync(path.dirname(exe), { recursive: true });
+  const marker: SignedMarker = { identity: 'Apple Development: Old', team: '4HK6NG82TK', bundleId: 'com.example.cobrowser', webauthnGroup: 'g', profile: 'p', at: '2026-09-28' };
+  fs.writeFileSync(path.join(cache, 'electron-v44', 'signed.json'), JSON.stringify(marker));
+  const now = new Date('2026-11-05');
+  const notices: [string, string][] = [];
+  const opts = { log: () => undefined, onSigningNotice: (level: 'info' | 'warning', m: string) => notices.push([level, m]) };
+  const signed: unknown[] = [];
+  const sign = (async (_e: string, _l: unknown, o: unknown) => { signed.push(o); return { ...marker, expires: '2027-11-05T00:00:00Z' }; }) as never;
+  let unsigned = 0;
+  const unsign = (() => { unsigned++; }) as never;
+
+  await keepSigningValid(exe, opts, now, () => undefined, sign, unsign);
+  assert.deepEqual([signed.length, notices.length], [0, 0], 'a certificate that is still good: nothing happens');
+
+  await keepSigningValid(exe, opts, now, () => 'revoked', sign, unsign);
+  assert.deepEqual(signed, [{ team: '4HK6NG82TK', bundleId: 'com.example.cobrowser' }], 'the same team and identifier, so passkeys keep working');
+  assert.match(notices[0][1], /revoked.*Always Allow.*logins are all there/s);
+
+  const failing = (async () => { throw new Error('no certificate for team 4HK6NG82TK'); }) as never;
+  await keepSigningValid(exe, opts, now, () => 'revoked', failing, unsign);
+  assert.equal(unsigned, 1, 'it starts unsigned rather than with a signature macOS distrusts');
+  assert.match(notices[1][1], /could not be signed again.*Turn On Passkeys/s);
+});

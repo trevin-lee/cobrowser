@@ -292,9 +292,30 @@ async function confirmFresh(reason) {
   await confirmPerson(reason);
 }
 
+/**
+ * macOS would not give the app the vault's key ("cobrowser Safe Storage" in the login keychain).
+ * Nothing is lost: the key and the vault are as they were. Usually the app's signature is no
+ * longer trusted: the certificate it was signed with for passkeys was revoked (Xcode does that
+ * when it makes a new one) or expired, and the editor signs it again before the app next starts
+ * (src/app/ensureApp.ts, keepSigningValid). Otherwise access was refused at a keychain prompt.
+ */
+function keychainRefusal() {
+  const keep = ' Your logins are all there: do not start a new vault.';
+  let codesign = '';
+  try {
+    const bundle = process.execPath.replace(/\/Contents\/MacOS\/[^/]+$/, '');
+    const r = require('node:child_process').spawnSync('codesign', ['--verify', '--strict', bundle], { encoding: 'utf8', timeout: 10000 });
+    codesign = `${r.stdout || ''}${r.stderr || ''}`;
+  } catch { /* not macOS, or no codesign */ }
+  const problem = /CSSMERR_TP_CERT_REVOKED/.test(codesign) ? 'was revoked (Xcode does this when it makes a new one)' : /CSSMERR_TP_CERT_EXPIRED/.test(codesign) ? 'is past its date' : '';
+  log(`vault: the keychain refused the vault's key${problem ? `: the signing certificate ${problem.split(' (')[0]}` : ''}`);
+  if (problem) return `macOS will not give cobrowser the vault's key, because the certificate the browser was signed with for passkeys ${problem}. Quit cobrowser from its menu-bar icon, then open a cobrowser tab: the browser is signed again before it starts, and macOS asks once to let it use "cobrowser Safe Storage" (enter your Mac password, choose Always Allow).${keep}`;
+  return `macOS will not give cobrowser the vault's key ("cobrowser Safe Storage" in your login keychain), perhaps because a request to use it was denied. Quit cobrowser from its menu-bar icon, then open a cobrowser tab; when macOS asks to let cobrowser use "cobrowser Safe Storage", enter your Mac password and choose Always Allow.${keep}`;
+}
+
 async function unlockVault(reason) {
   if (vault) return vault;
-  if (!safeStorage.isEncryptionAvailable()) throw new Error('OS keychain encryption is unavailable');
+  if (!safeStorage.isEncryptionAvailable()) throw new Error(keychainRefusal());
   // Read before asking: a vault this key cannot open fails at once, instead of after every
   // Touch ID. What is read is only kept once the person confirms.
   const opened = fs.existsSync(VAULT_FILE) ? readVaultFile() : { entries: [] };

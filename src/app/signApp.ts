@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { execFile, execFileSync } from 'node:child_process';
+import { execFile, execFileSync, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
 
 type Log = (message: string) => void;
@@ -76,7 +76,20 @@ function xcodeTeams(): Map<string, boolean> {
   return teams;
 }
 
-/** Every code-signing identity on this Mac, with its team and whether that team is paid. */
+/** The identities `security find-identity -v` lists that can still sign: it also lists a
+ *  revoked or expired certificate, marked "(CSSMERR_TP_CERT_REVOKED)" after its name, and a
+ *  signature made with one is refused (macOS then keeps the keychain from the app). */
+export function usableIdentityLines(out: string): { hash: string; name: string }[] {
+  const ids: { hash: string; name: string }[] = [];
+  for (const m of out.matchAll(/^\s*\d+\)\s+([0-9A-F]{40})\s+"([^"]+)"(.*)$/gm)) {
+    if (/CSSMERR_/.test(m[3])) continue;
+    ids.push({ hash: m[1], name: m[2] });
+  }
+  return ids;
+}
+
+/** Every code-signing identity on this Mac that can still sign, with its team and whether
+ *  that team is paid. */
 export function listSigningIdentities(): SigningIdentity[] {
   let out = '';
   try {
@@ -86,8 +99,7 @@ export function listSigningIdentities(): SigningIdentity[] {
   }
   const paidTeams = xcodeTeams();
   const ids: SigningIdentity[] = [];
-  for (const m of out.matchAll(/^\s*\d+\)\s+([0-9A-F]{40})\s+"([^"]+)"/gm)) {
-    const [, hash, name] = m;
+  for (const { hash, name } of usableIdentityLines(out)) {
     try {
       // The certificate with this exact hash: two identities can share a name.
       const all = sh('security', ['find-certificate', '-a', '-Z', '-p', '-c', name]);
@@ -185,6 +197,23 @@ export function signingExpiry(electronExe: string): Date | undefined {
   if (!fs.existsSync(profile)) return undefined;
   const { expires } = readProfile(profile);
   return expires ? new Date(expires) : undefined;
+}
+
+/**
+ * Why the certificate the app was signed with can no longer vouch for it ("revoked", "expired"),
+ * or undefined while it can. A certificate is revoked when Xcode makes a new one for the team
+ * (there is a limit), and they last a year. macOS then refuses the app its keychain items: the
+ * vault cannot be opened, though nothing in it is lost.
+ */
+export function certificateProblem(electronExe: string): 'revoked' | 'expired' | undefined {
+  const appDir = path.dirname(path.dirname(path.dirname(electronExe)));
+  const r = spawnSync('codesign', ['--verify', '--strict', appDir], { encoding: 'utf8' });
+  return certificateProblemIn(`${r.stdout ?? ''}${r.stderr ?? ''}`);
+}
+export function certificateProblemIn(codesignOutput: string): 'revoked' | 'expired' | undefined {
+  if (/CSSMERR_TP_CERT_REVOKED/.test(codesignOutput)) return 'revoked';
+  if (/CSSMERR_TP_CERT_EXPIRED/.test(codesignOutput)) return 'expired';
+  return undefined;
 }
 
 /**

@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import { spawn, execFileSync } from 'node:child_process';
 import { readAppState, stateFile, type AppState } from './AppClient';
-import { APP_BUNDLE_ID, readSignedMarker, signElectronForPasskeys, signingExpiry, signingState, unsignForPasskeys } from './signApp';
+import { APP_BUNDLE_ID, certificateProblem, readSignedMarker, signElectronForPasskeys, signingExpiry, signingState, unsignForPasskeys } from './signApp';
 import { brandApp, brandedExe, isBranded } from './brandApp';
 
 type Log = (message: string) => void;
@@ -146,14 +146,24 @@ export async function ensureApp(opts: EnsureAppOptions): Promise<AppState> {
 }
 
 /**
- * Keep a passkey-signed browser startable. Its provisioning profile expires (7 days on a free
- * team, a year on a paid one), and past that macOS refuses to start an app with restricted
- * entitlements. So before a start with an expired profile: renew it with the same team and
- * identifier; if that fails, sign it ad hoc like a downloaded Electron, so the browser starts
- * and passkeys fall back to passwords. Runs only when no app is running — re-signing a
- * running app's binary gets it killed — and a running app is unaffected by the expiry.
+ * Keep a passkey-signed browser startable, and able to open the vault. Its provisioning
+ * profile expires (7 days on a free team, a year on a paid one), and past that macOS refuses
+ * to start an app with restricted entitlements. Its certificate can be revoked (Xcode does it
+ * when it makes a new one for the team) or expire, and then the app still starts but macOS
+ * keeps the vault's keychain key from it. Either way, before the start: sign it again with the
+ * same team and identifier (a certificate of the team that is still good), so passkeys keep
+ * working; if that fails, sign it ad hoc like a downloaded Electron, so the browser starts and
+ * passkeys fall back to passwords. Runs only when no app is running — re-signing a running
+ * app's binary gets it killed.
  */
-export async function keepSigningValid(electron: string, opts: Pick<EnsureAppOptions, 'log' | 'onSigningNotice'>, now = new Date()): Promise<void> {
+export async function keepSigningValid(
+  electron: string,
+  opts: Pick<EnsureAppOptions, 'log' | 'onSigningNotice'>,
+  now = new Date(),
+  checkCertificate: (electronExe: string) => 'revoked' | 'expired' | undefined = certificateProblem,
+  sign: typeof signElectronForPasskeys = signElectronForPasskeys,
+  unsign: typeof unsignForPasskeys = unsignForPasskeys,
+): Promise<void> {
   const marker = readSignedMarker(electron);
   if (!marker) return;
   let expires: Date | undefined;
@@ -163,22 +173,29 @@ export async function keepSigningValid(electron: string, opts: Pick<EnsureAppOpt
     opts.log(`could not read the passkey signing's expiry: ${(e as Error).message}`);
     return;
   }
-  if (signingState(expires, now) !== 'expired') return;
   const date = (d: Date): string => d.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
-  opts.log(`Passkey signing expired ${expires!.toISOString()}; renewing it with team ${marker.team}.`);
+  const certificate = signingState(expires, now) === 'expired' ? undefined : checkCertificate(electron);
+  if (signingState(expires, now) !== 'expired' && !certificate) return;
+  // What went wrong, said in the notices below.
+  const what = certificate
+    ? `the certificate the browser was signed with for passkeys was ${certificate === 'revoked' ? 'revoked (Xcode does this when it makes a new one)' : 'past its date'}`
+    : `the browser's passkey signing expired on ${date(expires!)}`;
+  opts.log(`${what[0].toUpperCase()}${what.slice(1)}; signing it again with team ${marker.team}.`);
   try {
-    const renewed = await signElectronForPasskeys(electron, opts.log, { team: marker.team, bundleId: marker.bundleId || APP_BUNDLE_ID });
+    const renewed = await sign(electron, opts.log, { team: marker.team, bundleId: marker.bundleId || APP_BUNDLE_ID });
     const until = renewed.expires ? new Date(renewed.expires) : undefined;
     // A profile that is itself expired would leave an app macOS refuses to start.
     if (!until || signingState(until, now) === 'expired') throw new Error('Xcode returned a profile that has already expired');
-    opts.onSigningNotice?.('info', `Renewed the browser's passkey signing; it lasts until ${date(until)}.`);
+    opts.onSigningNotice?.(certificate ? 'warning' : 'info', certificate
+      ? `${what[0].toUpperCase()}${what.slice(1)}, so cobrowser signed it again with your team's current certificate. The first time the vault opens, macOS asks to let cobrowser use "cobrowser Safe Storage": enter your Mac password and choose Always Allow. Your logins are all there.`
+      : `Renewed the browser's passkey signing; it lasts until ${date(until)}.`);
   } catch (e) {
     try {
-      unsignForPasskeys(electron, opts.log);
+      unsign(electron, opts.log);
     } catch (u) {
-      opts.log(`could not remove the expired signing: ${(u as Error).message}`);
+      opts.log(`could not remove the signing: ${(u as Error).message}`);
     }
-    opts.onSigningNotice?.('warning', `The browser's passkey signing expired on ${date(expires!)} and could not be renewed (${(e as Error).message}). It now starts unsigned, and passkeys fall back to passwords. Run "Cobrowser: Turn On Passkeys" to sign it again.`);
+    opts.onSigningNotice?.('warning', `${what[0].toUpperCase()}${what.slice(1)}, and it could not be signed again (${(e as Error).message}). It now starts unsigned, and passkeys fall back to passwords; the first time the vault opens, macOS asks to let cobrowser use "cobrowser Safe Storage": choose Always Allow. Run "Cobrowser: Turn On Passkeys" to sign it again.`);
   }
 }
 
