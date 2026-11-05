@@ -14,11 +14,10 @@
 
   <h2>Agent requests</h2>
   <div class="card meter" id="meter">
-    <div class="top"><span class="n" id="count">0</span><span class="of" id="of">of 100 this browser session</span><button id="reset">Reset</button></div>
-    <div class="bar"><b id="fill"></b></div>
+    <div class="top"><span class="n" id="count">0</span><span class="of">this browser session</span><button id="resume" hidden>Resume</button></div>
     <span class="paused" id="paused" hidden></span>
   </div>
-  <p class="hint">Each request waits one to three seconds. At 100 the agent stops and asks you; a site that refuses a fetch pauses it for a minute. Only you can reset the count.</p>
+  <p class="hint">Each request waits one to three seconds. A site that refuses a fetch pauses the agent for a minute; only you can resume it sooner.</p>
 
   <h2>Tab groups</h2>
   <div class="card"><div class="chips" id="containers"></div></div>

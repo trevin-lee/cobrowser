@@ -27,12 +27,17 @@ type Log = (message: string) => void;
  * all closing over the ONE shared BrowserSession. Only the wire objects are per-request;
  * the browser stays single-owner.
  */
+/** The bridge's upload_file asks here (the daemon has no window of its own): the files and the
+ *  site, back the checked files, or why not. */
+export type BridgeUpload = (body: { filePaths?: unknown; host?: unknown; browser?: unknown }) => Promise<unknown>;
+
 export async function startMcpHttpServer(
   token: string,
   preferredPort: number,
   predecessorPid: number | undefined,
   getSession: GetSession,
   log: Log,
+  bridgeUpload?: BridgeUpload,
 ): Promise<McpHttp> {
   const httpServer = http.createServer((req, res) => {
     void handle(req, res).catch((err) => {
@@ -62,6 +67,12 @@ export async function startMcpHttpServer(
     // gone away, and this is how "gone away" is confirmed cheaply.
     if (req.method === 'GET' && req.url?.startsWith('/health')) {
       res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ ok: true, pid: process.pid }));
+      return;
+    }
+    if (req.method === 'POST' && req.url === '/bridge-upload' && bridgeUpload && isLoopbackHost(req.headers.host)) {
+      const body = (await readJsonBody(req)) as Parameters<BridgeUpload>[0];
+      const answer = await bridgeUpload(body ?? {}).catch((e: Error) => ({ error: e.message ?? String(e) }));
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(answer));
       return;
     }
     if (req.method !== 'POST' || !req.url || !req.url.startsWith('/mcp')) {

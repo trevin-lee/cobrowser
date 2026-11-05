@@ -1,3 +1,5 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type { Tool } from './toolSchema';
 import type { ZenHub } from './zenHub';
 
@@ -45,6 +47,16 @@ export const ZEN_TOOLS: Tool[] = [
         limit: num,
       },
       required: ['tabId', 'selector'],
+    },
+  },
+  {
+    name: 'bridge_upload_file',
+    description:
+      "Attach files from this Mac to a page in the human's own browser: a résumé to a job application, a document to a form. Target the file input, or the button or drop zone that opens the picker (by uid from bridge_snapshot, or selector): the file input that belongs to it is found. Paths are absolute (or start with ~/), one per file, no wildcards. The human confirms the files in the cobrowser app first, unless they turned that off for the workspace; either way they see every upload. Hidden files, ~/Library (apart from iCloud Drive) and cobrowser's own data are refused, and the files may add up to 20 MB. The page gets the files as if picked (its input and change events fire); a site that reads them only from a real drop or picker may not react, and then the panel's upload_file is the way.",
+    inputSchema: {
+      type: 'object',
+      properties: { tabId, uid: str, selector: str, filePaths: { type: 'array', items: str } },
+      required: ['tabId', 'filePaths'],
     },
   },
   {
@@ -166,14 +178,32 @@ function staleNote(hub: ZenHub, workspace: string): string | undefined {
 }
 
 /** Run one bridge_* tool for a workspace through its bridge connection. */
+/** Checks the files an agent named and asks the human (in the cobrowser app, through the
+ *  workspace's editor window). The paths come back resolved, or an error to give the agent. */
+export type ConfirmUpload = (filePaths: unknown, host: string, browser: 'chrome' | 'firefox') => Promise<{ files?: { path: string; name: string; size: number }[]; error?: string; declined?: boolean }>;
+
+/** What the files of one bridge upload may add up to: they travel to the add-on in a message. */
+export const BRIDGE_UPLOAD_MAX_BYTES = 20 * 1024 * 1024;
+
+/** The type a page's file input sees, for the kinds people upload; others go without one. */
+const MIME: Record<string, string> = {
+  pdf: 'application/pdf', txt: 'text/plain', csv: 'text/csv', json: 'application/json', md: 'text/markdown', html: 'text/html', xml: 'application/xml', rtf: 'application/rtf',
+  doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', xls: 'application/vnd.ms-excel', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  ppt: 'application/vnd.ms-powerpoint', pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', odt: 'application/vnd.oasis.opendocument.text', pages: 'application/vnd.apple.pages',
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', heic: 'image/heic', svg: 'image/svg+xml',
+  mp3: 'audio/mpeg', m4a: 'audio/mp4', wav: 'audio/wav', mp4: 'video/mp4', mov: 'video/quicktime', zip: 'application/zip',
+};
+export const mimeOf = (name: string): string => MIME[path.extname(name).slice(1).toLowerCase()] ?? '';
+
 export async function callZenTool(
   hub: ZenHub,
   workspace: string,
   name: string,
   args: Record<string, unknown>,
+  opts: { confirmUpload?: ConfirmUpload } = {},
 ): Promise<{ content: Content[]; isError?: boolean }> {
   try {
-    return await runZenTool(hub, workspace, name, args);
+    return await runZenTool(hub, workspace, name, args, opts);
   } catch (e) {
     const note = staleNote(hub, workspace);
     throw new Error(((e as Error).message ?? String(e)) + (note ? ` (${note})` : ''));
@@ -192,6 +222,7 @@ async function runZenTool(
   workspace: string,
   name: string,
   args: Record<string, unknown>,
+  opts: { confirmUpload?: ConfirmUpload },
 ): Promise<{ content: Content[]; isError?: boolean }> {
   const { tabId } = args as { tabId?: number };
   switch (name) {
@@ -221,6 +252,21 @@ async function runZenTool(
     }
     case 'bridge_close_tab':
       return asJson(await hub.call(workspace, 'closeTab', { tabId, allowHumanTab: args.allowHumanTab === true }));
+    case 'bridge_upload_file': {
+      // The file input first: mistakes (no input, one file only) are said before the human is asked.
+      const target = await hub.call<{ upload?: string; multiple?: boolean; host?: string; error?: string }>(workspace, 'uploadTarget', { tabId, ref: args.uid, selector: args.selector });
+      if (!target?.upload || !target.host) return asJson(target ?? { error: 'the page could not be read' });
+      const paths = Array.isArray(args.filePaths) ? args.filePaths : [];
+      if (!target.multiple && paths.length > 1) return asJson({ error: `that file input takes one file and ${paths.length} were given: upload them one at a time, or find the input that takes several` });
+      if (!opts.confirmUpload) return asJson({ error: "uploads go through the workspace's editor window, which is not open" });
+      const browser = hub.status(workspace).browser ?? 'firefox';
+      const ok = await opts.confirmUpload(paths, target.host, browser);
+      if (!ok.files) return asJson(ok);
+      const total = ok.files.reduce((n, f) => n + f.size, 0);
+      if (total > BRIDGE_UPLOAD_MAX_BYTES) return asJson({ error: `the files add up to ${(total / 1048576).toFixed(1)} MB, over the bridge's 20 MB: use the panel's upload_file for them` });
+      const files = ok.files.map((f) => ({ name: f.name, type: mimeOf(f.name), data: fs.readFileSync(f.path).toString('base64') }));
+      return asJson(await hub.call(workspace, 'upload', { tabId, upload: target.upload, host: target.host, files }, 60000));
+    }
     case 'bridge_list_containers':
       return asJson(await hub.call(workspace, 'listContainers'));
     case 'bridge_new_tab':

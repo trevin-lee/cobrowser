@@ -70,15 +70,13 @@ async function refreshUsage() {
   const u = await api.runtime.sendMessage({ type: 'usage' });
   if (!u || u.error) return;
   $('count').textContent = String(u.requests);
-  $('of').textContent = `of ${u.cap} this browser session`;
-  $('fill').style.width = Math.min(100, (u.requests / u.cap) * 100) + '%';
-  $('meter').classList.toggle('full', u.requests >= u.cap);
+  $('resume').hidden = !u.backoffSeconds;
   $('paused').hidden = !u.backoffSeconds;
   $('paused').textContent = u.backoffSeconds ? `Paused for ${u.backoffSeconds} s: a site refused a request.` : '';
 }
 
-async function resetCap() {
-  const u = await api.runtime.sendMessage({ type: 'resetCap' });
+async function resume() {
+  const u = await api.runtime.sendMessage({ type: 'resume' });
   if (u && u.error) { $('paused').hidden = false; $('paused').textContent = u.error; } else await refreshUsage();
 }
 
@@ -98,7 +96,7 @@ async function save() {
 
 
 $('save').addEventListener('click', () => void save());
-$('reset').addEventListener('click', () => void resetCap());
+$('resume').addEventListener('click', () => void resume());
 
 void loadEndpoints();
 void refreshContainers().then(refreshStatus);

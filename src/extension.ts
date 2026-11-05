@@ -6,6 +6,7 @@ import * as os from 'node:os';
 import { execFile } from 'node:child_process';
 import { BrowserSession } from './browser/BrowserSession';
 import { startMcpHttpServer, type McpHttp } from './mcp/server';
+import { uploadsWithoutAsking } from './mcp/tools';
 import { BrowserPanel } from './webview/BrowserPanel';
 import { SessionTreeProvider, type TreeNode } from './webview/SessionTreeProvider';
 import { writeClientConfigs } from './clients/writeClientConfigs';
@@ -412,7 +413,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   // In-process MCP server (per-request stateless transport).
-  mcp = await startMcpHttpServer(token, preferredPort, predecessorPid, getSession, log);
+  // The bridge's upload_file is confirmed here, as the panel's is: this workspace's setting, and
+  // the cobrowser app asking the human (started if it is not running).
+  const bridgeUpload = ({ filePaths, host, browser }: { filePaths?: unknown; host?: unknown; browser?: unknown }) =>
+    withApp((c) => c.confirmBridgeUpload(filePaths, String(host ?? ''), browser === 'chrome' ? 'chrome' : 'firefox', !uploadsWithoutAsking()));
+  mcp = await startMcpHttpServer(token, preferredPort, predecessorPid, getSession, log, bridgeUpload);
 
   // The Firefox bridge is served by the DAEMON (fixed port, machine-wide token), so the URL
   // the add-on dials for this workspace never changes across reloads. This window only tells

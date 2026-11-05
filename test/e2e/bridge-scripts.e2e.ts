@@ -25,6 +25,15 @@ suite('bridge-scripts', async (r) => {
         if (res.exceptionDetails) throw new Error(res.exceptionDetails.exception?.description ?? 'evaluate failed');
         return res.result.value as T;
       };
+      // bridge_upload_file: the file input behind a label is found, a page that moved is refused,
+      // and the page hears the file as if it were picked.
+      await run('document.body.insertAdjacentHTML("beforeend", "<label id=pickx>Upload r\u00e9sum\u00e9<input id=fx type=file hidden></label><div id=gotx></div>"); document.getElementById("fx").addEventListener("change", async (e) => { const f = e.target.files[0]; document.getElementById("gotx").textContent = f.name + ":" + f.type + ":" + await f.text(); }); true');
+      const tgt = await run<{ upload?: string; host?: string; multiple?: boolean }>('PAGE_SCRIPTS.uploadTarget(null, "#pickx")');
+      const moved = await run<{ error?: string }>(`PAGE_SCRIPTS.setFiles(${JSON.stringify(tgt.upload)}, "elsewhere.example", [])`);
+      const set = await run<{ uploaded?: string[] }>(`PAGE_SCRIPTS.setFiles(${JSON.stringify(tgt.upload)}, location.host, [{ name: "cv.txt", type: "text/plain", data: btoa("hello") }])`);
+      await sleep(200);
+      const heard = await run<string>('document.getElementById("gotx").textContent');
+      r.check(`[${ext}] an upload finds the file input behind a label, refuses a page that moved, and the page hears the file`, !!tgt.upload && tgt.multiple === false && /moved from elsewhere.example/.test(moved.error ?? '') && set.uploaded?.[0] === 'cv.txt' && heard === 'cv.txt:text/plain:hello', { tgt, moved, set, heard });
       // fill: a field marked only by its autocomplete token (a card number) is the human's, as in the panel.
       await run('document.body.insertAdjacentHTML("beforeend", "<input id=ccx autocomplete=cc-number><input id=plainx>"); true');
       const fillRes = await run<{ refused?: string[] }>('PAGE_SCRIPTS.fill([{ selector: "#ccx", value: "4242424242424242" }, { selector: "#plainx", value: "hello" }], false, CREDENTIAL.source, SECRET_AUTOCOMPLETE)');

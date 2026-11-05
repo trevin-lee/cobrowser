@@ -133,6 +133,24 @@ const INSTRUCTIONS = `cobrowser is a real browser inside the human's editor, sha
 - Attach files (a résumé, a document) with upload_file. The human confirms the files first, unless they turned that off for the workspace; either way they see every upload.
 - When a page misbehaves, list_console_messages and list_network_requests show its errors.`;
 
+/** A bridge upload is confirmed where panel uploads are: the workspace's window reads its
+ *  Uploads Without Asking setting and has the cobrowser app ask the human. Up to five minutes:
+ *  the human may take a while to answer. */
+async function confirmUploadIn(reg: Registration, filePaths: unknown, host: string, browser: 'chrome' | 'firefox'): Promise<{ files?: { path: string; name: string; size: number }[]; error?: string; declined?: boolean }> {
+  try {
+    const res = await fetch(new URL('/bridge-upload', reg.url), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${reg.token}` },
+      body: JSON.stringify({ filePaths, host, browser }),
+      signal: AbortSignal.timeout(5 * 60_000),
+    });
+    if (!res.ok) return { error: `the "${reg.name}" editor window could not ask the human (HTTP ${res.status}): reload that window and try again` };
+    return (await res.json()) as { files?: { path: string; name: string; size: number }[]; error?: string; declined?: boolean };
+  } catch (e) {
+    return { error: `the "${reg.name}" editor window did not answer: ${(e as Error).message}` };
+  }
+}
+
 /** The tool surface exactly as a window publishes it (or last published it): the caller's own
  *  window when it is bound to one, else the first window that answers. */
 const toolsInFlight = new Map<string, Promise<Tool[]>>();
@@ -299,7 +317,7 @@ function buildServer(scope: Registration | undefined): Server {
         };
       }
       try {
-        return await callZenTool(zen, target.id, name, args);
+        return await callZenTool(zen, target.id, name, args, { confirmUpload: (filePaths, host, browser) => confirmUploadIn(target, filePaths, host, browser) });
       } catch (e) {
         return { content: [{ type: 'text' as const, text: `bridge (${target.name}): ${String((e as Error).message ?? e)}` }], isError: true };
       }

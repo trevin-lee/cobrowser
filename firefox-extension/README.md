@@ -76,8 +76,9 @@ make one with the same name; until then the agent is told it is gone.
 
 Input is **synthetic** (`isTrusted: false`): no extension can send real input. Links, buttons
 and form fields work; values are set through the native setter and followed by
-`input`/`change`, so React and Vue notice them. File inputs, OS dialogs and pickers,
-drag-and-drop, and sites that check event trust do not; a click that changed nothing comes back
+`input`/`change`, so React and Vue notice them. `bridge_upload_file` gives a file input its
+files the same way, once you confirm them in the cobrowser app. OS dialogs and pickers,
+drag-and-drop, and sites that check event trust do not work; a click that changed nothing comes back
 saying so, and the agent moves that step to the cobrowser panel, where input is real.
 
 `about:` pages and addons.mozilla.org cannot be scripted, so tabs there are listed but not
@@ -94,11 +95,12 @@ behind a login. Cross-origin is refused.
 ## Pace, and what it will not do
 
 Every bridge call on a page or a site (reading the open page and a blank new tab included)
-waits 1 to 3 seconds, counts toward 100 in a browser session, stops there, and pauses for a minute when a site answers `bridge_fetch` with 429 or 403 or a challenge. The
-count, the pause and which tabs the agent opened are kept in memory: they start over when the
-browser quits, and when Firefox updates or reloads the add-on. Hitting
-the cap is a stop, not a retry: the agent is told to report back. The toolbar popup shows the
-count and has a **Reset** button; only that page can reset it, not a script in a tab.
+waits 1 to 3 seconds, and everything pauses for a minute when a site answers `bridge_fetch`
+with 429 or 403 or a challenge: a pause is a stop, not a retry, and the agent is told to report
+back. There is no cap on how many. The count, the pause and which tabs the agent opened are
+kept in memory: they start over when the browser quits, and when Firefox updates or reloads the
+add-on. The toolbar popup shows the count, and while paused a **Resume** button; only that page
+can end a pause early, not a script in a tab.
 
 The agent will not type a password, one-time code, card number or security code unless you
 tell it to (`allowCredentials`).

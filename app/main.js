@@ -506,38 +506,52 @@ const TEST_UPLOAD_CONFIRM = SKIP_BIOMETRICS ? process.env.COBROWSER_TEST_UPLOAD_
  * armed: the next file picker it opens takes these files instead of asking.
  */
 async function confirmUpload(tab, paths, workspaceName, ask = true) {
-  const checked = uploads.checkPaths(paths, { home: os.homedir(), refused: [DATA_DIR, STATE_DIR] });
-  if (checked.error) return { error: checked.error };
   const host = hostOf(tab.win.webContents.getURL());
-  const list = checked.files.map((f) => `${f.shown} (${uploads.formatSize(f.size)})`).join('\n');
-  let ok;
-  if (!ask) {
-    ok = true; // the workspace's cobrowser.uploadsWithoutAsking: the human is told afterwards instead
-  } else if (TEST_UPLOAD_CONFIRM !== undefined) {
-    log(`upload: TEST MODE — upload to ${host} auto-answered "${TEST_UPLOAD_CONFIRM}"`);
-    ok = TEST_UPLOAD_CONFIRM === 'accept';
-  } else {
-    tab.pendingDialogs++;
-    try {
-      focusApp();
-      const { response } = await dialog.showMessageBox({
-        type: 'question',
-        message: `The agent in "${workspaceName}" asks to upload ${checked.files.length === 1 ? 'a file' : `${checked.files.length} files`} to ${host}`,
-        detail: `${list}\n\nAllow only files you mean to send to this site.`,
-        buttons: ['Upload', 'Cancel'], defaultId: 1, cancelId: 1,
-      });
-      ok = response === 0;
-    } finally {
-      tab.pendingDialogs--;
-    }
-  }
-  log(`upload: ${checked.files.length} file(s) to ${host} from ${workspaceName}: ${!ask ? 'allowed without asking' : ok ? 'allowed' : 'declined'}`);
-  if (!ok) return { declined: true, error: 'the human declined the upload' };
+  tab.pendingDialogs++;
+  let asked;
+  try { asked = await askToUpload(paths, host, workspaceName, ask, ''); } finally { tab.pendingDialogs--; }
+  if (asked.error) return asked;
+  const checked = asked;
   // The human allowed this site; a page that moved to another while they read does not get them.
   const now = hostOf(tab.win.webContents.getURL());
   if (now !== host) return { error: `the page moved from ${host} to ${now} while the human was asked: call upload_file again` };
   tab.armUpload(checked.files.map((f) => f.path), ask ? undefined : workspaceName);
   return { armed: checked.files.map((f) => f.name) };
+}
+
+/**
+ * The files are checked (uploads.js) and the human confirms them in a dialog naming the site,
+ * for the panel's upload_file and the bridge's alike. `where` names the human's own browser
+ * for a bridge upload (" in your Chrome"). Without asking (the workspace's
+ * cobrowser.uploadsWithoutAsking), a bridge upload is announced instead: the panel's is, once
+ * its picker takes the files.
+ */
+async function askToUpload(paths, host, workspaceName, ask, where) {
+  const checked = uploads.checkPaths(paths, { home: os.homedir(), refused: [DATA_DIR, STATE_DIR] });
+  if (checked.error) return { error: checked.error };
+  const list = checked.files.map((f) => `${f.shown} (${uploads.formatSize(f.size)})`).join('\n');
+  let ok;
+  if (!ask) {
+    ok = true; // the human is told instead
+    if (where && !SKIP_BIOMETRICS && Notification.isSupported()) {
+      new Notification({ title: `Uploading to ${host}${where}`, body: `${checked.files.map((f) => f.name).join(', ')}, by the agent in "${workspaceName}"`, silent: true }).show();
+    }
+  } else if (TEST_UPLOAD_CONFIRM !== undefined) {
+    log(`upload: TEST MODE — upload to ${host}${where} auto-answered "${TEST_UPLOAD_CONFIRM}"`);
+    ok = TEST_UPLOAD_CONFIRM === 'accept';
+  } else {
+    focusApp();
+    const { response } = await dialog.showMessageBox({
+      type: 'question',
+      message: `The agent in "${workspaceName}" asks to upload ${checked.files.length === 1 ? 'a file' : `${checked.files.length} files`} to ${host}${where}`,
+      detail: `${list}\n\nAllow only files you mean to send to this site.`,
+      buttons: ['Upload', 'Cancel'], defaultId: 1, cancelId: 1,
+    });
+    ok = response === 0;
+  }
+  log(`upload: ${checked.files.length} file(s) to ${host}${where} from ${workspaceName}: ${!ask ? 'allowed without asking' : ok ? 'allowed' : 'declined'}`);
+  if (!ok) return { declined: true, error: 'the human declined the upload' };
+  return checked;
 }
 
 
@@ -2905,6 +2919,17 @@ async function handle(ws, state, m) {
       const reply = (obj) => ws.send(JSON.stringify({ ...obj, requestId: m.requestId }));
       if (!t || t.win.isDestroyed()) return reply({ error: 'no such tab in this workspace' });
       try { return reply(await confirmUpload(t, m.files, path.basename(w.id) || w.id, m.ask !== false)); } catch (e) { return reply({ error: e.message || String(e) }); }
+    }
+    // The bridge's upload_file: the page is in the human's own browser, so there is no tab here,
+    // only the site it is on. The files' paths go back to the editor, which sends their
+    // contents to the browser's add-on.
+    case 'upload.confirmFor': {
+      const reply = (obj) => ws.send(JSON.stringify({ ...obj, requestId: m.requestId }));
+      const browser = m.browser === 'chrome' ? 'Chrome' : 'Firefox';
+      try {
+        const r = await askToUpload(m.files, String(m.host || 'the site'), path.basename(w.id) || w.id, m.ask !== false, ` in your ${browser}`);
+        return reply(r.error ? r : { files: r.files.map((f) => ({ path: f.path, name: f.name, size: f.size })) });
+      } catch (e) { return reply({ error: e.message || String(e) }); }
     }
     case 'upload.outcome': {
       const t = w.tabs.get(m.tabId);

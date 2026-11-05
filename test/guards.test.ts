@@ -66,7 +66,7 @@ test('ordinary fields are still fillable', () => {
   }
 });
 
-test('throttle and cap constants are present and sane', () => {
+test('the pace is a hand\'s, and there is no request cap', () => {
   const num = (name: string): number => {
     const m = new RegExp(`^const ${name} = (\\d+);$`, 'm').exec(src);
     assert.ok(m, `${name} missing`);
@@ -74,10 +74,9 @@ test('throttle and cap constants are present and sane', () => {
   };
   const min = num('THROTTLE_MIN_MS');
   const max = num('THROTTLE_MAX_MS');
-  const cap = num('SESSION_REQUEST_CAP');
   assert.ok(min >= 1000, 'a sub-second floor is not human pace');
   assert.ok(max > min, 'jitter needs a range');
-  assert.ok(cap > 0 && cap <= 500, 'a per-session cap must exist and be a real ceiling');
+  for (const { dir, src: code } of EXTENSIONS) assert.ok(!/SESSION_REQUEST_CAP|cap reached/.test(code), `${dir} still stops at a request cap`);
 });
 
 import { humanTabRefusal } from '../src/browser/guards';

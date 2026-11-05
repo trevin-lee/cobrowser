@@ -337,6 +337,12 @@ export class AppConnection {
     const { requestId: _id, ...r } = await this.request({ type: 'vault.createLogin', tabId, ...opts }, 120000);
     return r as unknown as CreatedLogin;
   }
+  /** The bridge's upload_file: the files checked and confirmed for a site in the human's own
+   *  browser (no tab here), or why not. `ask` false: Uploads Without Asking, announced instead. */
+  async confirmBridgeUpload(files: unknown, host: string, browser: 'chrome' | 'firefox', ask: boolean): Promise<{ files?: { path: string; name: string; size: number }[]; error?: string; declined?: boolean }> {
+    const { requestId: _id, ...r } = await this.request({ type: 'upload.confirmFor', files, host, browser, ask }, 5 * 60_000);
+    return r as { files?: { path: string; name: string; size: number }[]; error?: string; declined?: boolean };
+  }
   async vaultFill(tabId: string, opts: { usernameUid?: string; passwordUid?: string; username?: string }): Promise<{ filled: string[]; username?: string; error?: string; candidates?: string[] }> {
     const { requestId: _id, ...r } = await this.request({ type: 'vault.fill', tabId, ...opts }, 120000);
     return r as unknown as { filled: string[]; username?: string; error?: string; candidates?: string[] };

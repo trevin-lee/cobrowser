@@ -22,7 +22,7 @@ const pageId = z
  * settings would turn it on in every workspace at once. Restricted in package.json, so VS Code
  * also ignores it in a workspace the human has not trusted.
  */
-function uploadsWithoutAsking(): boolean {
+export function uploadsWithoutAsking(): boolean {
   if (!vscode.workspace.isTrusted) return false;
   // The first folder is the workspace cobrowser serves, so its own .vscode/settings.json counts
   // in a multi-root window too.

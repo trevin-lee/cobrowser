@@ -98,6 +98,11 @@ document.getElementById('file').addEventListener('change',(e)=>window.__files=[.
     r.check('upload_file straight into a file input', !!single.uploaded && (await got()).includes('"single":["e2e-cover.txt:12"]'), { single, page: await got() });
     const two = await up({ selector: '#single', filePaths: [UP, UP2] });
     r.check('a single-file input refuses two files before the human is asked', /takes one file/.test(two.error ?? ''), two);
+    // The bridge's uploads are confirmed here too, by site and browser, with the same rules.
+    const bridgeAsked = await conn.confirmBridgeUpload([UP], 'jobs.example', 'chrome', true);
+    const bridgeFree = await conn.confirmBridgeUpload(['~/.ssh/known_hosts'], 'jobs.example', 'chrome', false);
+    const bridgeOk = await conn.confirmBridgeUpload([UP, UP2], 'jobs.example', 'firefox', false);
+    r.check("a bridge upload is asked like the panel's, refuses the same files, and returns the checked paths", bridgeAsked.declined === true && /hidden/.test(bridgeFree.error ?? '') && JSON.stringify(bridgeOk.files?.map((f) => [f.name, f.size])) === '[["e2e-upload.txt",9],["e2e-cover.txt",12]]', { bridgeAsked, bridgeFree, bridgeOk });
     const nothing = await up({ selector: '#nothing', filePaths: [UP] });
     r.check('a click that opens no picker says so and points at the file inputs', /did not open a file picker.*2 file inputs/.test(nothing.error ?? ''), nothing);
     const hidden = await up({ selector: '#single', filePaths: [path.join(os.homedir(), '.ssh', 'known_hosts')] });

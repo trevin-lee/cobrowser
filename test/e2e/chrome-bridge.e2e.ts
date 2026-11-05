@@ -10,7 +10,9 @@ import { suite, serve, html, sleep, ROOT, chromeForTesting, chromeWithBridge } f
 
 const PAGE = `<!doctype html><title>orders</title>
 <a class=order href="/orders/1">Order one</a> <a class=order href="/orders/2">Order two</a> <a class=order href="/orders/3">Order three</a>
-<input id=pw type=password value=hunter2>`;
+<input id=pw type=password value=hunter2>
+<label id=pick>Upload résumé<input id=f type=file hidden></label><div id=got></div>
+<script>document.getElementById('f').addEventListener('change', async (e) => { const f = e.target.files[0]; document.getElementById('got').textContent = f.name + ':' + f.type + ':' + await f.text(); });</script>`;
 
 suite('chrome-bridge', async (r) => {
   const exe = chromeForTesting();
@@ -52,7 +54,15 @@ suite('chrome-bridge', async (r) => {
     const limited = await call('fetchUrl', { url: srv.base + '/api/limited' });
     const after = await call('fetchUrl', { url: srv.base + '/api/orders' });
     r.check('a 429 from the site pauses the bridge rather than retrying', /answered 429/.test(limited.error ?? '') && /backing off/.test(after.error ?? ''), { limited, after });
-    await run('backoffUntil = 0; persistSession(); 1'); // as the popup's Reset does, so the suite goes on
+    await run('backoffUntil = 0; persistSession(); 1'); // as the popup's Resume does, so the suite goes on
+
+    // bridge_upload_file in Chrome itself: the files cross from the service worker into the page.
+    const target = await call('uploadTarget', { selector: '#pick' });
+    const tv = (target.value ?? {}) as { upload?: string; host?: string };
+    const up = await call('upload', { upload: tv.upload, host: tv.host, files: [{ name: 'cv.pdf', type: 'application/pdf', data: Buffer.from('%PDF-1.4 hi').toString('base64') }] });
+    await sleep(300);
+    const heard = ((await call('query', { selector: '#got', fields: ['text'] })).value as { items: { text: string }[] }).items[0]?.text;
+    r.check('an upload in real Chrome gives the page the file, name, type and content', (up.value as { uploaded?: string[] })?.uploaded?.[0] === 'cv.pdf' && heard === 'cv.pdf:application/pdf:%PDF-1.4 hi', { target, up, heard });
 
     const read = await call('readPage', {});
     const page = read.value as { title: string; text: string };

@@ -28,8 +28,6 @@ const BROWSER = 'chrome';
  */
 const THROTTLE_MIN_MS = 1000;
 const THROTTLE_MAX_MS = 3000;
-/** Per-session ceiling, so a runaway loop cannot quietly make a thousand requests. */
-const SESSION_REQUEST_CAP = 100;
 /** How long to wait out a server that has started pushing back. */
 const BACKOFF_ON_REFUSAL_MS = 60000;
 
@@ -42,9 +40,9 @@ const agentTabs = new Set();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * The count and the agent's tabs live in session storage: Chrome stops an idle service
- * worker and starts a fresh one, which would otherwise reset the cap to zero mid-session.
- * Session storage lasts until the browser quits, the same "session" the cap means.
+ * The count, the pause and the agent's tabs live in session storage: Chrome stops an idle
+ * service worker and starts a fresh one, which would otherwise forget them mid-session.
+ * Session storage lasts until the browser quits.
  */
 let restored;
 function restoreSession() {
@@ -63,13 +61,6 @@ function persistSession() {
  *  too). Throws rather than silently proceeding. */
 async function pace() {
   await restoreSession();
-  if (requestCount >= SESSION_REQUEST_CAP) {
-    throw new Error(
-      `request cap reached (${SESSION_REQUEST_CAP} this session). This is a safety stop, not a site error — ` +
-        'tell the human what you have collected so far and ask before continuing. Only the human can reset it, ' +
-        'from the Cobrowser Bridge toolbar button.',
-    );
-  }
   const now = Date.now();
   if (now < backoffUntil) {
     throw new Error(
@@ -435,6 +426,20 @@ async function dispatch(conn, method, params) {
       const snap = await runInTab(params.tabId, PAGE_SCRIPTS.snapshot, [params.options || null]);
       await markTabActivity(params.tabId, 'inspected this page');
       return snap;
+    }
+
+    case 'uploadTarget': {
+      await assertInScope(conn, params.tabId);
+      await pace();
+      return (await runInTab(params.tabId, PAGE_SCRIPTS.uploadTarget, [params.ref ?? null, params.selector ?? null])) || { error: 'the page could not be read' };
+    }
+
+    case 'upload': {
+      await assertInScope(conn, params.tabId);
+      await pace();
+      const done = await runInTab(params.tabId, PAGE_SCRIPTS.setFiles, [String(params.upload || ''), String(params.host || ''), Array.isArray(params.files) ? params.files : []]);
+      if (done && done.uploaded) await markTabActivity(params.tabId, 'uploaded');
+      return done || { error: 'the page could not be reached' };
     }
 
     case 'click': {
@@ -911,6 +916,53 @@ const PAGE_SCRIPTS = {
     };
   },
 
+  // bridge_upload_file, first half: the file input that belongs to what the agent targeted (the
+  // input itself, one inside it, its label's, the one nearest it, or the page's only one), marked
+  // for the second half. Nothing is changed yet: the human has not been asked.
+  uploadTarget: (ref, selector) => {
+    const el = ref ? document.querySelector(`[data-cobrowser-ref="${ref}"]`) : selector ? document.querySelector(selector) : null;
+    if (!el) return { error: `no element for ${ref || selector || '(nothing given: pass uid or selector)'}` };
+    const isFile = (n) => n instanceof HTMLInputElement && n.type === 'file';
+    let input = isFile(el) ? el : null;
+    if (!input && el.querySelectorAll) { const inside = el.querySelectorAll('input[type=file]'); if (inside.length === 1) input = inside[0]; }
+    if (!input && el.control && isFile(el.control)) input = el.control;
+    for (let a = el.parentElement; !input && a; a = a.parentElement) {
+      const near = a.querySelectorAll('input[type=file]');
+      if (near.length === 1) input = near[0];
+      else if (near.length > 1) break; // several around it: which one is not ours to guess
+    }
+    const all = document.querySelectorAll('input[type=file]');
+    if (!input && all.length === 1) input = all[0];
+    if (!input) {
+      return { error: all.length
+        ? `no file input belongs to that element, and the page has ${all.length}: target one of them (selector "input[type=file]" with what tells them apart)`
+        : "the page has no file input: its picker is opened by script, which the bridge cannot reach. Use the panel's upload_file" };
+    }
+    if (input.disabled) return { error: 'that file input is disabled' };
+    const tag = 'cb_upload_' + Math.random().toString(36).slice(2, 8);
+    input.setAttribute('data-cobrowser-upload', tag);
+    return { upload: tag, multiple: input.multiple, accept: input.accept || '', host: location.host };
+  },
+
+  // bridge_upload_file, second half, once the human allowed these files for this site: the input
+  // gets them as if they were picked, and hears it (input, then change).
+  setFiles: (tag, host, files) => {
+    if (location.host !== host) return { error: `the page moved from ${host} to ${location.host} while the human was asked: call bridge_upload_file again` };
+    const input = document.querySelector(`[data-cobrowser-upload="${tag}"]`);
+    if (!input) return { error: 'the file input went away while the human was asked: call bridge_upload_file again' };
+    const dt = new DataTransfer();
+    for (const f of files) {
+      const bin = atob(f.data);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      dt.items.add(new File([bytes], f.name, { type: f.type || '', lastModified: Date.now() }));
+    }
+    input.files = dt.files;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    return { uploaded: [...input.files].map((f) => f.name), host: location.host };
+  },
+
   click: (ref, selector) => {
     const el = ref
       ? document.querySelector(`[data-cobrowser-ref="${ref}"]`)
@@ -1055,13 +1107,13 @@ function statusList() {
   }));
 }
 
-/** Only the extension's own page, opened by the human, may reset the cap: scripts the agent
- *  runs in a tab can message this worker too, and must not lift their own limit. */
+/** Only the extension's own page, opened by the human, may lift a pause: scripts the agent runs
+ *  in a tab can message this worker too, and must not lift their own. */
 const fromOptionsPage = (sender) => !!sender && sender.id === api.runtime.id && typeof sender.url === 'string' && sender.url.startsWith(api.runtime.getURL('options.html'));
 
 async function usage() {
   await restoreSession();
-  return { requests: requestCount, cap: SESSION_REQUEST_CAP, backoffSeconds: Math.max(0, Math.ceil((backoffUntil - Date.now()) / 1000)) };
+  return { requests: requestCount, backoffSeconds: Math.max(0, Math.ceil((backoffUntil - Date.now()) / 1000)) };
 }
 
 function updateBadge() {
@@ -1082,10 +1134,10 @@ api.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg && msg.type === 'reconcile') return reply(reconcile().then(() => statusList()));
   if (msg && msg.type === 'containers') return reply(listScopes());
   if (msg && msg.type === 'usage') return reply(usage());
-  if (msg && msg.type === 'resetCap') {
-    if (!fromOptionsPage(_sender)) return reply({ error: 'refused: only the Cobrowser Bridge page can reset the request cap' });
-    // After the restore, or a restore still on its way would bring the old count back.
-    return reply(restoreSession().then(() => { requestCount = 0; backoffUntil = 0; persistSession(); return usage(); }));
+  if (msg && msg.type === 'resume') {
+    if (!fromOptionsPage(_sender)) return reply({ error: 'refused: only the Cobrowser Bridge page can lift a pause' });
+    // After the restore, or a restore still on its way would bring the old pause back.
+    return reply(restoreSession().then(() => { backoffUntil = 0; persistSession(); return usage(); }));
   }
   return false;
 });

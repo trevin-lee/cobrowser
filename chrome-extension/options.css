@@ -56,9 +56,6 @@ h2 { margin: 18px 0 8px; font-size: 10.5px; font-weight: 600; letter-spacing: .0
 .meter .top { display: flex; align-items: baseline; gap: 8px; }
 .meter .n { font-size: 20px; font-weight: 650; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
 .meter .of { color: var(--muted); flex: 1; }
-.bar { height: 6px; border-radius: 3px; background: var(--lift); overflow: hidden; }
-.bar b { display: block; height: 100%; width: 0; background: var(--accent); border-radius: 3px; transition: width .3s ease; }
-.meter.full .bar b { background: var(--danger); }
 .paused { color: var(--danger); font-size: 12px; }
 
 .empty { padding: 12px; color: var(--muted); }
@@ -88,4 +85,4 @@ textarea {
 textarea::placeholder { color: var(--dim); }
 .row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
 .saved { color: var(--muted); font-size: 12px; }
-@media (prefers-reduced-motion: reduce) { .bar b, summary::before { transition: none; } }
+@media (prefers-reduced-motion: reduce) { summary::before { transition: none; } }

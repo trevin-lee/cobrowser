@@ -36,11 +36,12 @@ logins. The group limits what the agent can *reach*, not what the browser *knows
 ## Pace
 
 Every bridge call on a page or a site (reading the open page and a blank new tab included)
-waits 1 to 3 seconds, counts toward 100 in a browser session, stops there, and pauses for a minute when a site answers `bridge_fetch` with 429 or 403 or a
-challenge. The count, the pause and which tabs the agent opened survive Chrome stopping and
-restarting the extension's service worker, but start over when the extension is reloaded or
-updated (its reload button in `chrome://extensions`) and when Chrome quits. The toolbar popup shows it and
-has a **Reset** button; only that page can reset it, not a script in a tab.
+waits 1 to 3 seconds, and everything pauses for a minute when a site answers `bridge_fetch`
+with 429 or 403 or a challenge. There is no cap on how many. The count, the pause and which
+tabs the agent opened survive Chrome stopping and restarting the extension's service worker,
+but start over when the extension is reloaded or updated (its reload button in
+`chrome://extensions`) and when Chrome quits. The toolbar popup shows the count, and while
+paused a **Resume** button; only that page can end a pause early, not a script in a tab.
 
 ## Differences from the Firefox add-on
 
