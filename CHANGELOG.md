@@ -2,6 +2,16 @@
 
 Release notes for earlier versions are on the [GitHub releases page](https://github.com/trevin-lee/cobrowser/releases).
 
+## 0.9.33
+
+### Added
+
+- **`bridge_upload_file`: agents attach files in your own Chrome or Firefox**, as `upload_file` does in the panel. The agent targets the file input, or the button or drop zone that opens it, and you confirm the files in the cobrowser app, which names the site and the browser (unless Uploads Without Asking is on for the workspace). The same files are refused as in the panel, and they may add up to 20 MB. The page gets them as if picked.
+
+### Removed
+
+- **The bridge's 100-request cap.** Each request still waits 1 to 3 seconds, and a site that refuses a fetch still pauses everything for a minute. The popup counts requests, and its **Resume** button, shown while paused, replaces Reset.
+
 ## 0.9.32
 
 ### Added
