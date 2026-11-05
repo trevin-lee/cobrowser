@@ -2,6 +2,12 @@
 
 Release notes for earlier versions are on the [GitHub releases page](https://github.com/trevin-lee/cobrowser/releases).
 
+## 0.9.34
+
+### Fixed
+
+- **A revoked signing certificate no longer locks the vault.** When Xcode makes a new Apple Development certificate for a team, it revokes the old one. A browser signed with the old one for passkeys still started, but macOS kept the vault's keychain key from it, so every login fill failed with "OS keychain encryption is unavailable". Before the browser starts, a revoked or expired certificate now gets it signed again with the team's current certificate (or ad hoc, when it can't be), and macOS asks once to let cobrowser use "cobrowser Safe Storage". Turn On Passkeys no longer picks a revoked certificate, and a refused keychain says why and that nothing is lost.
+
 ## 0.9.33
 
 ### Added
