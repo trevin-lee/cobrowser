@@ -2,10 +2,11 @@
 
 Release notes for earlier versions are on the [GitHub releases page](https://github.com/trevin-lee/cobrowser/releases).
 
-## 0.9.34
+## 0.9.35
 
 ### Fixed
 
+- **A bridge click by uid could land on another element.** Each `bridge_snapshot` numbered elements from 1 again without clearing the numbers earlier snapshots left on the page, so after a filtered snapshot a uid could name an element an earlier one had numbered the same (on a bank's form, its Sign out link). An element now keeps its uid, new ones are never reused, and a uid the page has copied is refused. The bridge also reaches inside web components (shadow roots): clicks and fills by uid or selector find elements there, and filling a select or text-field component sets the real field inside it.
 - **A revoked signing certificate no longer locks the vault.** When Xcode makes a new Apple Development certificate for a team, it revokes the old one. A browser signed with the old one for passkeys still started, but macOS kept the vault's keychain key from it, so every login fill failed with "OS keychain encryption is unavailable". Before the browser starts, a revoked or expired certificate now gets it signed again with the team's current certificate (or ad hoc, when it can't be), and macOS asks once to let cobrowser use "cobrowser Safe Storage". Turn On Passkeys no longer picks a revoked certificate, and a refused keychain says why and that nothing is lost.
 
 ## 0.9.33
