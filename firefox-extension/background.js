@@ -807,8 +807,12 @@ const PAGE_SCRIPTS = {
   },
 
   probe: (text, selector) => {
+    // Inside open shadow roots too (web components, as banks' design systems build their forms),
+    // not only the page's own document.
+    const deepAll = (sel) => { const out = [...document.querySelectorAll(sel)]; const visit = (root, d) => { for (const n of root.querySelectorAll('*')) if (n.shadowRoot) { out.push(...n.shadowRoot.querySelectorAll(sel)); if (d < 8) visit(n.shadowRoot, d + 1); } }; visit(document, 0); return out; };
+    const deepFind = (sel) => deepAll(sel)[0] || null;
     if (selector) {
-      const el = document.querySelector(selector);
+      const el = deepFind(selector);
       return { found: !!el, url: location.href };
     }
     // Any of several texts, like the panel's wait_for.
@@ -836,6 +840,10 @@ const PAGE_SCRIPTS = {
   },
 
   snapshot: (opts) => {
+    // Inside open shadow roots too (web components, as banks' design systems build their forms),
+    // not only the page's own document.
+    const deepAll = (sel) => { const out = [...document.querySelectorAll(sel)]; const visit = (root, d) => { for (const n of root.querySelectorAll('*')) if (n.shadowRoot) { out.push(...n.shadowRoot.querySelectorAll(sel)); if (d < 8) visit(n.shadowRoot, d + 1); } }; visit(document, 0); return out; };
+    const deepFind = (sel) => deepAll(sel)[0] || null;
     const o = opts || {};
     const SEL = 'a[href], button, input, select, textarea, label, [role="button"], [role="link"], [role="radio"], [role="checkbox"], [role="switch"], [role="tab"], [role="menuitem"], [role="option"], [role="combobox"], [contenteditable="true"]';
 
@@ -849,13 +857,17 @@ const PAGE_SCRIPTS = {
         if (el.shadowRoot) collect(el.shadowRoot, out, depth + 1);
       }
     };
-    const scope = o.withinSelector ? document.querySelector(o.withinSelector) : document;
+    const scope = o.withinSelector ? deepFind(o.withinSelector) : document;
     if (!scope) return { url: location.href, title: document.title.replace(/^\u25CF /, ''), elements: [], note: `withinSelector matched nothing: ${o.withinSelector}` };
     const found = [];
     collect(scope, found, 0);
 
     const out = [];
-    let n = 0;
+    // The highest uid number given on this page, kept on the page: the first snapshot after an
+    // update starts above whatever earlier snapshots left there.
+    let seq = Number(document.documentElement.getAttribute('data-cobrowser-refs')) || 0;
+    if (!seq) for (const t of deepAll('[data-cobrowser-ref]')) { const m = /^cb(\d+)$/.exec(t.getAttribute('data-cobrowser-ref')); if (m) seq = Math.max(seq, Number(m[1])); }
+    const nextRef = () => { seq += 1; document.documentElement.setAttribute('data-cobrowser-refs', String(seq)); return seq; };
     let skippedUnlabeled = 0;
     // A radio or checkbox drawn by the page: the real input is hidden (a pixel wide, clipped or
     // transparent) and a label is what the human sees and clicks. List the label, so the ref
@@ -900,8 +912,11 @@ const PAGE_SCRIPTS = {
       if (o.textContains && !label.toLowerCase().includes(String(o.textContains).toLowerCase())) continue;
       if (o.role && (el.getAttribute('role') || el.tagName.toLowerCase()) !== o.role) continue;
 
-      const ref = 'cb' + ++n;
-      el.setAttribute('data-cobrowser-ref', ref);
+      // An element keeps its uid across snapshots, and a new one gets a number never given on
+      // this page before: a uid from an earlier snapshot can never name a different element
+      // (numbering from 1 each time once let a stale uid click the page's Sign out).
+      let ref = el.getAttribute('data-cobrowser-ref');
+      if (!ref || !/^cb\d+$/.test(ref)) { ref = 'cb' + nextRef(); el.setAttribute('data-cobrowser-ref', ref); }
       const item = {
         ref,
         tag: el.tagName.toLowerCase(),
@@ -947,6 +962,10 @@ const PAGE_SCRIPTS = {
    * element.
    */
   locate: (ref, selector, text, exact) => {
+    // Inside open shadow roots too (web components, as banks' design systems build their forms),
+    // not only the page's own document.
+    const deepAll = (sel) => { const out = [...document.querySelectorAll(sel)]; const visit = (root, d) => { for (const n of root.querySelectorAll('*')) if (n.shadowRoot) { out.push(...n.shadowRoot.querySelectorAll(sel)); if (d < 8) visit(n.shadowRoot, d + 1); } }; visit(document, 0); return out; };
+    const deepFind = (sel) => deepAll(sel)[0] || null;
     const labelOf = (el) =>
       ((el.getAttribute && el.getAttribute('aria-label')) ||
         (el.innerText || '') ||
@@ -955,8 +974,11 @@ const PAGE_SCRIPTS = {
         '').replace(/\s+/g, ' ').trim();
 
     let el = null;
-    if (ref) el = document.querySelector(`[data-cobrowser-ref="${ref}"]`);
-    else if (selector) el = document.querySelector(selector);
+    if (ref) {
+      const hits = deepAll(`[data-cobrowser-ref="${ref}"]`);
+      if (hits.length > 1) return { __cobrowserError: `uid ${ref} is on ${hits.length} elements (the page copied it): take bridge_snapshot again` };
+      el = hits[0] || null;
+    } else if (selector) el = deepFind(selector);
     else if (text) {
       const SEL = 'a[href], button, input, select, textarea, label, [role="button"], [role="link"], [role="radio"], [role="checkbox"], [role="switch"], [role="tab"], [role="menuitem"], [role="option"], [role="combobox"], [contenteditable="true"]';
       const all = [];
@@ -986,8 +1008,9 @@ const PAGE_SCRIPTS = {
     }
     if (!el) return { __cobrowserError: `no element for ${ref || selector || JSON.stringify(text)}` };
 
-    const tag = 'cb_target_' + Math.random().toString(36).slice(2, 8);
-    el.setAttribute('data-cobrowser-ref', tag);
+    // A uid it already has is kept: the agent may name it again.
+    let tag = el.getAttribute('data-cobrowser-ref');
+    if (!tag) { tag = 'cb_target_' + Math.random().toString(36).slice(2, 8); el.setAttribute('data-cobrowser-ref', tag); }
     const label = labelOf(el);
     return {
       ref: tag,
@@ -1001,11 +1024,15 @@ const PAGE_SCRIPTS = {
   // input itself, one inside it, its label's, the one nearest it, or the page's only one), marked
   // for the second half. Nothing is changed yet: the human has not been asked.
   uploadTarget: (ref, selector) => {
-    const el = ref ? document.querySelector(`[data-cobrowser-ref="${ref}"]`) : selector ? document.querySelector(selector) : null;
+    // Inside open shadow roots too (web components, as banks' design systems build their forms),
+    // not only the page's own document.
+    const deepAll = (sel) => { const out = [...document.querySelectorAll(sel)]; const visit = (root, d) => { for (const n of root.querySelectorAll('*')) if (n.shadowRoot) { out.push(...n.shadowRoot.querySelectorAll(sel)); if (d < 8) visit(n.shadowRoot, d + 1); } }; visit(document, 0); return out; };
+    const deepFind = (sel) => deepAll(sel)[0] || null;
+    const el = ref ? deepFind(`[data-cobrowser-ref="${ref}"]`) : selector ? deepFind(selector) : null;
     if (!el) return { error: `no element for ${ref || selector || '(nothing given: pass uid or selector)'}` };
     const isFile = (n) => n instanceof HTMLInputElement && n.type === 'file';
     let input = isFile(el) ? el : null;
-    if (!input && el.querySelectorAll) { const inside = el.querySelectorAll('input[type=file]'); if (inside.length === 1) input = inside[0]; }
+    if (!input) { const inside = [...(el.querySelectorAll ? el.querySelectorAll('input[type=file]') : []), ...(el.shadowRoot ? el.shadowRoot.querySelectorAll('input[type=file]') : [])]; if (inside.length === 1) input = inside[0]; }
     if (!input && el.control && isFile(el.control)) input = el.control;
     for (let a = el.parentElement; !input && a; a = a.parentElement) {
       const near = a.querySelectorAll('input[type=file]');
@@ -1028,8 +1055,12 @@ const PAGE_SCRIPTS = {
   // bridge_upload_file, second half, once the human allowed these files for this site: the input
   // gets them as if they were picked, and hears it (input, then change).
   setFiles: (tag, host, files) => {
+    // Inside open shadow roots too (web components, as banks' design systems build their forms),
+    // not only the page's own document.
+    const deepAll = (sel) => { const out = [...document.querySelectorAll(sel)]; const visit = (root, d) => { for (const n of root.querySelectorAll('*')) if (n.shadowRoot) { out.push(...n.shadowRoot.querySelectorAll(sel)); if (d < 8) visit(n.shadowRoot, d + 1); } }; visit(document, 0); return out; };
+    const deepFind = (sel) => deepAll(sel)[0] || null;
     if (location.host !== host) return { error: `the page moved from ${host} to ${location.host} while the human was asked: call bridge_upload_file again` };
-    const input = document.querySelector(`[data-cobrowser-upload="${tag}"]`);
+    const input = deepFind(`[data-cobrowser-upload="${tag}"]`);
     if (!input) return { error: 'the file input went away while the human was asked: call bridge_upload_file again' };
     const dt = new DataTransfer();
     for (const f of files) {
@@ -1045,9 +1076,11 @@ const PAGE_SCRIPTS = {
   },
 
   click: (ref, selector) => {
-    const el = ref
-      ? document.querySelector(`[data-cobrowser-ref="${ref}"]`)
-      : document.querySelector(selector);
+    // Inside open shadow roots too (web components, as banks' design systems build their forms),
+    // not only the page's own document.
+    const deepAll = (sel) => { const out = [...document.querySelectorAll(sel)]; const visit = (root, d) => { for (const n of root.querySelectorAll('*')) if (n.shadowRoot) { out.push(...n.shadowRoot.querySelectorAll(sel)); if (d < 8) visit(n.shadowRoot, d + 1); } }; visit(document, 0); return out; };
+    const deepFind = (sel) => deepAll(sel)[0] || null;
+    const el = ref ? deepFind(`[data-cobrowser-ref="${ref}"]`) : deepFind(selector);
     if (!el) throw new Error(`no element for ${ref || selector}`);
     el.scrollIntoView({ block: 'center' });
 
@@ -1091,6 +1124,10 @@ const PAGE_SCRIPTS = {
   },
 
   fill: (fields, allowCredentials, credentialSource, secretAutocomplete) => {
+    // Inside open shadow roots too (web components, as banks' design systems build their forms),
+    // not only the page's own document.
+    const deepAll = (sel) => { const out = [...document.querySelectorAll(sel)]; const visit = (root, d) => { for (const n of root.querySelectorAll('*')) if (n.shadowRoot) { out.push(...n.shadowRoot.querySelectorAll(sel)); if (d < 8) visit(n.shadowRoot, d + 1); } }; visit(document, 0); return out; };
+    const deepFind = (sel) => deepAll(sel)[0] || null;
     const setValue = (el, value) => {
       const proto =
         el.tagName === 'TEXTAREA'
@@ -1123,10 +1160,15 @@ const PAGE_SCRIPTS = {
     const filled = [];
     const refused = [];
     for (const f of fields) {
-      const el = f.ref
-        ? document.querySelector(`[data-cobrowser-ref="${f.ref}"]`)
-        : document.querySelector(f.selector);
+      let el = f.ref ? deepFind(`[data-cobrowser-ref="${f.ref}"]`) : deepFind(f.selector);
       if (!el) throw new Error(`no element for ${f.ref || f.selector}`);
+      // A web component (a design system's select or text field) is a host element with its
+      // real field inside its shadow root: that field is the one to set.
+      if (!['INPUT', 'SELECT', 'TEXTAREA'].includes(el.tagName) && !el.isContentEditable) {
+        const inner = el.shadowRoot && el.shadowRoot.querySelector('input:not([type=hidden]), select, textarea');
+        if (!inner) throw new Error(`${f.ref || f.selector} is a <${el.tagName.toLowerCase()}>, not a field, and holds none the bridge can set: click it and pick from what opens, or use the panel's fill`);
+        el = inner;
+      }
 
       // The human owns their secrets. type="password" covers most of it; the rest is caught
       // by what the field calls itself, since OTP boxes are usually type="text".

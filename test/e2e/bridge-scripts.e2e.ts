@@ -25,6 +25,27 @@ suite('bridge-scripts', async (r) => {
         if (res.exceptionDetails) throw new Error(res.exceptionDetails.exception?.description ?? 'evaluate failed');
         return res.result.value as T;
       };
+      // uids: an element keeps its uid, and a later (filtered) snapshot never reuses a number an
+      // earlier one gave, so a click by uid lands where the agent meant. Numbering from 1 each time
+      // once sent a click on a bank's form to its Sign out link.
+      await run(`document.body.insertAdjacentHTML("afterbegin", "<a id=signoutx href='#signout' onclick='window.__signedOut = true; return false'>Sign out</a>");
+        class PayOptions extends HTMLElement { connectedCallback() { const r = this.attachShadow({ mode: 'open' }); r.innerHTML = '<input type=radio id=balx name=amt style="position:absolute;opacity:0;width:1px;height:1px"><label for=balx style="display:inline-block;width:160px;height:24px">Current balance $882.42</label>'; } }
+        class PickAccount extends HTMLElement { connectedCallback() { const r = this.attachShadow({ mode: 'open' }); r.innerHTML = '<select><option>Choose</option><option value=chk>Checking ...1234</option></select>'; } }
+        customElements.define('x-pay-options', PayOptions); customElements.define('x-pick-account', PickAccount);
+        document.body.insertAdjacentHTML("beforeend", "<x-pay-options id=payx></x-pay-options><x-pick-account id=acctx style='display:inline-block;width:160px;height:24px'></x-pick-account>"); true`);
+      const all = await run<{ elements: Item[] }>('PAGE_SCRIPTS.snapshot({})');
+      const signout = all.elements.find((e) => e.label === 'Sign out');
+      const filtered = await run<{ elements: Item[] }>('PAGE_SCRIPTS.snapshot({ textContains: "Current balance" })');
+      const bal = filtered.elements.find((e) => /Current balance/.test(e.label));
+      const again = await run<{ elements: Item[] }>('PAGE_SCRIPTS.snapshot({})');
+      const found = await run<{ ref?: string; __cobrowserError?: string }>(`PAGE_SCRIPTS.locate(${JSON.stringify(bal?.ref ?? '')}, null, null, false)`);
+      await run(`PAGE_SCRIPTS.click(${JSON.stringify(found.ref ?? '')}, null)`);
+      const after = await run<{ signedOut: boolean; checked: boolean }>('({ signedOut: !!window.__signedOut, checked: document.getElementById("payx").shadowRoot.getElementById("balx").checked })');
+      r.check(`[${ext}] a uid from a filtered snapshot clicks its own element, inside a web component, never another's (the page's Sign out)`, !!signout && !!bal && bal.ref !== signout.ref && again.elements.find((e) => e.label === 'Sign out')?.ref === signout.ref && after.checked && !after.signedOut, { signout, bal, found, after });
+      const filledAcct = await run<{ filled?: unknown[] }>('PAGE_SCRIPTS.fill([{ selector: "#acctx", value: "Checking" }], false, CREDENTIAL.source, SECRET_AUTOCOMPLETE)');
+      const chosen = await run<string>('document.getElementById("acctx").shadowRoot.querySelector("select").value');
+      r.check(`[${ext}] filling a select web component sets the select inside it`, chosen === 'chk', { filledAcct, chosen });
+
       // bridge_upload_file: the file input behind a label is found, a page that moved is refused,
       // and the page hears the file as if it were picked.
       await run('document.body.insertAdjacentHTML("beforeend", "<label id=pickx>Upload r\u00e9sum\u00e9<input id=fx type=file hidden></label><div id=gotx></div>"); document.getElementById("fx").addEventListener("change", async (e) => { const f = e.target.files[0]; document.getElementById("gotx").textContent = f.name + ":" + f.type + ":" + await f.text(); }); true');
