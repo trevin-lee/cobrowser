@@ -2,6 +2,12 @@
 
 Release notes for earlier versions are on the [GitHub releases page](https://github.com/trevin-lee/cobrowser/releases).
 
+## 0.9.36
+
+### Fixed
+
+- **A browser moved to the Trash no longer stops cobrowser from starting.** The link it left behind made every fresh download fail to unpack ("ditto: Electron.app: Not a directory"). What a missing browser leaves is now cleared before it is downloaded again, and you are told when the old one had been signed for passkeys, since the new copy is not.
+
 ## 0.9.35
 
 ### Fixed
