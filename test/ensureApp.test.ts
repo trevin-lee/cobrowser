@@ -35,3 +35,17 @@ test("earlier versions' Electron downloads are removed, this version's and anyth
   assert.equal(said.length, 2);
   pruneOldElectron(path.join(cache, 'missing'), () => assert.fail('nothing to say'));
 });
+
+import { clearMissingBrowser } from '../src/app/ensureApp';
+
+test('a browser that went missing leaves nothing that would stop the fresh copy from unpacking', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cobrowser-missing-'));
+  // As found on 2026-11-07: cobrowser.app moved to the Trash, its Electron.app link left dangling.
+  fs.symlinkSync('cobrowser.app', path.join(dir, 'Electron.app'));
+  for (const f of ['branded.json', 'signed.json', 'electron-v44.4.5-darwin-arm64.zip', 'LICENSE', 'version']) fs.writeFileSync(path.join(dir, f), '{}');
+  const said: string[] = [];
+  assert.equal(clearMissingBrowser(dir, (m) => said.push(m)), true, 'it was signed for passkeys');
+  assert.deepEqual(fs.readdirSync(dir).sort(), ['LICENSE', 'version']);
+  assert.match(said[0], /Electron\.app.*signed\.json/);
+  assert.equal(clearMissingBrowser(dir, () => assert.fail('nothing left to say')), false);
+});

@@ -221,6 +221,23 @@ export function pruneOldElectron(cacheDir: string, log: (m: string) => void): vo
   }
 }
 
+/**
+ * The browser for this version is missing: clear what was left of it, so the fresh download
+ * unpacks and nothing describes the old one. That is the "Electron.app" link to a cobrowser.app
+ * that is gone (ditto then fails with "Not a directory"), a half-unpacked app, the zip of an
+ * earlier try, and the branding and passkey-signing markers. Returns whether the old browser was
+ * signed for passkeys, which the new one is not.
+ */
+export function clearMissingBrowser(dir: string, log: (m: string) => void): boolean {
+  const there = (p: string): boolean => { try { fs.lstatSync(p); return true; } catch { return false; } };
+  const signed = fs.existsSync(path.join(dir, 'signed.json'));
+  const left = ['Electron.app', 'cobrowser.app', 'branded.json', 'signed.json', ...(fs.existsSync(dir) ? fs.readdirSync(dir).filter((n) => n.endsWith('.zip')) : [])]
+    .filter((n) => there(path.join(dir, n)));
+  for (const n of left) fs.rmSync(path.join(dir, n), { recursive: true, force: true });
+  if (left.length) log(`The browser in ${dir} is missing; cleared what it left (${left.join(', ')}) before downloading it again.`);
+  return signed;
+}
+
 async function ensureElectron(opts: EnsureAppOptions): Promise<string> {
   if (process.platform !== 'darwin') {
     throw new Error('cobrowser app: only macOS is supported in this release');
@@ -230,6 +247,9 @@ async function ensureElectron(opts: EnsureAppOptions): Promise<string> {
   const exe = path.join(dir, 'Electron.app', 'Contents', 'MacOS', 'Electron');
   const brand = (): string => (isBranded(dir) ? brandedExe(dir) : brandApp(dir, opts.appIcon ?? '', opts.log));
   if (fs.existsSync(brandedExe(dir)) || fs.existsSync(exe)) return brand();
+  // Gone (moved to the Trash, deleted by a clean-up app): what it left behind would stop the
+  // fresh copy from unpacking, or describe a browser that is no longer there.
+  if (clearMissingBrowser(dir, opts.log)) opts.onSigningNotice?.('warning', 'The browser cobrowser had downloaded was removed from this Mac (moved to the Trash, or deleted by a clean-up app), so it is being downloaded again. It was signed for passkeys: run "Cobrowser: Turn On Passkeys" to sign the new copy, and the first time the vault opens, let cobrowser use "cobrowser Safe Storage" (Always Allow).');
 
   const asset = `electron-v${ELECTRON_VERSION}-darwin-${arch}.zip`;
   const base = `https://github.com/electron/electron/releases/download/v${ELECTRON_VERSION}`;
@@ -253,7 +273,12 @@ async function ensureElectron(opts: EnsureAppOptions): Promise<string> {
     throw new Error(`${asset} failed its checksum (got ${got.slice(0, 12)}…, want ${want.slice(0, 12)}…)`);
   }
   // ditto keeps the .app bundle's signature and attributes intact, where a generic unzip does not.
-  execFileSync('ditto', ['-x', '-k', zip, dir]);
+  try {
+    execFileSync('ditto', ['-x', '-k', zip, dir]);
+  } catch (e) {
+    fs.rmSync(zip, { force: true }); // the next try starts from a fresh download
+    throw e;
+  }
   fs.rmSync(zip, { force: true });
   if (!fs.existsSync(exe)) throw new Error(`Electron.app not found after extracting ${asset}`);
   opts.log(`Electron ${ELECTRON_VERSION} ready.`);
