@@ -11,7 +11,7 @@ import { BrowserPanel } from './webview/BrowserPanel';
 import { SessionTreeProvider, type TreeNode } from './webview/SessionTreeProvider';
 import { writeClientConfigs } from './clients/writeClientConfigs';
 import { snippetFor, type OtherClient } from './clients/agentConfigs';
-import { connectedScopes, daemonToken, deregister, ensureDaemon, isOlder, openWorkspaces, register, registrationState, replaceDaemonToken, tokenReplaced } from './daemon/client';
+import { connectedScopes, daemonToken, deregister, ensureDaemon, isOlder, openWorkspaces, register, registrationKeeper, registrationState, replaceDaemonToken, tokenReplaced } from './daemon/client';
 import { forgetBinding, takeForgottenBinding } from './forgottenBindings';
 import { DEFAULT_DAEMON_PORT, DEV_DAEMON_PORT, bridgeEndpointUrl } from './daemon/protocol';
 import { AppConnection, readAppState, type AppState } from './app/AppClient';
@@ -476,42 +476,54 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // and proxies each call to whichever window owns the named workspace.
   const daemonScript = path.join(context.extensionUri.fsPath, 'dist', 'daemon.js');
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-  if (await ensureDaemon({ port: daemonPort, version: extensionVersion(context), daemonScript, log, dev })) {
-    if (workspaceFolder) {
-      const id = workspaceFolder.uri.fsPath;
-      const mcpPort = mcp.port;
-      registerWithDaemon = () =>
-        register(
-          daemonPort,
-          { id, name: path.basename(id), url: `http://127.0.0.1:${mcpPort}/mcp`, token, pid: process.pid, container: firefoxContainerFor(context) || undefined, browser: bridgeBrowser() },
-          log,
-          dev,
-        );
+  // When every window starts at once (VS Code restarting after an update), the daemon can be
+  // down or still starting for this window's first look. That is not final: the check below
+  // keeps trying, and the first time the daemon answers this window does what it skipped.
+  const daemonUp = await ensureDaemon({ port: daemonPort, version: extensionVersion(context), daemonScript, log, dev });
+  if (!daemonUp) log('Trying the cobrowser daemon again every 15 seconds.');
+  /** What a window does once it has a daemon: Cursor + Claude Code get ONE entry, pointing at it. */
+  const onDaemonUp = (): Promise<void> => writeClientConfigs(daemonPort, token, log, dev);
+  if (workspaceFolder) {
+    const id = workspaceFolder.uri.fsPath;
+    const mcpPort = mcp.port;
+    registerWithDaemon = () =>
+      register(
+        daemonPort,
+        { id, name: path.basename(id), url: `http://127.0.0.1:${mcpPort}/mcp`, token, pid: process.pid, container: firefoxContainerFor(context) || undefined, browser: bridgeBrowser() },
+        log,
+        dev,
+      );
+    const registerFirst = async (): Promise<void> => {
       await registerWithDaemon();
       if (firefoxContainerFor(context) && bridgeBrowser() === 'firefox') registerEndpoint(workspaceId, bridgeUrl(), log);
-      // Hand the port + id to deactivate(), which must unregister before the window goes.
-      registeredWith = { port: daemonPort, id, dev };
-      context.subscriptions.push({ dispose: () => void deregister(daemonPort, id, dev) });
-      // The daemon forgets every window when it restarts (an update, a crash). Notice and
-      // register again, starting it if it is gone, so agents keep reaching this workspace.
-      let checking = false;
-      const keepRegistered = setInterval(() => {
-        if (checking) return;
-        checking = true;
-        void (async () => {
-          const state = await registrationState(daemonPort, id, dev);
-          if (state === 'ok') return;
-          log(state === 'down' ? 'The cobrowser daemon stopped; starting it again.' : 'The cobrowser daemon restarted; registering this workspace again.');
-          if (state === 'down' && !(await ensureDaemon({ port: daemonPort, version: extensionVersion(context), daemonScript, log, dev }))) return;
-          await registerWithDaemon();
-        })().finally(() => (checking = false));
-      }, 15000);
-      context.subscriptions.push({ dispose: () => clearInterval(keepRegistered) });
-    } else {
-      log('No workspace folder open — this window has no browser to offer the daemon.');
-    }
-    // Cursor + Claude Code: ONE entry, pointing at the daemon.
-    await writeClientConfigs(daemonPort, token, log, dev);
+      await onDaemonUp();
+    };
+    if (daemonUp) await registerFirst();
+    // Hand the port + id to deactivate(), which must unregister before the window goes.
+    registeredWith = { port: daemonPort, id, dev };
+    context.subscriptions.push({ dispose: () => void deregister(daemonPort, id, dev) });
+    // The daemon forgets every window when it restarts (an update, a crash). Notice and
+    // register again, starting it if it is gone, so agents keep reaching this workspace.
+    const check = registrationKeeper({
+      state: () => registrationState(daemonPort, id, dev),
+      ensure: () => ensureDaemon({ port: daemonPort, version: extensionVersion(context), daemonScript, log, dev }),
+      register: () => registerWithDaemon(),
+      first: registerFirst,
+      up: daemonUp,
+      log,
+    });
+    let checking = false;
+    const keepRegistered = setInterval(() => {
+      if (checking) return;
+      checking = true;
+      void check()
+        .catch(() => undefined)
+        .finally(() => (checking = false));
+    }, 15000);
+    context.subscriptions.push({ dispose: () => clearInterval(keepRegistered) });
+  } else {
+    log('No workspace folder open — this window has no browser to offer the daemon.');
+    if (daemonUp) await onDaemonUp();
   }
 
   /** Binding needs a workspace: a window without a folder has none for an agent to work in.

@@ -229,6 +229,36 @@ export async function registrationState(port: number, id: string, dev = false): 
   return h.workspaces.some((w) => w.id === id) ? 'ok' : 'missing';
 }
 
+/**
+ * One check that a window's workspace is still registered with the daemon, run every 15
+ * seconds. The daemon forgets every window when it restarts (an update, a crash), so a missing
+ * workspace registers again and a stopped daemon is started again. A window whose daemon was
+ * not there when it started (every window starting at once, as VS Code restarts) keeps trying,
+ * and does what it skipped, `first`, once the daemon answers.
+ */
+export function registrationKeeper(o: {
+  state: () => Promise<'ok' | 'missing' | 'down'>;
+  /** Start the daemon, or check that the one running is this build's: whether it is up. */
+  ensure: () => Promise<boolean>;
+  register: () => Promise<void>;
+  first: () => Promise<void>;
+  /** Whether the daemon answered when the window started. */
+  up: boolean;
+  log: Log;
+}): () => Promise<void> {
+  let up = o.up;
+  return async () => {
+    const state = await o.state();
+    if (state === 'ok') return;
+    if (up) o.log(state === 'down' ? 'The cobrowser daemon stopped; starting it again.' : 'The cobrowser daemon restarted; registering this workspace again.');
+    // A window that never had a daemon checks its version first, as it would have at the start.
+    if ((state === 'down' || !up) && !(await o.ensure())) return;
+    if (up) return o.register();
+    up = true;
+    await o.first();
+  };
+}
+
 /** The folders open in an editor window now (every editor's, started browser or not); empty
  *  when the daemon cannot be reached. */
 export async function openWorkspaces(port: number, dev = false): Promise<string[]> {
