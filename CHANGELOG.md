@@ -2,6 +2,12 @@
 
 Release notes for earlier versions are on the [GitHub releases page](https://github.com/trevin-lee/cobrowser/releases).
 
+## 0.9.37
+
+### Fixed
+
+- **A window that starts before cobrowser's background service is ready now connects as soon as it is.** When VS Code restarts every window at once (after an update), a window could find the shared port still held by a service that was not answering yet. It gave up until it was reloaded, and every agent in that folder was told "the editor window is not running". It now keeps trying every 15 seconds and connects on its own.
+
 ## 0.9.36
 
 ### Fixed
