@@ -45,7 +45,6 @@ export interface Migration {
 const DONE_KEY = 'cobrowser.migrationsDone';
 
 // Keys of the editor's own state, as extension.ts reads them today.
-const TABS_KEY = 'cobrowser.openTabs';
 const BINDING_KEY = 'cobrowser.firefoxContainerBinding';
 const BRIDGE_BROWSER_KEY = 'cobrowser.bridgeBrowser';
 const ZOOM_KEY = 'cobrowser.zoom';
@@ -62,18 +61,6 @@ export const MIGRATIONS: Migration[] = [
       const old = machine.get<Record<string, number>>(ZOOM_KEY);
       if (!old || !Object.keys(old).length || !workspace.get<number>('cobrowser.lastPageId')) return;
       await workspace.update(ZOOM_KEY, { ...old, ...(workspace.get<Record<string, number>>(ZOOM_KEY) ?? {}) });
-    },
-  },
-  {
-    // Saved tabs were bare URLs; now { url, col, by }.
-    id: 'saved-tabs-as-objects',
-    added: '2026-07-29',
-    scope: 'workspace',
-    run: async ({ workspace }) => {
-      const tabs = workspace.get<unknown[]>(TABS_KEY);
-      if (Array.isArray(tabs) && tabs.some((t) => typeof t === 'string')) {
-        await workspace.update(TABS_KEY, tabs.map((t) => (typeof t === 'string' ? { url: t } : t)));
-      }
     },
   },
   {

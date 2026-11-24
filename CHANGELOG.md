@@ -2,6 +2,17 @@
 
 Release notes for earlier versions are on the [GitHub releases page](https://github.com/trevin-lee/cobrowser/releases).
 
+## 0.10.0
+
+### Added
+
+- **The vault can live on a Bitwarden server.** In the vault window's new **Source** view, sign in to Bitwarden (US or EU) or a server you host, such as Vaultwarden, with the account's master password or a personal API key, and a two-step code when it asks. The server's logins and cards become the vault every tool uses: they fill by Bitwarden's own matching, and which workspaces may use each one is still yours to choose, kept on your Mac. The master password is used once and never kept; unlocking is Touch ID, as before, and a copy of the vault lets it fill when the server can't be reached. Items are changed in Bitwarden; a login added here, or one an agent signs up for with `create_login`, is saved on the server, in the folder or collection you choose. The built-in vault's logins can be moved over, keeping their workspaces, and **Use the built-in vault** goes back. To keep the rest of your vault from agents, give cobrowser an account of its own and share a collection with it.
+- **One-time codes from a login's authenticator key.** A Bitwarden login with a TOTP key is marked `hasCode` in `list_credentials`, and `fill_credentials` types its current code into the field the agent names (`codeUid`), without the agent seeing the key or the code.
+
+### Removed
+
+- Saved tabs from before 0.6.0 (bare addresses) are no longer converted. 0.6.0 is the oldest version that upgrades cleanly; a workspace last opened with an older one reopens without its tabs.
+
 ## 0.9.36
 
 ### Fixed

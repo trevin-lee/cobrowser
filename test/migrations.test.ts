@@ -40,13 +40,6 @@ test('a migration runs once per scope, and one that fails is tried again next ti
   assert.deepEqual(await runMigrations(otherWorkspace, list), ['ok'], 'a workspace not yet opened is migrated when it is');
 });
 
-test('saved tabs that were bare URLs become tab objects', async () => {
-  const e = env();
-  e.workspace.data['cobrowser.openTabs'] = ['https://a.example/', { url: 'https://b.example/', col: 2 }];
-  await runMigrations(e, one('saved-tabs-as-objects'));
-  assert.deepEqual(e.workspace.data['cobrowser.openTabs'], [{ url: 'https://a.example/' }, { url: 'https://b.example/', col: 2 }]);
-});
-
 test('a binding under the Zen-era key, or in the retired setting, becomes the binding once', async () => {
   const fromKey = env();
   fromKey.workspace.data['cobrowser.zenContainerBinding'] = 'personal';
