@@ -425,6 +425,18 @@ pub struct NewLogin {
     pub organization_id: String,
     pub collection_id: String,
     pub folder_id: String,
+    /// Custom fields: text (0), hidden (1) or a checkbox (2, its value "true" or "false").
+    pub fields: Vec<NewField>,
+}
+
+/// A custom field of a new login.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct NewField {
+    pub name: String,
+    pub value: String,
+    #[serde(rename = "type")]
+    pub kind: u8,
 }
 
 /// The request body for a new login, every value encrypted: for POST /api/ciphers (the account's
@@ -452,6 +464,17 @@ pub fn new_login(user: &SymKey, keys: &Keys, n: &NewLogin, random: &[u8]) -> Res
     if n.name.trim().is_empty() {
         bail!("A login needs a name.");
     }
+    let fields: Vec<Value> = n
+        .fields
+        .iter()
+        .filter(|f| !f.name.trim().is_empty())
+        .map(|f| {
+            if f.kind > 2 {
+                bail!("a field's type is text (0), hidden (1) or a checkbox (2)");
+            }
+            Ok(json!({ "name": seal(f.name.trim())?, "value": seal(&f.value)?, "type": f.kind }))
+        })
+        .collect::<Result<_>>()?;
     let uris: Vec<Value> = n
         .uris
         .iter()
@@ -464,6 +487,7 @@ pub fn new_login(user: &SymKey, keys: &Keys, n: &NewLogin, random: &[u8]) -> Res
         "notes": seal(&n.notes)?,
         "favorite": false,
         "reprompt": 0,
+        "fields": fields,
         "folderId": if n.folder_id.is_empty() { Value::Null } else { Value::String(n.folder_id.clone()) },
         "organizationId": if n.organization_id.is_empty() { Value::Null } else { Value::String(n.organization_id.clone()) },
         "login": {
@@ -483,10 +507,10 @@ pub fn new_login(user: &SymKey, keys: &Keys, n: &NewLogin, random: &[u8]) -> Res
     })
 }
 
-/// The 16-byte IVs `new_login` takes: one per value it may seal (name, notes, username,
-/// password and each address).
-pub fn ivs_needed(n_uris: usize) -> usize {
-    16 * (4 + n_uris)
+/// The random bytes `new_login` takes, 16 for each value it may seal: name, notes, username,
+/// password, each address, and each field's name and value.
+pub fn ivs_needed(n_uris: usize, n_fields: usize) -> usize {
+    16 * (4 + n_uris + 2 * n_fields)
 }
 
 /// A login address's match, as Bitwarden numbers them: none set (null), base domain, host,
@@ -852,7 +876,7 @@ mod tests {
         let user = SymKey::from_bytes(&[7; 64]).unwrap();
         let org = SymKey::from_bytes(&[9; 64]).unwrap();
         let keys = Keys { orgs: vec![("org-1".into(), "Family".into(), org)] };
-        let random: Vec<u8> = (0..ivs_needed(2)).map(|i| i as u8).collect();
+        let random: Vec<u8> = (0..ivs_needed(2, 1)).map(|i| i as u8).collect();
         let mut n = NewLogin {
             name: "Shop".into(),
             username: "sam".into(),
@@ -860,6 +884,7 @@ mod tests {
             uris: vec!["https://shop.example/login".into(), " ".into(), "shop.example".into()],
             notes: "made by an agent".into(),
             folder_id: "f-1".into(),
+            fields: vec![NewField { name: "Share notes with agents".into(), value: "true".into(), kind: 2 }],
             ..NewLogin::default()
         };
         let mine = new_login(&user, &keys, &n, &random).unwrap();
@@ -874,6 +899,8 @@ mod tests {
         );
         assert_eq!(l.uris, ["https://shop.example/login", "shop.example"]);
         assert_eq!(l.matches, [MATCH_DEFAULT, MATCH_DEFAULT]);
+        assert_eq!(l.common.fields.len(), 1);
+        assert!(l.common.fields[0].boolean && l.common.fields[0].value == "true");
 
         n.folder_id = String::new();
         n.organization_id = "org-1".into();

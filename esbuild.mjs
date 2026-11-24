@@ -85,6 +85,12 @@ const targets = [
   },
 ];
 
+// The Bitwarden core's WebAssembly (app/bitwarden/, committed): its loader, bundled into
+// dist/app/main.js, reads it from beside the bundle.
+const fs = await import('node:fs');
+fs.mkdirSync('dist/app', { recursive: true });
+fs.copyFileSync('app/bitwarden/bitwarden_bg.wasm', 'dist/app/bitwarden_bg.wasm');
+
 // The vault's Touch-ID-or-password helper (Swift, macOS): built beside the app bundle.
 const { buildAuthHelper } = await import('./scripts/build-auth-helper.mjs');
 buildAuthHelper();

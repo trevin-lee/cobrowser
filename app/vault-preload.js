@@ -26,6 +26,17 @@ contextBridge.exposeInMainWorld('vault', {
   removeCard: (id) => ipcRenderer.invoke('vault:removeCard', { id }),
   exportCards: () => ipcRenderer.invoke('vault:exportCards'),
   importCards: () => ipcRenderer.invoke('vault:importCards'),
+  // Where the vault lives: built in, or a Bitwarden server. Signing in sends the master password
+  // once, to open the account; it is never kept, and never comes back.
+  source: {
+    status: () => ipcRenderer.invoke('source:status'),
+    signIn: (fields) => ipcRenderer.invoke('source:signIn', fields),
+    sendEmailCode: (fields) => ipcRenderer.invoke('source:sendEmailCode', fields),
+    sync: () => ipcRenderer.invoke('source:sync'),
+    settings: (fields) => ipcRenderer.invoke('source:settings', fields),
+    useBuiltIn: () => ipcRenderer.invoke('source:useBuiltIn'),
+    moveLogins: () => ipcRenderer.invoke('source:moveLogins'),
+  },
   // The vault changed somewhere else (an agent's grant, the editor, a Lock from the menu bar).
   onChanged: (cb) => { ipcRenderer.on('vault:changed', (_e, state) => cb(state)); },
 });

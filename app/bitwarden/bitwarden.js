@@ -111,8 +111,8 @@ class Account {
     }
     /**
      * The request body for a new login, every value encrypted ({ name, username, password,
-     * uris, notes, and folderId, or organizationId and collectionId }). `random` is the app's
-     * own random bytes, `ivsNeeded(uris.length)` of them.
+     * uris, notes, fields, and folderId, or organizationId and collectionId }). `random` is the
+     * app's own random bytes, `ivsNeeded(uris.length, fields.length)` of them.
      * @param {any} login
      * @param {Uint8Array | number[]} random
      * @returns {any}
@@ -231,12 +231,13 @@ if (Symbol.dispose) SignIn.prototype[Symbol.dispose] = SignIn.prototype.free;
 exports.SignIn = SignIn;
 
 /**
- * How many random bytes `newLogin` needs for a login with this many addresses.
+ * How many random bytes `newLogin` needs for a login with this many addresses and fields.
  * @param {number} uris
+ * @param {number} fields
  * @returns {number}
  */
-function ivsNeeded(uris) {
-    const ret = wasm.ivsNeeded(uris);
+function ivsNeeded(uris, fields) {
+    const ret = wasm.ivsNeeded(uris, fields);
     return ret >>> 0;
 }
 exports.ivsNeeded = ivsNeeded;
@@ -263,6 +264,10 @@ function __wbg_get_imports() {
         __proto__: null,
         __wbg_Error_208446807d0d1e30: function(arg0, arg1) {
             const ret = Error(getStringFromWasm0(arg0, arg1));
+            return ret;
+        },
+        __wbg_Number_ff192a72a0dcdf6d: function(arg0) {
+            const ret = Number(arg0);
             return ret;
         },
         __wbg_String_8564e559799eccda: function(arg0, arg1) {

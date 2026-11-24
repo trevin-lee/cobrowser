@@ -219,6 +219,129 @@ const removeLogin = (host, username) => store.removeLogin(vault, host, username)
 const importCsv = (text, scope) => store.importCsv(vault, text, scope);
 const exportCsv = () => store.exportCsv(vault);
 let vault = null; // { entries: [{ id, host, username, password, updatedAt }] } while unlocked
+// ---------------------------------------------------------------------------------------
+// Where the vault lives: built in (vault.bin, this Mac's keychain), or on a Bitwarden-compatible
+// server the person signs in to (app/bitwarden-source.js). Either way the vault, once unlocked,
+// is the same object, and every tool works on it alike; with Bitwarden, the logins and cards are
+// the server's, changed in Bitwarden, and cobrowser keeps only which workspaces may use each.
+// ---------------------------------------------------------------------------------------
+const SOURCE_FILE = path.join(DATA_DIR, 'vault-source.json'); // { kind, server, email, saveTo, notesField }: no secrets
+const BITWARDEN_FILE = path.join(DATA_DIR, 'bitwarden.bin'); // the account's user key, sign-in and last sync, encrypted with the keychain key
+const BITWARDEN_SCOPES_FILE = path.join(DATA_DIR, 'bitwarden-scopes.json'); // { [item id]: { scope, was } }
+const BITWARDEN_DEVICE_FILE = path.join(DATA_DIR, 'bitwarden-device.json');
+const BITWARDEN_SYNC_MS = 15 * 60_000;
+function vaultSource() {
+  try { const s = JSON.parse(fs.readFileSync(SOURCE_FILE, 'utf8')); if (s && s.kind === 'bitwarden') return s; } catch { /* none: built in */ }
+  return { kind: 'built-in' };
+}
+const onBitwarden = () => vaultSource().kind === 'bitwarden';
+function writeSource(s) { fs.writeFileSync(SOURCE_FILE, JSON.stringify(s, null, 2), { mode: 0o600 }); }
+let bitwardenClient = null;
+/** The Bitwarden client, made the first time it is needed: the WebAssembly is only loaded then. */
+function bitwarden() {
+  if (bitwardenClient) return bitwardenClient;
+  let deviceId;
+  try { deviceId = JSON.parse(fs.readFileSync(BITWARDEN_DEVICE_FILE, 'utf8')).id; } catch { /* first time */ }
+  if (!deviceId) { deviceId = crypto.randomUUID(); fs.writeFileSync(BITWARDEN_DEVICE_FILE, JSON.stringify({ id: deviceId }), { mode: 0o600 }); }
+  const { BitwardenSource } = require('./bitwarden-source.js');
+  bitwardenClient = new BitwardenSource({ wasm: require('./bitwarden/bitwarden.js'), fetch: (url, init) => globalThis.fetch(url, init), random: (n) => crypto.randomBytes(n), deviceId, log });
+  return bitwardenClient;
+}
+function readBitwardenKept() {
+  if (!fs.existsSync(BITWARDEN_FILE)) throw new Error('cobrowser is set to use a Bitwarden vault but is not signed in to it: sign in again in the vault window (Cobrowser: Open Vault), under Source');
+  try { return JSON.parse(safeStorage.decryptString(fs.readFileSync(BITWARDEN_FILE))); } catch (e) { log(`vault: the Bitwarden sign-in kept here cannot be read: ${e.message}`); throw new Error('the Bitwarden sign-in kept on this Mac cannot be read with its keychain key: sign in again in the vault window, under Source'); }
+}
+/** The open account's sign-in and last sync, written as the built-in vault is: whole, to a
+ *  temporary file renamed over the old. */
+function keepBitwarden() {
+  const kept = bitwarden().keep();
+  if (!kept) return;
+  const tmp = `${BITWARDEN_FILE}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(tmp, safeStorage.encryptString(JSON.stringify(kept)), { mode: 0o600 });
+    fs.renameSync(tmp, BITWARDEN_FILE);
+  } catch (e) { fs.rmSync(tmp, { force: true }); throw e; }
+}
+function bitwardenScopes() {
+  try { return JSON.parse(fs.readFileSync(BITWARDEN_SCOPES_FILE, 'utf8')) || {}; } catch { return {}; }
+}
+/** The vault object from the open account: its items, with the workspaces cobrowser gave each. */
+function bitwardenVault() {
+  const kept = bitwardenScopes();
+  const scopes = Object.fromEntries(Object.entries(kept).map(([id, s]) => [id, s.scope]));
+  const v = bitwarden().vault({ scopes, rules: { notesField: vaultSource().notesField } });
+  for (const e of v.entries) { if (kept[e.id]?.was) e.scopeWas = kept[e.id].was; if (generatedAt.has(e.id)) e.generatedAt = generatedAt.get(e.id); }
+  return v;
+}
+/** Logins the agent made up a password for, by id, while their password may still be made up
+ *  again (createLogin): the built-in vault keeps this on the login, a server's item cannot. */
+const generatedAt = new Map();
+/** Fetch the vault from the server, and show what it holds now. Offline, the vault stays as the
+ *  last sync had it; signed out (the server refused this Mac), it says so. */
+let bitwardenSyncing = null;
+async function syncBitwarden() {
+  if (!vault || vault.source !== 'bitwarden') return;
+  if (bitwardenSyncing) return bitwardenSyncing;
+  bitwardenSyncing = (async () => {
+    try {
+      const s = await bitwarden().sync();
+      keepBitwarden();
+      if (vault && vault.source === 'bitwarden') { vault = bitwardenVault(); vault.syncedAt = Date.now(); }
+      log(`vault: synced with Bitwarden (${s.logins} logins, ${s.cards} cards${s.unreadable ? `, ${s.unreadable} unreadable` : ''})`);
+      bitwardenError = '';
+    } catch (e) {
+      bitwardenError = e.message;
+      log(`vault: Bitwarden sync failed: ${e.message}`);
+    } finally {
+      bitwardenSyncing = null;
+      vaultChanged();
+    }
+  })();
+  return bitwardenSyncing;
+}
+let bitwardenError = '';
+setInterval(() => { void syncBitwarden(); }, BITWARDEN_SYNC_MS).unref();
+/** A login as cobrowser saves one to the server: where the Source settings say (a folder of the
+ *  account's own, or an organization's collection), named after its site. Notes written here are
+ *  for agents too, as in the built-in vault, so the login is marked to share them. */
+function bitwardenLogin({ host, username, password, also, notes }) {
+  const site = parseSite(host);
+  const asUri = (s) => (/^[a-z][a-z0-9+.-]*:\/\//i.test(s) ? s : `https://${s}`);
+  const to = vaultSource().saveTo || {};
+  const notesField = vaultSource().notesField || require('./bitwarden-source.js').NOTES_FIELD;
+  return {
+    name: siteLabel(site), username: username || '', password: password || '', notes: notes || '',
+    uris: [asUri(String(host).trim()), ...(also || []).map((a) => asUri(typeof a === 'string' ? a.trim() : siteLabel(a)))],
+    fields: notes ? [{ name: notesField, value: 'true', type: 2 }] : [],
+    folderId: to.folderId || '', organizationId: to.organizationId || '', collectionId: to.collectionId || '',
+  };
+}
+/** Add a login to the server, and give it its workspaces here. A site and username already on
+ *  the server is changed there, not replaced from here. */
+async function addLoginToBitwarden({ host, username, password, scope, also, notes }) {
+  const site = parseSite(host);
+  if (!site.host) throw new Error('a website is required');
+  const v = vault && vault.source === 'bitwarden' ? vault : null;
+  const same = v && v.entries.find((e) => e.host === site.host && (e.port || '') === (site.port || '') && e.username === (username || ''));
+  if (same) throw new Error(`${username || 'that login'} on ${siteLabel(site)} is already in your Bitwarden vault: change it in Bitwarden`);
+  await confirmFresh(`add a login for ${siteLabel(site)} to your Bitwarden vault`);
+  const id = await bitwarden().createLogin(bitwardenLogin({ host, username, password, also, notes }));
+  keepBitwarden();
+  const kept = bitwardenScopes(); kept[id] = { scope: normalizeScope(scope) };
+  fs.writeFileSync(BITWARDEN_SCOPES_FILE, JSON.stringify(kept, null, 2), { mode: 0o600 });
+  vault = bitwardenVault();
+  log(`vault: added a login for ${username || '(no username)'} on ${siteLabel(site)} to Bitwarden`);
+  vaultChanged();
+  return { replaced: false };
+}
+/** The person's way to change what a server's item holds: there, not here. */
+function onServerOnly(what) {
+  if (onBitwarden()) throw new Error(`the vault is on your Bitwarden server: ${what} in Bitwarden. Here you choose only which workspaces may use each login`);
+}
+
+/** A page as logins are matched to it: its site ({ host, port }) and its whole address, which a
+ *  login from a Bitwarden server is matched by (vault-store.js loginMatches). */
+const pageAt = (url) => ({ ...parseSite(url), url: String(url || '') });
 
 // Test-only: the UI tests run an isolated instance nobody is sitting at, so they cannot
 // answer a Touch ID prompt. Never set in normal use; every skip is logged.
@@ -316,6 +439,19 @@ function keychainRefusal() {
 async function unlockVault(reason) {
   if (vault) return vault;
   if (!safeStorage.isEncryptionAvailable()) throw new Error(keychainRefusal());
+  if (onBitwarden()) {
+    // The sign-in kept here opens the account without the server; a sync follows.
+    const kept = readBitwardenKept();
+    await confirmPerson(reason || 'unlock the cobrowser vault'); // rejects on cancel/failure
+    bitwarden().restore(kept);
+    vault = bitwardenVault();
+    vault.syncedAt = kept.syncedAt || 0;
+    log(`vault: unlocked Bitwarden (${vault.entries.length} logins, ${vault.cards.length} cards, from the sync of ${kept.syncedAt ? new Date(kept.syncedAt).toISOString() : 'never'})`);
+    moveLoginScopes();
+    vaultChanged();
+    void syncBitwarden();
+    return vault;
+  }
   // Read before asking: a vault this key cannot open fails at once, instead of after every
   // Touch ID. What is read is only kept once the person confirms.
   const opened = fs.existsSync(VAULT_FILE) ? readVaultFile() : { entries: [] };
@@ -372,6 +508,17 @@ async function startOverVault() {
 /** Written whole to a temporary file and renamed over the vault, so a crash, a power cut or a
  *  full disk mid-write leaves the previous vault intact rather than a truncated one. */
 function saveVault() {
+  if (vault && vault.source === 'bitwarden') {
+    // A server's items are changed there; here, only which workspaces may use each one.
+    const kept = bitwardenScopes();
+    for (const e of vault.entries) {
+      kept[e.id] = { scope: e.scope, ...(e.scopeWas ? { was: e.scopeWas } : {}) };
+      if (e.generatedAt) generatedAt.set(e.id, e.generatedAt);
+    }
+    fs.writeFileSync(BITWARDEN_SCOPES_FILE, JSON.stringify(kept, null, 2), { mode: 0o600 });
+    vaultChanged();
+    return;
+  }
   const tmp = `${VAULT_FILE}.${process.pid}.tmp`;
   try {
     const fd = fs.openSync(tmp, 'w', 0o600);
@@ -397,6 +544,7 @@ async function offerToTrashCsv(file, message, detail) {
 }
 function lockVault() {
   vault = null;
+  bitwardenClient?.lock();
   void clearCopiedPassword(); // a password copied from the vault does not outlive its unlock
   oneTimeGrants.clear(); // "Allow once" ends with the unlock it was given under
   log('vault: locked');
@@ -408,8 +556,19 @@ function lockVault() {
 function vaultChanged() {
   if (!vaultWin || vaultWin.isDestroyed()) return;
   vaultWin.webContents.send('vault:changed', vault
-    ? { locked: false, logins: vault.entries.map(publicEntry), cards: (vault.cards || []).map(store.publicCard), workspaces: knownWorkspaces() }
-    : { locked: true });
+    ? { locked: false, logins: vault.entries.map(publicEntry), cards: (vault.cards || []).map(store.publicCard), workspaces: knownWorkspaces(), source: sourceStatus() }
+    : { locked: true, source: sourceStatus() });
+}
+/** Where the vault lives, for the vault window: never a secret. */
+function sourceStatus() {
+  const s = vaultSource();
+  if (s.kind !== 'bitwarden') return { kind: 'built-in', builtInExists: fs.existsSync(VAULT_FILE) };
+  const open = !!vault && vault.source === 'bitwarden';
+  return {
+    kind: 'bitwarden', server: s.server, email: s.email, saveTo: s.saveTo || null, notesField: s.notesField || require('./bitwarden-source.js').NOTES_FIELD,
+    signedIn: fs.existsSync(BITWARDEN_FILE), syncedAt: open ? vault.syncedAt || 0 : 0, syncing: !!bitwardenSyncing, error: bitwardenError,
+    noSite: open ? vault.noSite || 0 : 0, places: open ? bitwarden().places() : [], builtInExists: fs.existsSync(VAULT_FILE),
+  };
 }
 
 // Workspaces that have ever connected, so the vault window can offer them as scopes even
@@ -455,7 +614,7 @@ const TEST_GRANT = SKIP_BIOMETRICS ? process.env.COBROWSER_TEST_GRANT : undefine
  */
 async function requestCredential(workspaceId, { site, username, reason }) {
   const v = await unlockVault('grant a login to a workspace');
-  const page = parseSite(String(site || ''));
+  const page = pageAt(/^[a-z][a-z0-9+.-]*:\/\//i.test(String(site || '').trim()) ? String(site).trim() : `https://${String(site || '').trim()}`);
   if (!page.host) return { granted: 'denied', error: 'site is required' };
   const label = siteLabel(page);
   let matches = v.entries.filter((e) => store.loginMatches(e, page));
@@ -584,6 +743,7 @@ async function askToUpload(paths, host, workspaceName, ask, where) {
  * never cross to the editor.
  */
 async function exportVault(parent) {
+  onServerOnly('export logins');
   await confirmFresh('export every login in the vault, with its password, to a file');
   let file = SKIP_BIOMETRICS ? process.env.COBROWSER_TEST_EXPORT_PATH : undefined;
   if (!file) {
@@ -607,6 +767,7 @@ function iCloudNote() {
 
 /** The cards' backup, the same way: a fresh confirmation, a plaintext file the person chooses. */
 async function exportCards(parent) {
+  onServerOnly('export cards');
   await confirmFresh('export every card in the vault, with its number and security code, to a file');
   let file = SKIP_BIOMETRICS ? process.env.COBROWSER_TEST_EXPORT_PATH : undefined;
   if (!file) {
@@ -646,7 +807,7 @@ function scrubSecrets(text) {
  *  login's site — the app checks the tab's real URL, not anything the caller claims. */
 async function fillCredentials(tab, { usernameUid, passwordUid, username }) {
   const v = await unlockVault('fill a login into the browser');
-  const page = parseSite(tab.win.webContents.getURL());
+  const page = pageAt(tab.win.webContents.getURL());
   const host = siteLabel(page);
   // Scope first: a login outside this workspace's scope does not exist as far as it knows.
   let matches = v.entries.filter((e) => usable(e, tab.workspace.id) && store.loginMatches(e, page));
@@ -729,9 +890,27 @@ async function createLogin(tab, { username = '', usernameUid, passwordUid, confi
   if (existing && !regenerating) return { created: false, error: `a login for ${username || 'that account'} on ${host} cannot be made up here: changing a saved password is the human's to do, in the vault window` };
   // Unlocking asked; a vault that was already open asks now. Either way, one confirmation.
   if (!wasLocked) await confirmFresh(reason);
-  const { entry } = store.upsertLogin(v, host, username, password, [tab.workspace.id], { mergeScope: true });
-  entry.generatedAt = Date.now();
-  saveVault();
+  if (v.source === 'bitwarden') {
+    // Saved on the server before it is typed, as in the built-in vault: an account the site
+    // makes always has its password in the vault. A server that can't be reached saves nothing.
+    try {
+      const login = bitwardenLogin({ host: tab.win.webContents.getURL(), username, password });
+      login.uris = [`${new URL(tab.win.webContents.getURL()).origin}`];
+      let id;
+      if (regenerating) { id = existing.id; await bitwarden().replaceLogin(id, login); } else id = await bitwarden().createLogin(login);
+      keepBitwarden();
+      generatedAt.set(id, Date.now());
+      const kept = bitwardenScopes(); kept[id] = { scope: store.mergeScope(kept[id]?.scope || [], [tab.workspace.id]) };
+      fs.writeFileSync(BITWARDEN_SCOPES_FILE, JSON.stringify(kept, null, 2), { mode: 0o600 });
+      vault = bitwardenVault(); vaultChanged();
+    } catch (e) {
+      return { created: false, error: `the new password could not be saved on your Bitwarden server, so nothing was typed: ${e.message}` };
+    }
+  } else {
+    const { entry } = store.upsertLogin(v, host, username, password, [tab.workspace.id], { mergeScope: true });
+    entry.generatedAt = Date.now();
+    saveVault();
+  }
   log(`vault: the agent in ${workspaceName} made up ${regenerating ? 'another ' : 'a '}password for ${username || '(no username)'} on ${host}`);
   tab.boost();
   const filled = [];
@@ -1018,6 +1197,9 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
   .actions { display: flex; gap: 8px; padding-top: 2px; align-items: center; flex: none; } .actions .spacer { flex: 1; }
   #status { color: var(--muted); font-size: 12px; min-height: 17px; }
   #notice { color: var(--muted); font-size: 12px; padding: 0 22px 10px; }
+  select.place { width: 100%; background: var(--lift); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; height: 34px; padding: 0 10px; font: inherit; }
+  .srcline { color: var(--muted); font-size: 12.5px; }
+  .srcerr { color: var(--danger); font-size: 12.5px; }
   .lockcard { margin: auto; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 12px; color: var(--muted); max-width: 320px; line-height: 1.5; }
   .lockcard svg { width: 28px; height: 28px; opacity: .6; }
   @media (prefers-reduced-motion: reduce) { .switch, .switch::after, .ws .disc { transition: none; } }
@@ -1025,7 +1207,7 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
 <header>
   <svg viewBox="0 0 100 100" aria-hidden="true"><rect x="12" y="12" width="52" height="52" fill="var(--fg)"/><rect x="36" y="36" width="52" height="52" fill="var(--pane)"/><rect x="36" y="36" width="28" height="28" fill="var(--accent)"/></svg>
   <h1>Vault</h1>
-  <span class="kinds"><button class="quiet on" id="k-logins">Logins</button><button class="quiet" id="k-cards">Cards</button></span>
+  <span class="kinds"><button class="quiet on" id="k-logins">Logins</button><button class="quiet" id="k-cards">Cards</button><button class="quiet" id="k-source">Source</button></span>
   <span class="sub" id="sub">what the agent may sign in with, and where</span>
   <span class="spacer"></span>
   <button class="quiet" id="import">Import CSV…</button><button class="quiet" id="export">Export CSV…</button>
@@ -1128,7 +1310,7 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
     const list = $('list'); list.innerHTML = '';
     shown = rows.filter((r) => !q || [r.host, ...(r.also || []), r.username, scopeText(r.scope), r.notes || ''].join(' ').toLowerCase().includes(q));
     if (!unlocked) { list.append(el('div', 'empty', 'Locked.')); return; }
-    if (!rows.length) { list.append(el('div', 'empty', 'No logins yet. Add one, or import a CSV export from Apple Passwords, Bitwarden or Chrome.')); return; }
+    if (!rows.length) { list.append(el('div', 'empty', onServer() ? 'No logins with a website in your Bitwarden vault yet. Add one here or in Bitwarden.' : 'No logins yet. Add one, or import a CSV export from Apple Passwords, Bitwarden or Chrome.')); return; }
     if (!shown.length) { list.append(el('div', 'empty', 'Nothing matches “' + q + '”.')); return; }
     for (const r of shown) {
       const it = el('div', 'item' + (sel === r ? ' sel' : ''));
@@ -1240,10 +1422,15 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
     id.append(h2, el('div', 'user mono', sel.username || '(no username)'));
     t.append(id);
     const acts = el('div', 'acts');
+    if (sel.source === 'bitwarden') {
+      t.append(acts); wrap.append(t);
+      wrap.append(el('p', 'hint', 'Kept in your Bitwarden vault' + (sel.name ? ' as ' + sel.name : '') + ': change or remove it in Bitwarden. Here you choose which workspaces may use it.' + (sel.hasTotp ? ' It has an authenticator key: the agent can fill its current code.' : '')));
+    } else {
     const ed = el('button', 'quiet', 'Edit'); ed.onclick = () => { Object.assign(draft, { sites: [sel.host, ...(sel.also || [])], user: sel.username, pass: '', notes: sel.notes || '', scope: sel.scope, scopeWas: sel.scopeWas, scopeFrom: sel.scope, from: { host: sel.host, username: sel.username }, hadPass: !!sel.hasPassword, dropPass: false }); mode = 'edit'; render(); };
     // Removing asks for Touch ID or the Mac's password, which is the confirmation.
     const rm = el('button', 'quiet danger', 'Remove'); rm.onclick = async () => { try { await vault.remove(sel.host, sel.username); sel = null; await refresh(); } catch (e) { say(failed(e)); } };
     acts.append(ed, rm); t.append(acts); wrap.append(t);
+    }
 
     const pw = el('div', 'fields'); const prow = el('div', 'field'); prow.style.gridTemplateColumns = '1fr';
     const pval = el('div', 'pw'); const dots = el('span', 'mono', '••••••••••'); pval.append(dots);
@@ -1261,7 +1448,7 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
     const sites = el('div', 'sites');
     for (const s of [sel.host, ...(sel.also || [])]) { const row = el('div', 'site'); row.append(el('span', 'mono', s)); sites.append(row); }
     wrap.append(section('Websites', sites));
-    wrap.append(section('Notes', notesView(sel.notes, 'No notes. Edit to add some for you and for agents: which account this is, how 2FA works.')));
+    wrap.append(section('Notes', notesView(sel.notes, sel.source === 'bitwarden' ? 'None shared with agents. Notes reach agents when the item has a ticked checkbox field named ' + ((src && src.notesField) || 'Share notes with agents') + ' (see Source).' : 'No notes. Edit to add some for you and for agents: which account this is, how 2FA works.')));
     // A tick is a change from what is shown; until it is confirmed it shows, and if it is not, the
     // login goes back to the workspaces it has.
     wrap.append(section('Where the agent may use it', scopeEditor(() => sel.scope, async (v) => {
@@ -1317,15 +1504,19 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
   const resetCard = () => Object.assign(cdraft, { id: null, label: '', name: '', number: '', exp: '', cvc: '', notes: '', hadCode: false, forgetCode: false });
   const cardLine = (c) => c.brand + ' •••• ' + c.last4 + ' · ' + c.exp;
   function paintKinds() {
-    const cardsOn = kind === 'cards';
-    $('k-logins').classList.toggle('on', !cardsOn); $('k-cards').classList.toggle('on', cardsOn);
-    $('sub').textContent = cardsOn ? 'filled into checkout pages, always with your confirmation' : 'what the agent may sign in with, and where';
+    const cardsOn = kind === 'cards', sourceOn = kind === 'source';
+    $('k-logins').classList.toggle('on', kind === 'logins'); $('k-cards').classList.toggle('on', cardsOn); $('k-source').classList.toggle('on', sourceOn);
+    $('sub').textContent = sourceOn ? 'where the logins and cards are kept' : cardsOn ? 'filled into checkout pages, always with your confirmation' : 'what the agent may sign in with, and where';
     $('new').textContent = cardsOn ? 'Add card' : 'Add login';
+    // On a Bitwarden server, importing, exporting and cards are Bitwarden's: logins can still be added.
+    $('import').hidden = $('export').hidden = onServer() || sourceOn;
+    $('new').parentElement.hidden = sourceOn || (cardsOn && onServer());
+    $('q').parentElement.hidden = sourceOn;
   }
   function renderCards() {
     const list = $('list'); list.innerHTML = '';
     if (!unlocked) list.append(el('div', 'empty', 'Locked.'));
-    else if (!cards.length) list.append(el('div', 'empty', 'No cards yet. Add one, and it can be filled into a checkout page: by you, or by the agent, each time after you confirm.'));
+    else if (!cards.length) list.append(el('div', 'empty', onServer() ? 'No cards in your Bitwarden vault. Add one in Bitwarden, and it can be filled into a checkout page here, each time after you confirm.' : 'No cards yet. Add one, and it can be filled into a checkout page: by you, or by the agent, each time after you confirm.'));
     const q = $('q').value.trim().toLowerCase();
     shownCards = unlocked ? cards.filter((c) => !q || [c.label, c.brand, c.last4, c.name || '', c.notes || ''].join(' ').toLowerCase().includes(q)) : [];
     if (unlocked && cards.length && !shownCards.length) list.append(el('div', 'empty', 'No card matches.'));
@@ -1368,15 +1559,120 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
     if (!selCard) { wrap.append(el('div', 'empty', cards.length ? 'Pick a card.' : 'Add a card to fill checkout pages with it.')); return; }
     const t = el('div', 'title'); const id = el('div', 'id'); id.append(el('h2', null, selCard.label), el('div', 'user mono', cardLine(selCard))); t.append(id);
     const acts = el('div', 'acts');
+    if (selCard.source === 'bitwarden') { t.append(acts); wrap.append(t); wrap.append(el('p', 'hint', 'Kept in your Bitwarden vault: change or remove it in Bitwarden.')); } else {
     const ed = el('button', 'quiet', 'Edit'); ed.onclick = () => { Object.assign(cdraft, { id: selCard.id, label: selCard.label, name: selCard.name, number: '', exp: selCard.exp, cvc: '', notes: selCard.notes || '', hadCode: selCard.hasCode, forgetCode: false }); cardMode = 'edit'; render(); };
     const rm = el('button', 'quiet danger', 'Remove'); rm.onclick = async () => { try { await vault.removeCard(selCard.id); selCard = null; cards = await vault.cards(); render(); } catch (e) { say(failed(e)); } };
     acts.append(ed, rm); t.append(acts); wrap.append(t);
+    }
     const info = el('div', 'fields');
     for (const [k, v] of [['Name on card', selCard.name || '(none)'], ['Expires', selCard.exp], ['Security code', selCard.hasCode ? 'saved' : 'not saved: typed at checkout']]) { const row = el('div', 'field'); row.append(el('label', null, k), el('div', 'mono', v)); info.append(row); }
     wrap.append(section('Card', info));
     wrap.append(section('Notes', notesView(selCard.notes, 'No notes. Edit to add some for you and for agents: which purchases this card is for.')));
     wrap.append(el('p', 'hint', 'Filling it asks you first, with Touch ID or your Mac password: when you use Cobrowser: Fill Card, and every time the agent asks to (it never sees the number, and the pay button stays yours).'));
     const a = el('div', 'actions'); const st = el('div'); st.id = 'status'; a.append(st); wrap.append(a);
+  }
+  // ---- source: where the vault is kept ----
+  let src = { kind: 'built-in' }, srcPick = null, signingIn = false;
+  const onServer = () => src && src.kind === 'bitwarden';
+  const sdraft = { server: '', email: '', password: '', useKey: false, clientId: '', clientSecret: '', step: 'form', providers: [], provider: 0, code: '', message: '' };
+  const ago = (ms) => { const s = Math.round((Date.now() - ms) / 1000); return s < 60 ? 'just now' : s < 3600 ? Math.round(s / 60) + ' min ago' : s < 86400 ? Math.round(s / 3600) + ' h ago' : new Date(ms).toLocaleDateString(); };
+  function renderSource() {
+    const list = $('list'); list.innerHTML = '';
+    const pick = srcPick || (onServer() ? 'bitwarden' : 'built-in');
+    for (const [key, title, line] of [['built-in', 'Built in', 'on this Mac, in its keychain'], ['bitwarden', 'Bitwarden server', onServer() ? src.email + ' · ' + src.server.replace(/^https:\\/\\//, '') : 'Bitwarden, or your own Vaultwarden']]) {
+      const it = el('div', 'item' + (pick === key ? ' sel' : ''));
+      const id = el('div', 'id'); const b = el('b', null, title); if ((key === 'bitwarden') === onServer()) b.append(el('em', null, ' · in use'));
+      id.append(b, el('span', null, line)); it.append(id);
+      it.onclick = () => { srcPick = key; renderSource(); };
+      list.append(it);
+    }
+    const d = $('detail'); d.innerHTML = '';
+    const wrap = el('div', 'card-in'); d.append(wrap);
+    const st = el('div'); st.id = 'status';
+    const acts = () => { const a = el('div', 'actions'); a.append(st, el('span', 'spacer')); return a; };
+    if (pick === 'built-in') {
+      const t = el('div', 'title'); const id = el('div', 'id'); id.append(el('h2', null, 'Built in')); t.append(id); wrap.append(t);
+      wrap.append(el('p', 'hint', 'Logins and cards are kept on this Mac, encrypted with a key in its keychain, and unlocked with Touch ID or your Mac password. Nothing leaves this Mac.'));
+      const a = acts();
+      if (onServer()) {
+        wrap.append(el('p', 'hint', 'cobrowser uses your Bitwarden vault now. Going back signs this Mac out of Bitwarden: your Bitwarden account is left as it is, and so is the built-in vault' + (src.builtInExists ? ', with the logins it had.' : '.')));
+        const b = el('button', 'primary', 'Use the built-in vault'); b.onclick = async () => { try { src = await vault.source.useBuiltIn(); showLocked(); kind = 'source'; srcPick = null; render(); } catch (e) { say(failed(e)); } };
+        a.append(b);
+      }
+      wrap.append(a); return;
+    }
+    const t = el('div', 'title'); const id = el('div', 'id'); id.append(el('h2', null, 'Bitwarden server')); t.append(id); wrap.append(t);
+    if (onServer() && src.signedIn && sdraft.step === 'form' && !signingIn) {
+      id.append(el('div', 'user mono', src.email + ' · ' + src.server));
+      const line = el('div', 'srcline', !unlocked ? 'Locked: unlock to sync and see what it holds.' : src.syncing ? 'Syncing…' : src.syncedAt ? 'Synced ' + ago(src.syncedAt) + '.' : 'Not synced yet.');
+      wrap.append(line);
+      if (src.error) wrap.append(el('div', 'srcerr', src.error));
+      const syncB = el('button', 'quiet', 'Sync now'); syncB.onclick = async () => { try { syncB.disabled = true; src = await vault.source.sync(); unlocked = true; renderSource(); } catch (e) { say(failed(e)); syncB.disabled = false; } };
+      const row = el('div'); row.style.display = 'flex'; row.append(syncB); wrap.append(row);
+      if (unlocked) {
+        const sel = el('select', 'place');
+        const opt = (value, text) => { const o = el('option', null, text); o.value = value; return o; };
+        sel.append(opt('', 'My vault (no folder)'));
+        for (const p of src.places || []) if (p.writable) sel.append(opt(JSON.stringify(p.organizationId ? { organizationId: p.organizationId, collectionId: p.id } : { folderId: p.id }), (p.organizationId ? 'Collection: ' : 'Folder: ') + p.name));
+        const cur = src.saveTo ? JSON.stringify(src.saveTo.collectionId ? { organizationId: src.saveTo.organizationId, collectionId: src.saveTo.collectionId } : { folderId: src.saveTo.folderId }) : '';
+        sel.value = [...sel.options].some((o) => o.value === cur) ? cur : '';
+        sel.onchange = async () => { try { src = await vault.source.settings({ saveTo: sel.value ? JSON.parse(sel.value) : null }); st.textContent = 'Saved.'; } catch (e) { say(failed(e)); } };
+        wrap.append(section('New logins go to', sel));
+        wrap.append(el('p', 'hint', 'Where a login made here goes: one you add, and one an agent signs up with (its password made up here, never seen). To share them with other apps or people, choose a collection of an organization.'));
+      }
+      const nf = el('div', 'fields'); const nrow = el('div', 'field'); const ninp = el('input', 'mono'); ninp.value = src.notesField || ''; ninp.spellcheck = false;
+      ninp.onchange = async () => { try { src = await vault.source.settings({ notesField: ninp.value }); st.textContent = 'Saved.'; } catch (e) { say(failed(e)); } };
+      nrow.append(el('label', null, 'Field name'), ninp); nf.append(nrow);
+      wrap.append(section('Notes agents may read', nf));
+      wrap.append(el('p', 'hint', "An item's notes reach agents only when it has a checkbox field with this name, ticked. Notes can hold recovery codes, so the rest stay yours. Logins saved from cobrowser with notes get the field. Hidden fields and authenticator keys never reach agents."));
+      if (unlocked && src.noSite) wrap.append(el('p', 'hint', src.noSite + (src.noSite === 1 ? ' login has' : ' logins have') + ' no website, so agents cannot use ' + (src.noSite === 1 ? 'it.' : 'them.')));
+      if (src.builtInExists) {
+        const mv = el('button', 'quiet', "Move the built-in vault's logins here");
+        mv.onclick = async () => { try { mv.disabled = true; const r = await vault.source.moveLogins(); st.textContent = r.added + ' added, ' + r.skipped + ' already here' + (r.failed ? ', ' + r.failed + ' failed (see the log)' : '') + '. Each keeps its workspaces. The built-in vault is unchanged' + (r.cards ? '; its ' + r.cards + ' card' + (r.cards === 1 ? '' : 's') + ' stay there: add them in Bitwarden.' : '.'); rows = await vault.list(); } catch (e) { say(failed(e)); } finally { mv.disabled = false; } };
+        const r2 = el('div'); r2.style.display = 'flex'; r2.append(mv); wrap.append(section('The built-in vault', r2));
+      }
+      const a = acts();
+      const again = el('button', 'quiet', 'Sign in again…'); again.onclick = () => { Object.assign(sdraft, { server: src.server, email: src.email, password: '', step: 'form' }); signingIn = true; renderSource(); };
+      a.append(again); wrap.append(a); return;
+    }
+    // Signing in: the form, then a two-step code or a new device's code when the server asks.
+    wrap.append(el('p', 'hint', "cobrowser signs in as a Bitwarden app does. The master password is used once, to open the account, and never kept: this Mac keeps the account's key in its keychain, unlocked with Touch ID like the built-in vault, and a copy of the vault so it works offline. Agents never see a password. To keep the rest of your vault from agents, give cobrowser an account of its own and share a collection with it."));
+    const go = () => void signIn();
+    const f = el('div', 'fields');
+    const field = (key, label, ph, type) => { const row = el('div', 'field'); const inp = el('input', type === 'password' ? '' : 'mono'); inp.type = type || 'text'; inp.placeholder = ph || ''; inp.value = sdraft[key]; inp.autocomplete = 'off'; inp.spellcheck = false; inp.oninput = () => { sdraft[key] = inp.value; }; inp.onkeydown = (e) => { if (e.key === 'Enter') go(); }; row.append(el('label', null, label), inp); f.append(row); return inp; };
+    if (sdraft.step === 'form') {
+      field('server', 'Server', 'vault.example.com, or bitwarden.com');
+      field('email', 'Email', 'you@example.com');
+      field('password', 'Master password', '', 'password');
+      if (sdraft.useKey) { field('clientId', 'client_id', 'user.…'); field('clientSecret', 'client_secret', '', 'password'); }
+      wrap.append(section('Account', f));
+      const k = el('button', 'quiet', sdraft.useKey ? 'Sign in without an API key' : 'Use a personal API key'); k.onclick = () => { sdraft.useKey = !sdraft.useKey; renderSource(); };
+      const r = el('div'); r.style.display = 'flex'; r.append(k); wrap.append(r);
+    } else if (sdraft.step === 'twoFactor') {
+      const usable = sdraft.providers.filter((p) => p.usable);
+      wrap.append(el('p', 'hint', usable.length ? 'This account asks for a second step: ' + usable.map((p) => p.name).join(' or ') + '.' : "This account's second step (" + sdraft.providers.map((p) => p.name).join(', ') + ') is not one cobrowser can use: add an authenticator app or email to it in Bitwarden, or use a personal API key.'));
+      if (usable.length > 1) { const s = el('select', 'place'); for (const p of usable) { const o = el('option', null, p.name); o.value = String(p.id); s.append(o); } s.value = String(sdraft.provider); s.onchange = () => { sdraft.provider = Number(s.value); renderSource(); }; wrap.append(s); }
+      if (usable.length) { const inp = field('code', 'Code', '123456'); wrap.append(section('Code', f)); setTimeout(() => inp.focus(), 0); }
+      if (sdraft.provider === 1) { const em = el('button', 'quiet', 'Email me a code'); em.onclick = async () => { try { await vault.source.sendEmailCode({ server: sdraft.server, email: sdraft.email, password: sdraft.password }); st.textContent = 'Sent: check your email.'; } catch (e) { say(failed(e)); } }; const r = el('div'); r.style.display = 'flex'; r.append(em); wrap.append(r); }
+    } else if (sdraft.step === 'newDevice') {
+      wrap.append(el('p', 'hint', (sdraft.message || 'Bitwarden emailed a code to confirm this new device.') + ' Enter it to finish signing in.'));
+      const inp = field('code', 'Code', ''); wrap.append(section('Code', f)); setTimeout(() => inp.focus(), 0);
+    }
+    const a = acts();
+    if (signingIn || sdraft.step !== 'form') { const c = el('button', 'quiet', 'Cancel'); c.onclick = () => { Object.assign(sdraft, { password: '', code: '', step: 'form' }); signingIn = false; renderSource(); }; a.append(c); }
+    const ok = el('button', 'primary', 'Sign in'); ok.onclick = go; a.append(ok); wrap.append(a);
+    async function signIn() {
+      ok.disabled = true; st.textContent = 'Signing in…';
+      try {
+        const r = await vault.source.signIn({ server: sdraft.server, email: sdraft.email, password: sdraft.password, apiKey: sdraft.useKey ? { clientId: sdraft.clientId.trim(), clientSecret: sdraft.clientSecret.trim() } : undefined, twoFactor: sdraft.step === 'twoFactor' ? { provider: sdraft.provider, code: sdraft.code } : undefined, newDeviceOtp: sdraft.step === 'newDevice' ? sdraft.code : undefined });
+        if (r.needs === 'twoFactor') { const first = r.providers.find((p) => p.usable); Object.assign(sdraft, { step: 'twoFactor', providers: r.providers, provider: first ? first.id : 0, code: '' }); renderSource(); return; }
+        if (r.needs === 'newDevice') { Object.assign(sdraft, { step: 'newDevice', message: r.message, code: '' }); renderSource(); return; }
+        Object.assign(sdraft, { password: '', clientSecret: '', code: '', step: 'form' }); signingIn = false;
+        src = await vault.source.status(); unlocked = false; await refresh();
+        kind = 'source'; srcPick = 'bitwarden'; render();
+        say('Signed in: ' + r.logins + ' logins and ' + r.cards + ' cards in your Bitwarden vault' + (r.unreadable ? ', and ' + r.unreadable + ' items cobrowser cannot open' : '') + '. Give each login the workspaces that may use it, in Logins.');
+      } catch (e) { st.textContent = ''; say(failed(e)); ok.disabled = false; }
+    }
   }
   async function saveCard() {
     const fields = { label: cdraft.label, name: cdraft.name, exp: cdraft.exp, notes: cdraft.notes };
@@ -1389,12 +1685,14 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
   }
   function render() {
     paintKinds();
-    if (kind === 'cards') renderCards(); else { renderList(); renderDetail(); }
+    if (kind === 'source') renderSource(); else if (kind === 'cards') renderCards(); else { renderList(); renderDetail(); }
     state();
   }
   async function refresh() {
     if (unlocking) return; unlocking = true; render();
+    try { src = await vault.source.status(); } catch { /* the window shows what it had */ }
     try { rows = await vault.list(); cards = await vault.cards(); unlocked = true; lastError = ''; } catch (e) { unlocked = false; rows = []; cards = []; lastError = String(e && e.message || e).includes('cancelled') ? '' : failed(e); } finally { unlocking = false; }
+    try { src = await vault.source.status(); } catch { /* as before */ }
     known = await vault.workspaces();
     if (sel) sel = rows.find((r) => r.host === sel.host && r.username === sel.username) || null;
     render();
@@ -1408,6 +1706,7 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
   };
   $('k-logins').onclick = () => { kind = 'logins'; render(); };
   $('k-cards').onclick = () => { kind = 'cards'; render(); };
+  $('k-source').onclick = () => { kind = 'source'; srcPick = null; render(); vault.source.status().then((s) => { src = s; if (kind === 'source') render(); }).catch(() => undefined); };
   const plural = (n, what) => n + ' ' + what + (n === 1 ? '' : 's');
   // Import and Export act on the view that is showing: logins, or cards (a file of their own).
   $('import').onclick = async () => {
@@ -1430,7 +1729,9 @@ const VAULT_HTML = `<!doctype html><meta charset="utf-8"><title>cobrowser vault<
   // The vault changed outside this window. A form being filled in keeps what is typed; the
   // lists behind it, and a login or card being looked at, show the vault as it is now.
   vault.onChanged((now) => {
-    if (now.locked) { if (unlocked) showLocked(); return; }
+    if (now.source) src = now.source;
+    if (kind === 'source' && !signingIn) renderSource();
+    if (now.locked) { if (unlocked) showLocked(); else if (kind !== 'source') render(); return; }
     rows = now.logins; cards = now.cards; known = now.workspaces; unlocked = true; lastError = '';
     if (sel) sel = rows.find((r) => r.host === sel.host && r.username === sel.username) || null;
     if (selCard) selCard = cards.find((c) => c.id === selCard.id) || null;
@@ -1514,6 +1815,90 @@ function openVaultWindow(view) {
 }
 
 
+// ---- Source: the built-in vault, or a Bitwarden server ----
+ipcMain.handle('source:status', () => sourceStatus());
+/** Sign in to a Bitwarden server and use it as the vault from now on. The master password is
+ *  used once, to open the account, and never kept. Asks the person first: from here on, agents'
+ *  logins come from the server. */
+ipcMain.handle('source:signIn', async (_e, { server, email, password, apiKey, twoFactor, newDeviceOtp }) => {
+  if (!safeStorage.isEncryptionAvailable()) throw new Error(keychainRefusal());
+  const bw = bitwarden();
+  const r = await bw.signIn({ server, email, password, apiKey, twoFactor, newDeviceOtp });
+  if (!r.ok) return r; // a two-step code, or this new device's code, first
+  try {
+    await confirmPerson(`use the Bitwarden vault of ${String(email).trim()} for cobrowser's logins`);
+  } catch (e) { bw.lock(); throw e; }
+  const s = await bw.sync();
+  vault = null; // the built-in vault, if it was open, is closed: it is kept as it is
+  keepBitwarden();
+  const before = vaultSource();
+  const was = before.kind === 'bitwarden' ? before : {};
+  // The first folder or collection this account can add to, until the person chooses.
+  const places = bw.places();
+  const keepTo = was.saveTo && places.some((p) => p.id === (was.saveTo.collectionId || was.saveTo.folderId)) ? was.saveTo : null;
+  writeSource({ kind: 'bitwarden', server: bw.state.server, email: bw.state.email, saveTo: keepTo, notesField: was.notesField });
+  vault = bitwardenVault();
+  vault.syncedAt = Date.now();
+  log(`vault: now on Bitwarden, ${bw.state.email} at ${bw.state.server} (${s.logins} logins, ${s.cards} cards)`);
+  vaultChanged();
+  return { ok: true, logins: s.logins, cards: s.cards, unreadable: s.unreadable };
+});
+ipcMain.handle('source:sendEmailCode', async (_e, { server, email, password }) => { await bitwarden().sendEmailCode({ server, email, password }); return { ok: true }; });
+ipcMain.handle('source:sync', async () => { await unlockVault('show your Bitwarden vault'); await syncBitwarden(); return sourceStatus(); });
+ipcMain.handle('source:settings', async (_e, { saveTo, notesField }) => {
+  const s = vaultSource();
+  if (s.kind !== 'bitwarden') throw new Error('these settings are for a Bitwarden vault');
+  if (saveTo !== undefined) s.saveTo = saveTo && (saveTo.folderId || saveTo.collectionId) ? { folderId: saveTo.folderId || '', organizationId: saveTo.organizationId || '', collectionId: saveTo.collectionId || '' } : null;
+  if (notesField !== undefined) s.notesField = String(notesField || '').trim() || undefined;
+  writeSource(s);
+  if (vault && vault.source === 'bitwarden') vault = Object.assign(bitwardenVault(), { syncedAt: vault.syncedAt });
+  vaultChanged();
+  return sourceStatus();
+});
+/** Back to the built-in vault. What this Mac kept to open the Bitwarden account is deleted; the
+ *  account itself, and the workspaces given to its logins here, are left as they are. */
+ipcMain.handle('source:useBuiltIn', async () => {
+  if (!onBitwarden()) return sourceStatus();
+  await confirmPerson('use cobrowser\'s built-in vault again, and sign out of Bitwarden on this Mac');
+  lockVault();
+  fs.rmSync(BITWARDEN_FILE, { force: true });
+  const s = vaultSource(); writeSource({ ...s, kind: 'built-in' });
+  log('vault: back on the built-in vault; signed out of Bitwarden');
+  vaultChanged();
+  return sourceStatus();
+});
+/**
+ * Move the built-in vault's logins to the Bitwarden server: each one not already there (the same
+ * site and username) is added where the Source settings say, with its websites and notes, and
+ * keeps its workspaces. The built-in vault is left as it was. Cards stay in it: add them to
+ * Bitwarden there.
+ */
+ipcMain.handle('source:moveLogins', async () => {
+  if (!onBitwarden()) throw new Error('sign in to a Bitwarden server first');
+  if (!fs.existsSync(VAULT_FILE)) throw new Error('there is no built-in vault on this Mac to move logins from');
+  const from = readVaultFile();
+  await unlockVault('move the built-in vault\'s logins to your Bitwarden vault');
+  await confirmPerson(`add the built-in vault's ${from.entries.length} logins to your Bitwarden vault`);
+  const bw = bitwarden();
+  let added = 0, skipped = 0, failed = 0;
+  const kept = bitwardenScopes();
+  for (const e of from.entries) {
+    const site = siteLabel(e);
+    const there = vault.entries.find((x) => x.username === e.username && (x.host === e.host && (x.port || '') === (e.port || '') || store.loginMatches(x, pageAt(`https://${site}`))));
+    if (there) { kept[there.id] = { scope: store.mergeScope(kept[there.id]?.scope || there.scope, e.scope) }; skipped++; continue; }
+    try {
+      const body = bw.sealLogin(bitwardenLogin({ host: site, username: e.username, password: e.password, also: e.also, notes: e.notes }));
+      const to = vaultSource().saveTo || {};
+      const made = to.organizationId ? await bw.api('POST', '/ciphers/create', body) : await bw.api('POST', '/ciphers', body);
+      kept[made.id || made.Id] = { scope: e.scope };
+      added++;
+    } catch (err) { failed++; log(`vault: moving ${e.username} on ${site} to Bitwarden failed: ${err.message}`); }
+  }
+  fs.writeFileSync(BITWARDEN_SCOPES_FILE, JSON.stringify(kept, null, 2), { mode: 0o600 });
+  await syncBitwarden();
+  log(`vault: moved logins to Bitwarden: ${added} added, ${skipped} already there, ${failed} failed`);
+  return { added, skipped, failed, cards: (from.cards || []).length };
+});
 ipcMain.handle('vault:list', async () => (await unlockVault('show the logins in the cobrowser vault')).entries.map(publicEntry));
 ipcMain.handle('vault:workspaces', () => knownWorkspaces());
 // A form's workspaces are a change from the ones it started with (scopeFrom), applied to the
@@ -1524,6 +1909,7 @@ const scopeNow = (host, username, scopeFrom, scope) => {
 };
 ipcMain.handle('vault:add', async (_e, { host, username, password, scope, scopeFrom, also, notes }) => {
   if (!host) throw new Error('a website is required');
+  if (onBitwarden()) return addLoginToBitwarden({ host, username, password, scope, also, notes });
   const exists = !!vault && !!findEntry(host, username || '');
   await confirmFresh(exists ? (password ? `replace the saved password for ${username || 'the login'} on ${host}` : `change the login for ${username || 'the login'} on ${host}`) : `add a login for ${host}`);
   // The form's scope is the one the human chose for this login, so it replaces the old one.
@@ -1531,6 +1917,7 @@ ipcMain.handle('vault:add', async (_e, { host, username, password, scope, scopeF
   return { replaced: r.replaced };
 });
 ipcMain.handle('vault:update', async (_e, { from, site, username, password, scope, scopeFrom, also, notes }) => {
+  onServerOnly('edit a login');
   // Tried on a copy first, as card changes are: a clash with another login is said before
   // Touch ID is asked for, not after.
   if (vault) store.updateLogin(structuredClone(vault), from, { site, username, password: password === null ? null : password || undefined, scope, also, notes });
@@ -1543,7 +1930,7 @@ ipcMain.handle('vault:setScope', async (_e, { host, username, before, after }) =
   if (!findEntry(host, username)) throw new Error('that login is no longer in the vault');
   setScope(host, username, scopeNow(host, username, before, after)); saveVault();
 });
-ipcMain.handle('vault:remove', async (_e, { host, username }) => { await confirmFresh(`remove the login for ${username || 'the login'} on ${host}`); removeLogin(host, username); saveVault(); });
+ipcMain.handle('vault:remove', async (_e, { host, username }) => { onServerOnly('remove a login'); await confirmFresh(`remove the login for ${username || 'the login'} on ${host}`); removeLogin(host, username); saveVault(); });
 /** How long a copied password stays on the clipboard. Cleared only if it is still there:
  *  anything copied since is the person's and is left alone. */
 const CLIPBOARD_CLEAR_MS = (SKIP_BIOMETRICS && Number(process.env.COBROWSER_TEST_CLIPBOARD_MS)) || 90000;
@@ -1573,6 +1960,7 @@ ipcMain.handle('vault:reveal', async (_e, { host, username }) => {
   return e.password;
 });
 ipcMain.handle('vault:importCsv', async (_e, { scope } = {}) => {
+  onServerOnly('import logins');
   const r = await dialog.showOpenDialog(vaultWin, { properties: ['openFile'], filters: [{ name: 'CSV', extensions: ['csv'] }], title: 'Import logins (Apple Passwords / Bitwarden / Chrome export)' });
   if (r.canceled || !r.filePaths[0]) return null;
   const text = fs.readFileSync(r.filePaths[0], 'utf8');
@@ -1587,6 +1975,7 @@ ipcMain.handle('vault:importCsv', async (_e, { scope } = {}) => {
 ipcMain.handle('vault:exportCsv', () => exportVault(vaultWin));
 ipcMain.handle('vault:exportCards', () => exportCards(vaultWin));
 ipcMain.handle('vault:importCards', async () => {
+  onServerOnly('import cards');
   let file = SKIP_BIOMETRICS ? process.env.COBROWSER_TEST_IMPORT_PATH : undefined;
   if (!file) {
     const r = await dialog.showOpenDialog(vaultWin, { properties: ['openFile'], filters: [{ name: 'CSV', extensions: ['csv'] }], title: 'Import cards (a cobrowser cards export)' });
@@ -1608,18 +1997,21 @@ ipcMain.handle('vault:cards', async () => ((await unlockVault('show the cards in
 // Each card change is first tried on a copy, so a mistyped number, a bad expiry or a card
 // already saved is said before Touch ID is asked for, not after.
 ipcMain.handle('vault:addCard', async (_e, fields) => {
+  onServerOnly('add a card');
   if (vault) store.addCard(structuredClone(vault), fields || {});
   await confirmFresh('add a card to the cobrowser vault');
   const c = store.addCard(vault, fields || {}); saveVault();
   return store.publicCard(c);
 });
 ipcMain.handle('vault:updateCard', async (_e, { id, ...fields }) => {
+  onServerOnly('edit a card');
   if (vault) store.updateCard(structuredClone(vault), id, fields);
   await confirmFresh('change a card in the cobrowser vault');
   const c = store.updateCard(vault, id, fields); saveVault();
   return store.publicCard(c);
 });
 ipcMain.handle('vault:removeCard', async (_e, { id }) => {
+  onServerOnly('remove a card');
   await confirmFresh('remove a card from the cobrowser vault');
   store.removeCard(vault, id); saveVault();
 });
@@ -2754,6 +3146,7 @@ async function handle(ws, state, m) {
       switch (m.type) {
         // Added over the socket, a login defaults to the calling workspace's scope.
         case 'vault.add': {
+          if (onBitwarden()) return reply({ ok: true, ...(await addLoginToBitwarden({ host: m.host, username: m.username || '', password: m.password, scope: m.scope ?? [state.workspace?.id].filter(Boolean), also: m.also, notes: m.notes })) });
           const exists = !!vault && !!findEntry(m.host, m.username || '');
           await confirmFresh(exists ? (m.password ? `replace the saved password for ${m.username || 'the login'} on ${m.host}` : `change the login for ${m.username || 'the login'} on ${m.host}`) : `add a login for ${m.host}`);
           // From a command: widen the login's scope to this workspace, never narrow it.
@@ -2761,7 +3154,7 @@ async function handle(ws, state, m) {
           return reply({ ok: true, replaced: r.replaced });
         }
         case 'vault.export': { const r = await exportVault(); return reply(r ? { ok: true, ...r } : { ok: false, canceled: true }); }
-        case 'vault.import': { const scope = m.scope ?? [state.workspace?.id].filter(Boolean); store.importCsv({ entries: [] }, String(m.csv || ''), scope); await confirmFresh('import logins from a CSV file'); const r = importCsv(String(m.csv || ''), scope); saveVault(); return reply({ ok: true, count: r.count, added: r.added, replaced: r.replaced, skipped: r.skipped }); }
+        case 'vault.import': { onServerOnly('import logins'); const scope = m.scope ?? [state.workspace?.id].filter(Boolean); store.importCsv({ entries: [] }, String(m.csv || ''), scope); await confirmFresh('import logins from a CSV file'); const r = importCsv(String(m.csv || ''), scope); saveVault(); return reply({ ok: true, count: r.count, added: r.added, replaced: r.replaced, skipped: r.skipped }); }
         case 'vault.list': {
           const v = await unlockVault('list the logins in the cobrowser vault');
           const wsId = state.workspace?.id;
@@ -2783,6 +3176,7 @@ async function handle(ws, state, m) {
           return reply({ value, width, height, png });
         }
         case 'vault.addCard': {
+          onServerOnly('add a card');
           if (vault) store.addCard(structuredClone(vault), m.card || {}); // mistakes before Touch ID
           await confirmFresh('add a card to the cobrowser vault');
           const c = store.addCard(vault, m.card || {}); saveVault();

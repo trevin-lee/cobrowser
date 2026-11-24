@@ -168,8 +168,8 @@ impl Account {
     }
 
     /// The request body for a new login, every value encrypted ({ name, username, password,
-    /// uris, notes, and folderId, or organizationId and collectionId }). `random` is the app's
-    /// own random bytes, `ivsNeeded(uris.length)` of them.
+    /// uris, notes, fields, and folderId, or organizationId and collectionId }). `random` is the
+    /// app's own random bytes, `ivsNeeded(uris.length, fields.length)` of them.
     #[wasm_bindgen(js_name = newLogin)]
     pub fn new_login(&self, login: JsValue, random: &[u8]) -> Result<JsValue, JsError> {
         let n: vault::NewLogin =
@@ -178,10 +178,10 @@ impl Account {
     }
 }
 
-/// How many random bytes `newLogin` needs for a login with this many addresses.
+/// How many random bytes `newLogin` needs for a login with this many addresses and fields.
 #[wasm_bindgen(js_name = ivsNeeded)]
-pub fn ivs_needed(uris: usize) -> usize {
-    vault::ivs_needed(uris)
+pub fn ivs_needed(uris: usize, fields: usize) -> usize {
+    vault::ivs_needed(uris, fields)
 }
 
 /// The crate's version, so a stale build is plain.

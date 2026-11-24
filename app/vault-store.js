@@ -45,8 +45,11 @@ function sitesOf(e) {
   return [{ host: e.host, port: e.port || '' }, ...(Array.isArray(e.also) ? e.also : [])];
 }
 
-/** Does a login belong on this page? On any of its websites, each matched the usual way. */
+/** Does a login belong on this page? On any of its websites, each matched the usual way. A
+ *  login from a Bitwarden server matches by Bitwarden's own rules (its fillsOn, given the page's
+ *  address as page.url), which honour the match settings saved with each of its websites. */
 function loginMatches(e, page) {
+  if (typeof e.fillsOn === 'function') return !!page.url && e.fillsOn(page.url);
   return sitesOf(e).some((s) => siteMatches(s, page));
 }
 
@@ -94,7 +97,7 @@ function mergeScope(a, b) {
 }
 
 function publicEntry(e) {
-  return { host: siteLabel(e), also: (e.also || []).map(siteLabel), username: e.username, scope: e.scope, scopeWas: e.scopeWas || [], notes: e.notes || '', hasPassword: !!e.password };
+  return { host: siteLabel(e), also: (e.also || []).map(siteLabel), username: e.username, scope: e.scope, scopeWas: e.scopeWas || [], notes: e.notes || '', hasPassword: !!e.password, ...(e.source === 'bitwarden' ? { source: 'bitwarden', name: e.name || '', hasTotp: !!e.hasTotp } : {}) };
 }
 
 /** Give a login a scope. Turning Everywhere on keeps the workspaces it had (scopeWas), so
@@ -393,7 +396,7 @@ function cardFields(fields, existing) {
 }
 
 function publicCard(c) {
-  return { id: c.id, label: c.label, brand: cardBrand(c.number), last4: c.number.slice(-4), exp: `${String(c.expMonth).padStart(2, '0')}/${String(c.expYear).slice(-2)}`, name: c.name, hasCode: !!c.cvc, notes: c.notes || '' };
+  return { id: c.id, label: c.label, brand: cardBrand(c.number), last4: c.number.slice(-4), exp: `${String(c.expMonth).padStart(2, '0')}/${String(c.expYear).slice(-2)}`, name: c.name, hasCode: !!c.cvc, notes: c.notes || '', ...(c.source === 'bitwarden' ? { source: 'bitwarden' } : {}) };
 }
 
 /** Refuses a second copy of a card already saved: the vault holds each number once. */
