@@ -1,0 +1,52 @@
+# cobrowser's Bitwarden core: the encryption, the vault's items and their one-time codes, for any
+# Bitwarden-compatible server (Bitwarden itself, a self-hosted Vaultwarden). Compiled to
+# WebAssembly for the companion app (app/bitwarden/, built by scripts/build-bitwarden.mjs). The
+# app does the network; this does everything that touches a key. Started from the Rust vault
+# of the Agents Chrome extension, by the same author.
+[package]
+name = "cobrowser-bitwarden"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT"
+
+[lib]
+# cdylib for wasm-bindgen; rlib so the tests run natively with cargo test.
+crate-type = ["cdylib", "rlib"]
+
+# In alphabetical order, one to a line.
+[dependencies]
+# aes, cbc, hkdf, hmac, pbkdf2 and sha2 are Bitwarden's encryption (crypto.rs); hmac, sha1 and
+# sha2 make the one-time codes (totp.rs). Keys live in memory that's wiped when they go
+# (zeroize, and the block cipher's own round keys with its zeroize feature).
+aes = { version = "0.8", features = ["zeroize"] }
+anyhow = "1"
+# Argon2id, the key derivation newer Bitwarden accounts choose.
+argon2 = { version = "0.5", default-features = false, features = ["alloc", "zeroize"] }
+base64 = "0.22"
+cbc = { version = "0.1", features = ["alloc", "zeroize"] }
+hkdf = "0.12"
+hmac = "0.12"
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+# The public suffix list, compiled in, for a login's registrable domain (vault.rs fills_at).
+psl = "2"
+# RSA-OAEP: an organization's key reaches a member someone else let in encrypted to the member's
+# public key. Only decryption runs here, which needs no randomness.
+rsa = { version = "0.9", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+serde_json = "1"
+sha1 = { version = "0.10", features = ["oid"] }
+sha2 = { version = "0.10", features = ["oid"] }
+url = "2"
+wasm-bindgen = "0.2"
+zeroize = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+rand = "0.8"
+rsa = { version = "0.9", default-features = false, features = ["std", "pem"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"

@@ -1,0 +1,6 @@
+# Pinned so the committed WebAssembly (app/bitwarden/) rebuilds byte for byte in CI.
+[toolchain]
+channel = "1.97.1"
+profile = "minimal"
+components = ["clippy", "rustfmt"]
+targets = ["wasm32-unknown-unknown"]
