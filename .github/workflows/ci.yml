@@ -82,6 +82,8 @@ jobs:
       vaultwarden:
         image: vaultwarden/server:1.34.3
         env:
+          # A test server, thrown away with the job.
+          I_REALLY_WANT_VOLATILE_STORAGE: 'true'
           SIGNUPS_ALLOWED: 'true'
           INVITATIONS_ALLOWED: 'true'
           DISABLE_ICON_DOWNLOAD: 'true'
