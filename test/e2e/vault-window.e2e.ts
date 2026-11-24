@@ -33,7 +33,7 @@ suite('vault-window', async (r) => {
     r.check('the window opens large enough to see a login and its workspaces', opened.width >= 860 && opened.height >= 560, { width: opened.width, height: opened.height });
     const header = await L.conn.vaultWindow(`({ title: document.title, h1: document.querySelector('header h1').textContent, kinds: [...document.querySelectorAll('.kinds button')].map((b) => b.textContent), foot: [...document.querySelectorAll('.foot button')].map((b) => b.textContent), wrapped: [...document.querySelectorAll('.foot button, header button')].some((b) => b.offsetHeight > 34) })`);
     const h = header.value as { title: string; h1: string; kinds: string[]; foot: string[]; wrapped: boolean };
-    r.check('it is the Vault, with Logins and Cards as its views', h.title === 'cobrowser vault' && h.h1 === 'Vault' && h.kinds.join() === 'Logins,Cards', h);
+    r.check('it is the Vault, with Logins and Cards as its views, and Source for where they are kept', h.title === 'cobrowser vault' && h.h1 === 'Vault' && h.kinds.join() === 'Logins,Cards,Source', h);
     r.check('the add button stands alone and no button wraps', h.foot.join() === 'Add login' && !h.wrapped, h);
 
     const detail = await snap('2-login', `[...document.querySelectorAll('.item')].find((i) => i.textContent.includes('microsoftonline')).click(); 1`);

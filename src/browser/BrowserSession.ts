@@ -1015,7 +1015,7 @@ export class BrowserSession {
   }
 
   /** Logins the vault holds for the agent to use: hosts and usernames only. */
-  listCredentials(): Promise<{ host: string; alsoOn?: string[]; username: string; noPassword?: boolean; notes?: string }[]> {
+  listCredentials(): Promise<{ host: string; alsoOn?: string[]; username: string; noPassword?: boolean; hasCode?: boolean; notes?: string }[]> {
     return this.app.vaultList();
   }
 
@@ -1036,7 +1036,7 @@ export class BrowserSession {
     return this.app.vaultCreateLogin(this.agentOn(pageId).tabId, rest);
   }
 
-  fillCredentials(opts: OnPage & { usernameUid?: string; passwordUid?: string; username?: string }) {
+  fillCredentials(opts: OnPage & { usernameUid?: string; passwordUid?: string; codeUid?: string; username?: string }) {
     const { pageId, ...rest } = opts;
     return this.app.vaultFill(this.agentOn(pageId).tabId, rest);
   }

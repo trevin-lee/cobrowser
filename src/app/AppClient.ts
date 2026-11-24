@@ -267,7 +267,7 @@ export class AppConnection {
     if (r.error) throw new Error(String(r.error));
     return { count: Number(r.count) || 0, added: Number(r.added) || 0, replaced: Number(r.replaced) || 0, skipped: Number(r.skipped) || 0 };
   }
-  async vaultList(): Promise<{ host: string; alsoOn?: string[]; username: string; noPassword?: boolean; notes?: string }[]> {
+  async vaultList(): Promise<{ host: string; alsoOn?: string[]; username: string; noPassword?: boolean; hasCode?: boolean; notes?: string }[]> {
     const r = await this.request({ type: 'vault.list' }, 120000);
     if (r.error) throw new Error(String(r.error));
     return r.logins as { host: string; alsoOn?: string[]; username: string; noPassword?: boolean; notes?: string }[];
@@ -343,7 +343,7 @@ export class AppConnection {
     const { requestId: _id, ...r } = await this.request({ type: 'upload.confirmFor', files, host, browser, ask }, 5 * 60_000);
     return r as { files?: { path: string; name: string; size: number }[]; error?: string; declined?: boolean };
   }
-  async vaultFill(tabId: string, opts: { usernameUid?: string; passwordUid?: string; username?: string }): Promise<{ filled: string[]; username?: string; error?: string; candidates?: string[] }> {
+  async vaultFill(tabId: string, opts: { usernameUid?: string; passwordUid?: string; codeUid?: string; username?: string }): Promise<{ filled: string[]; username?: string; error?: string; candidates?: string[] }> {
     const { requestId: _id, ...r } = await this.request({ type: 'vault.fill', tabId, ...opts }, 120000);
     return r as unknown as { filled: string[]; username?: string; error?: string; candidates?: string[] };
   }

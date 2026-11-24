@@ -39,6 +39,69 @@ jobs:
           path: '*.vsix'
           if-no-files-found: error
 
+  bitwarden-core:
+    # cobrowser's Bitwarden core (bitwarden/, Rust): its tests and lints, and that the
+    # WebAssembly committed in app/bitwarden is what this source builds (byte for byte: the
+    # toolchain is pinned and build paths are remapped).
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Rust, as bitwarden/rust-toolchain.toml pins it
+        working-directory: bitwarden
+        run: |
+          rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" --profile minimal --component clippy --target wasm32-unknown-unknown
+          rustc --version
+
+      - name: wasm-bindgen, at the version Cargo.lock pins
+        run: cargo install wasm-bindgen-cli --locked --version "$(sed -n '/^name = "wasm-bindgen"$/{n;s/^version = "\(.*\)"/\1/p;}' bitwarden/Cargo.lock)"
+
+      - name: Tests and lints
+        working-directory: bitwarden
+        run: |
+          cargo test --locked
+          cargo clippy --all-targets --locked -- -D warnings
+
+      - name: The committed WebAssembly is this source's
+        run: |
+          node scripts/build-bitwarden.mjs
+          git diff --exit-code --stat app/bitwarden
+
+  vaultwarden:
+    # The Bitwarden client against a real Vaultwarden: registering two made-up accounts, one a
+    # member of the other's organization, and signing in, reading and saving as the member
+    # (test/vaultwarden/real-server.mjs). Linux, for the server's container.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      vaultwarden:
+        image: vaultwarden/server:1.34.3
+        env:
+          SIGNUPS_ALLOWED: 'true'
+          INVITATIONS_ALLOWED: 'true'
+          DISABLE_ICON_DOWNLOAD: 'true'
+        ports:
+          - 8080:80
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Wait for the server
+        run: for i in $(seq 1 30); do curl -fsS http://localhost:8080/alive && exit 0; sleep 2; done; exit 1
+
+      - name: Sign in, read and save, as a member of another account's organization
+        run: node test/vaultwarden/real-server.mjs
+        env:
+          VAULTWARDEN: http://localhost:8080
+
   e2e:
     # The end-to-end suites (test/e2e): each starts an isolated cobrowser app, with scratch
     # data and state dirs and no biometrics, and drives it through the real client and session

@@ -614,10 +614,13 @@ const TEST_GRANT = SKIP_BIOMETRICS ? process.env.COBROWSER_TEST_GRANT : undefine
  */
 async function requestCredential(workspaceId, { site, username, reason }) {
   const v = await unlockVault('grant a login to a workspace');
-  const page = pageAt(/^[a-z][a-z0-9+.-]*:\/\//i.test(String(site || '').trim()) ? String(site).trim() : `https://${String(site || '').trim()}`);
+  // A site named without its scheme is either: a Bitwarden login matches only its own.
+  const named = String(site || '').trim();
+  const pages = /^[a-z][a-z0-9+.-]*:\/\//i.test(named) ? [pageAt(named)] : [pageAt(`https://${named}`), pageAt(`http://${named}`)];
+  const page = pages[0];
   if (!page.host) return { granted: 'denied', error: 'site is required' };
   const label = siteLabel(page);
-  let matches = v.entries.filter((e) => store.loginMatches(e, page));
+  let matches = v.entries.filter((e) => pages.some((p) => store.loginMatches(e, p)));
   if (username) matches = matches.filter((e) => e.username === username);
   const already = matches.find((e) => allowed(e, workspaceId));
   if (already) return { granted: 'already', host: label, username: already.username };
@@ -789,9 +792,16 @@ async function exportCards(parent) {
  *  A card number is found however a page groups it (4242 4242 4242 4242, 4242-4242-…). A
  *  security code is not scrubbed from free text: three digits would take every such number
  *  with it; snapshots never print a code field's value instead. */
+/** One-time codes cobrowser typed into a page, until they lapse: a page's text that still shows
+ *  one is scrubbed like a password (codes last 30 seconds; two minutes covers a slow step). */
+const filledCodes = new Map(); // code → until
 function scrubSecrets(text) {
   if (!vault || typeof text !== 'string') return text;
   let out = text;
+  for (const [code, until] of filledCodes) {
+    if (until < Date.now()) { filledCodes.delete(code); continue; }
+    out = out.replace(new RegExp('(?<!\\d)' + code + '(?!\\d)', 'g'), '••••••');
+  }
   for (const e of vault.entries) {
     if (e.password && e.password.length >= 4 && out.includes(e.password)) out = out.split(e.password).join('••••••••');
   }
@@ -805,7 +815,7 @@ function scrubSecrets(text) {
 
 /** Fill username/password into elements the agent picked by uid. The page must be on the
  *  login's site — the app checks the tab's real URL, not anything the caller claims. */
-async function fillCredentials(tab, { usernameUid, passwordUid, username }) {
+async function fillCredentials(tab, { usernameUid, passwordUid, codeUid, username }) {
   const v = await unlockVault('fill a login into the browser');
   const page = pageAt(tab.win.webContents.getURL());
   const host = siteLabel(page);
@@ -819,7 +829,14 @@ async function fillCredentials(tab, { usernameUid, passwordUid, username }) {
   const entry = matches[0];
   const dbg = tab.win.webContents.debugger;
   const filled = [];
-  for (const [uid, value, label] of [[usernameUid, entry.username, 'username'], [passwordUid, entry.password, 'password']]) {
+  // A one-time code, from the login's authenticator key (a Bitwarden login can hold one): made
+  // now, typed in, never returned.
+  let code;
+  if (codeUid) {
+    if (typeof entry.code !== 'function') return { filled, error: `the saved login for ${entry.username || host} has no authenticator key in the vault: the human enters the code` };
+    try { code = entry.code().code; } catch (e) { return { filled, error: `no code could be made from the login's authenticator key: ${e.message}` }; }
+  }
+  for (const [uid, value, label] of [[usernameUid, entry.username, 'username'], [passwordUid, entry.password, 'password'], [codeUid, code, 'code']]) {
     if (!uid || !value) continue;
     // A password goes only into a password field, which the page draws as dots: typed into a
     // text field it would be on screen, in the agent's next screenshot.
@@ -830,6 +847,7 @@ async function fillCredentials(tab, { usernameUid, passwordUid, username }) {
     if (result.value === 'not-password') return { filled, error: `uid ${uid} is not a password field: the password goes only into one (an input of type password). Pass the password field's uid.` };
     if (result.value !== 'ok') return { filled, error: `uid ${uid} not found — take a fresh snapshot` };
     await dbg.sendCommand('Input.insertText', { text: value }); // trusted keystrokes, never page JS
+    if (label === 'code') filledCodes.set(value, Date.now() + 120000);
     filled.push(label);
   }
   // A one-time grant is spent by the password, or, for a login with none, by its username.
@@ -3158,7 +3176,7 @@ async function handle(ws, state, m) {
         case 'vault.list': {
           const v = await unlockVault('list the logins in the cobrowser vault');
           const wsId = state.workspace?.id;
-          return reply({ logins: v.entries.filter((e) => wsId && allowed(e, wsId)).map((e) => ({ host: siteLabel(e), ...(e.also && e.also.length ? { alsoOn: e.also.map(siteLabel) } : {}), username: e.username, ...(e.password ? {} : { noPassword: true }), ...(e.notes ? { notes: e.notes } : {}) })) });
+          return reply({ logins: v.entries.filter((e) => wsId && allowed(e, wsId)).map((e) => ({ host: siteLabel(e), ...(e.also && e.also.length ? { alsoOn: e.also.map(siteLabel) } : {}), username: e.username, ...(e.password ? {} : { noPassword: true }), ...(e.hasTotp ? { hasCode: true } : {}), ...(e.notes ? { notes: e.notes } : {}) })) });
         }
         case 'vault.lock': { lockVault(); return reply({ ok: true }); }
         case 'vault.open': { focusApp(); openVaultWindow(m.view === 'cards' ? 'cards' : undefined); return reply({ ok: true }); }

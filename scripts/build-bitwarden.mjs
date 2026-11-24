@@ -25,10 +25,14 @@ if (want !== have) {
   process.exit(1);
 }
 
+// Paths on the building machine end up in the WebAssembly (where a dependency would panic):
+// written as /cargo and /crate instead, so a build on any machine is byte for byte the same.
+const cargoHome = process.env.CARGO_HOME || path.join(os.homedir(), '.cargo');
+const rustflags = [`--remap-path-prefix=${cargoHome}=/cargo`, `--remap-path-prefix=${crate}=/crate`].join(' ');
 execFileSync('cargo', ['build', '--release', '--target', 'wasm32-unknown-unknown', '--lib'], {
   cwd: crate,
   stdio: 'inherit',
-  env: { ...process.env, CARGO_TARGET_DIR: target },
+  env: { ...process.env, CARGO_TARGET_DIR: target, RUSTFLAGS: rustflags },
 });
 fs.mkdirSync(out, { recursive: true });
 execFileSync('wasm-bindgen', [
